@@ -119,7 +119,7 @@ def render(
     engine = ComfyUIProvider(config)
 
     if dry_run:
-        resolved = engine.resolve_workflow(workflow, render_job)
+        resolved = engine.resolve_workflow(workflow, render_job, stage_assets=False)
         resolved_out.parent.mkdir(parents=True, exist_ok=True)
         resolved_out.write_text(json.dumps(resolved, indent=2), encoding="utf-8")
         typer.echo(f"resolved workflow -> {resolved_out}")
