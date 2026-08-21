@@ -28,6 +28,12 @@ def replace_placeholders(value: Any, mapping: dict[str, Any]) -> Any:
     return value
 
 
+def _is_asset_key(key: str) -> bool:
+    fixed = {"INIT_IMAGE", "LAST_FRAME", "MOTION_VIDEO", "SCENE_IMAGE", "AUDIO"}
+    dynamic_prefixes = ("IDENTITY_REF_", "BODY_REF_", "HAIR_REF_", "WARDROBE_REF_")
+    return key in fixed or key.startswith(dynamic_prefixes)
+
+
 class ComfyUIProvider:
     def __init__(self, config: ProviderConfig):
         self.config = config
@@ -46,15 +52,13 @@ class ComfyUIProvider:
 
         input_dir = Path(self.config.input_dir).expanduser().resolve()
         input_dir.mkdir(parents=True, exist_ok=True)
-        asset_keys = ["INIT_IMAGE", "LAST_FRAME", "MOTION_VIDEO", "SCENE_IMAGE", "AUDIO"]
-        for key in asset_keys:
-            raw = mapping.get(key)
-            if not raw:
+        for key, raw in list(mapping.items()):
+            if not _is_asset_key(key) or not raw:
                 continue
             src = Path(str(raw)).expanduser().resolve()
             if not src.exists():
                 raise FileNotFoundError(f"{key} asset does not exist: {src}")
-            dest_name = f"avatar_v2_{job.job_id}_{src.name}"
+            dest_name = f"avatar_v2_{job.job_id}_{key.lower()}_{src.name}"
             dest = input_dir / dest_name
             if src != dest:
                 shutil.copy2(src, dest)
