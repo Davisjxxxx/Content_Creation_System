@@ -1,0 +1,20 @@
+{
+  "1": {
+    "class_type": "AvatarV2H3DryRunFixture",
+    "inputs": {
+      "prompt": "${PROMPT}",
+      "model": "${H3_DIFFUSION_MODEL}",
+      "picture_1": "${H3_PICTURE_1}",
+      "video_1": "${H3_VIDEO_1}",
+      "audio_1": "${H3_AUDIO_1}",
+      "width": "${WIDTH}",
+      "height": "${HEIGHT}",
+      "fps": "${FPS}",
+      "frames": "${FRAMES}",
+      "steps": "${STEPS}",
+      "cfg": "${CFG}",
+      "seed": "${SEED}",
+      "runtime_profile": "${RUNTIME_PROFILE}"
+    }
+  }
+}
