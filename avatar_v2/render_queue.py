@@ -11,10 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from .gpu_memory import GPUMemoryManager
 from .models import ProviderConfig, RenderJob
 from .providers import ComfyUIProvider
 
 JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
+MEMORY_SENSITIVE_PROFILES = {"int8_12gb", "low_memory", "low_memory_quality"}
 
 
 @dataclass
@@ -31,6 +33,8 @@ class QueuedRender:
     error: str = ""
     prompt_id: str | None = None
     outputs: list[str] = field(default_factory=list)
+    memory_events: list[dict[str, Any]] = field(default_factory=list)
+    gpu_trace: dict[str, Any] = field(default_factory=dict)
     queued_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -47,6 +51,8 @@ class QueuedRender:
             "error": self.error,
             "prompt_id": self.prompt_id,
             "outputs": self.outputs,
+            "memory_events": self.memory_events,
+            "gpu_trace": self.gpu_trace,
             "chain_from_previous": self.chain_from_previous,
             "queued_at": self.queued_at,
             "started_at": self.started_at,
@@ -60,9 +66,10 @@ class QueuedRender:
 
 
 class RenderQueue:
-    def __init__(self, work_dir: Path):
+    def __init__(self, work_dir: Path, memory_manager: GPUMemoryManager | None = None):
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.memory_manager = memory_manager or GPUMemoryManager.from_environment()
         self._items: list[QueuedRender] = []
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -89,6 +96,9 @@ class RenderQueue:
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
             return [item.public() for item in self._items]
+
+    def memory_status(self) -> dict[str, Any]:
+        return self.memory_manager.status()
 
     def clear_finished(self) -> int:
         with self._lock:
@@ -123,6 +133,7 @@ class RenderQueue:
     def shutdown(self) -> None:
         self._stop.set()
         self._wake.set()
+        self.memory_manager.stop_trace()
 
     def _persist(self) -> None:
         path = self.work_dir / "queue_state.json"
@@ -180,7 +191,23 @@ class RenderQueue:
         provider = ComfyUIProvider(item.provider_config)
         self._active_provider = provider
         self._active_id = item.id
-        result = provider.render(item.workflow, job)
+
+        force_preclean = item.profile in MEMORY_SENSITIVE_PROFILES
+        item.memory_events.append(
+            self.memory_manager.maybe_cleanup(
+                provider,
+                reason=f"pre-render:{item.profile}",
+                force=force_preclean,
+                unload_models=True,
+            )
+        )
+
+        self.memory_manager.start_trace(item.id)
+        try:
+            result = provider.render(item.workflow, job)
+        finally:
+            item.gpu_trace = self.memory_manager.stop_trace()
+
         item.prompt_id = result["prompt_id"]
         item.outputs = self._resolve_outputs(item, result["outputs"])
 
@@ -208,6 +235,28 @@ class RenderQueue:
                         item.status = "error"
                         item.error = f"{type(exc).__name__}: {exc}"
             finally:
+                provider = self._active_provider
+                try:
+                    force_postclean = item.status in {"error", "cancelled"} or item.profile in {
+                        "low_memory",
+                        "low_memory_quality",
+                    }
+                    item.memory_events.append(
+                        self.memory_manager.maybe_cleanup(
+                            provider,
+                            reason=f"post-render:{item.status}",
+                            force=force_postclean,
+                            unload_models=True,
+                        )
+                    )
+                except Exception as exc:
+                    item.memory_events.append(
+                        {
+                            "reason": "post-render-cleanup-exception",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+
                 with self._lock:
                     item.finished_at = time.time()
                     self._active_provider = None
