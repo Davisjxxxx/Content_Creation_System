@@ -22,6 +22,7 @@ class AvatarManifest(BaseModel):
     identity_refs: list[str] = Field(default_factory=list)
     body_refs: list[str] = Field(default_factory=list)
     hair_refs: list[str] = Field(default_factory=list)
+    wardrobe_refs: list[str] = Field(default_factory=list)
     persistent_features: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
