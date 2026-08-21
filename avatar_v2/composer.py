@@ -76,7 +76,7 @@ def _h3_reference_sets(
     image_candidates += [(p, "body and proportion reference") for p in avatar.body_refs]
     image_candidates += [(p, "hair identity and material reference") for p in avatar.hair_refs]
     image_candidates += [(p, "wardrobe reference") for p in avatar.wardrobe_refs]
-    image_candidates.append((refs.scene_image, "environment and lighting reference")]
+    image_candidates.append((refs.scene_image, "environment and lighting reference"))
     image_candidates += [(p, "additional visual reference") for p in refs.extra_images]
 
     video_candidates: list[tuple[str | None, str]] = [(refs.motion_video, "motion and camera choreography reference")]
