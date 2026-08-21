@@ -1,0 +1,22 @@
+avatar_id: ava_demo_01
+display_name: Ava Demo
+subjects:
+  - id: ava_demo_01
+    kind: synthetic
+    age_verified_18_plus: true
+    consent_confirmed: true
+identity_refs:
+  - assets/ava_demo/front.png
+  - assets/ava_demo/three_quarter_left.png
+  - assets/ava_demo/three_quarter_right.png
+body_refs:
+  - assets/ava_demo/full_body_front.png
+hair_refs:
+  - assets/ava_demo/hair_loose.png
+wardrobe_refs:
+  - assets/ava_demo/wardrobe_jacket.png
+persistent_features:
+  - consistent eye color
+  - stable hairline
+  - stable facial proportions
+  - preserve visible freckles and moles if present

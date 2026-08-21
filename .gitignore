@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+build/
+runs/
+assets/private/
+*.mp4
+*.mov
+*.webm
+*.wav
+*.flac

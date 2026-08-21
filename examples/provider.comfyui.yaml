@@ -1,0 +1,6 @@
+provider: comfyui
+base_url: http://127.0.0.1:8188
+# Set these to your actual ComfyUI folders before rendering.
+input_dir: /absolute/path/to/ComfyUI/input
+output_dir: /absolute/path/to/ComfyUI/output
+timeout_s: 1200

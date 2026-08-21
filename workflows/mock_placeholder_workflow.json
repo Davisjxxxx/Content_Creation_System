@@ -1,0 +1,18 @@
+{
+  "1": {
+    "class_type": "AvatarV2DryRunFixture",
+    "inputs": {
+      "prompt": "${PROMPT}",
+      "negative": "${NEGATIVE_PROMPT}",
+      "init_image": "${INIT_IMAGE}",
+      "identity_ref_2": "${IDENTITY_REF_2}",
+      "motion_video": "${MOTION_VIDEO}",
+      "scene_image": "${SCENE_IMAGE}",
+      "width": "${WIDTH}",
+      "height": "${HEIGHT}",
+      "fps": "${FPS}",
+      "frames": "${FRAMES}",
+      "seed": "${SEED}"
+    }
+  }
+}

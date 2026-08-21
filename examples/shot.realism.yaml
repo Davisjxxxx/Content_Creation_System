@@ -1,0 +1,37 @@
+shot_id: waterfront_walk_01
+content_class: general
+user_prompt: >-
+  The subject walks naturally toward the camera, makes brief eye contact,
+  adjusts her jacket once, and gives a subtle relaxed smile. Preserve documentary-level realism.
+duration_s: 6
+fps: 24
+width: 720
+height: 1280
+seed: 41001
+engine_preference: auto
+local_only: true
+action_beats:
+  - start_s: 0
+    end_s: 2
+    description: Natural forward walk with realistic weight transfer and subtle handheld camera drift.
+  - start_s: 2
+    end_s: 4
+    description: Subject glances toward camera and adjusts the jacket with one hand while continuing to walk.
+  - start_s: 4
+    end_s: 6
+    description: Subject makes brief eye contact and gives a small natural smile; walking cadence remains continuous.
+camera:
+  framing: three-quarter vertical portrait
+  movement: handheld backward tracking with restrained stabilization
+  lens_equivalent_mm: 26
+  height: chest level
+wind:
+  direction: subject-left to subject-right
+  speed_mps: 4.5
+  gust_variation_pct: 30
+wardrobe: fitted top, jeans, lightweight open jacket; no garment changes during the clip
+environment: waterfront pedestrian area in natural late-afternoon light
+references:
+  init_image: assets/ava_demo/front.png
+  motion_video: assets/motion/walk_reference.mp4
+  scene_image: assets/scenes/waterfront.png
