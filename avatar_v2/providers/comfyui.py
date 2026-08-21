@@ -30,7 +30,15 @@ def replace_placeholders(value: Any, mapping: dict[str, Any]) -> Any:
 
 def _is_asset_key(key: str) -> bool:
     fixed = {"INIT_IMAGE", "LAST_FRAME", "MOTION_VIDEO", "SCENE_IMAGE", "AUDIO"}
-    dynamic_prefixes = ("IDENTITY_REF_", "BODY_REF_", "HAIR_REF_", "WARDROBE_REF_")
+    dynamic_prefixes = (
+        "IDENTITY_REF_",
+        "BODY_REF_",
+        "HAIR_REF_",
+        "WARDROBE_REF_",
+        "H3_PICTURE_",
+        "H3_VIDEO_",
+        "H3_AUDIO_",
+    )
     return key in fixed or key.startswith(dynamic_prefixes)
 
 
@@ -44,6 +52,24 @@ class ComfyUIProvider:
             response = client.get(f"{self.base_url}/system_stats")
             response.raise_for_status()
             return response.json()
+
+    def object_info(self) -> dict[str, Any]:
+        with httpx.Client(timeout=20) as client:
+            response = client.get(f"{self.base_url}/object_info")
+            response.raise_for_status()
+            return response.json()
+
+    def capabilities(self) -> dict[str, Any]:
+        info = self.object_info()
+        h3_nodes = sorted(
+            name for name in info.keys()
+            if "minimaxh3" in name.lower() or "minimax h3" in name.lower()
+        )
+        return {
+            "h3_available": bool(h3_nodes),
+            "h3_nodes": h3_nodes[:50],
+            "node_count": len(info),
+        }
 
     def _stage_assets(self, job: RenderJob) -> dict[str, Any]:
         mapping = dict(job.asset_map)
