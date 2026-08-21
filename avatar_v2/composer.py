@@ -73,13 +73,14 @@ def build_job(avatar: AvatarManifest, shot: ShotSpec) -> RenderJob:
         "HEIGHT": shot.height,
         "FPS": shot.fps,
         "FRAMES": shot.frames,
+        "SEED": shot.seed,
     }
     return RenderJob(
         job_id=f"{shot.shot_id}-{uuid4().hex[:8]}",
         avatar=avatar,
         shot=shot,
         selected_engine=selected,
-        prompt=assets["PROMPT"],
+        prompt=str(assets["PROMPT"]),
         negative_prompt=negative,
         asset_map=assets,
     )
