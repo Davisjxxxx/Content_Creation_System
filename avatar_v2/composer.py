@@ -23,7 +23,7 @@ def _time_plan(shot: ShotSpec) -> str:
     )
 
 
-def build_prompt(avatar: AvatarManifest, shot: ShotSpec) -> str:
+def _base_prompt(avatar: AvatarManifest, shot: ShotSpec) -> list[str]:
     sections = [
         shot.user_prompt.strip(),
         "Preserve the exact same subject identity throughout the entire clip.",
@@ -50,12 +50,89 @@ def build_prompt(avatar: AvatarManifest, shot: ShotSpec) -> str:
         "Photorealistic skin microtexture, physically plausible body mechanics, natural blinking, "
         "breathing and posture corrections, coherent shadows and reflections, realistic motion blur."
     )
+    return sections
+
+
+def _unique(items: list[tuple[str | None, str]]) -> list[tuple[str, str]]:
+    seen: set[str] = set()
+    output: list[tuple[str, str]] = []
+    for path, role in items:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        output.append((path, role))
+    return output
+
+
+def _h3_reference_sets(avatar: AvatarManifest, shot: ShotSpec) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+    refs = shot.references
+    primary = refs.init_image or avatar.identity_refs[0]
+
+    image_candidates: list[tuple[str | None, str]] = [(primary, "primary identity anchor")]
+    image_candidates += [(p, "additional identity anchor") for p in avatar.identity_refs]
+    image_candidates += [(p, "body/proportion reference") for p in avatar.body_refs]
+    image_candidates += [(p, "hair identity and material reference") for p in avatar.hair_refs]
+    image_candidates += [(p, "wardrobe reference") for p in avatar.wardrobe_refs]
+    image_candidates.append((refs.scene_image, "environment and lighting reference only"))
+    image_candidates += [(p, "additional visual reference") for p in refs.extra_images]
+
+    video_candidates: list[tuple[str | None, str]] = [(refs.motion_video, "motion and camera choreography only")]
+    video_candidates += [(p, "additional motion/video reference") for p in refs.extra_videos]
+
+    audio_candidates: list[tuple[str | None, str]] = [(refs.audio, "voice, timing, or sound reference")]
+    audio_candidates += [(p, "additional audio reference") for p in refs.extra_audios]
+
+    return (
+        _unique(image_candidates)[:9],
+        _unique(video_candidates)[:3],
+        _unique(audio_candidates)[:3],
+    )
+
+
+def _h3_binding_text(images: list[tuple[str, str]], videos: list[tuple[str, str]], audios: list[tuple[str, str]]) -> str:
+    bindings: list[str] = []
+    for i, (_, role) in enumerate(images, start=1):
+        bindings.append(f"<Picture {i}> = {role}")
+    for i, (_, role) in enumerate(videos, start=1):
+        bindings.append(f"<Video {i}> = {role}")
+    for i, (_, role) in enumerate(audios, start=1):
+        bindings.append(f"<Audio {i}> = {role}")
+    if not bindings:
+        return ""
+    return (
+        "Reference binding: "
+        + "; ".join(bindings)
+        + ". Respect each reference's assigned role; motion references must not replace the avatar identity."
+    )
+
+
+def build_prompt(avatar: AvatarManifest, shot: ShotSpec, selected_engine: str | None = None) -> str:
+    selected = selected_engine or choose_engine(shot)
+    sections = _base_prompt(avatar, shot)
+    if selected == "h3_ref2va":
+        images, videos, audios = _h3_reference_sets(avatar, shot)
+        binding = _h3_binding_text(images, videos, audios)
+        if binding:
+            sections.insert(0, binding)
     return "\n".join(sections)
 
 
 def _add_ref_pack(assets: dict[str, str | int | float | None], prefix: str, refs: list[str]) -> None:
     for index, path in enumerate(refs, start=1):
         assets[f"{prefix}_{index}"] = path
+
+
+def _add_h3_refs(assets: dict[str, str | int | float | None], avatar: AvatarManifest, shot: ShotSpec) -> None:
+    images, videos, audios = _h3_reference_sets(avatar, shot)
+    for index, (path, _) in enumerate(images, start=1):
+        assets[f"H3_PICTURE_{index}"] = path
+    for index, (path, _) in enumerate(videos, start=1):
+        assets[f"H3_VIDEO_{index}"] = path
+    for index, (path, _) in enumerate(audios, start=1):
+        assets[f"H3_AUDIO_{index}"] = path
+    assets["H3_PICTURE_COUNT"] = len(images)
+    assets["H3_VIDEO_COUNT"] = len(videos)
+    assets["H3_AUDIO_COUNT"] = len(audios)
 
 
 def build_job(avatar: AvatarManifest, shot: ShotSpec) -> RenderJob:
@@ -66,8 +143,9 @@ def build_job(avatar: AvatarManifest, shot: ShotSpec) -> RenderJob:
     if shot.negative_prompt:
         negative = f"{DEFAULT_NEGATIVE}, {shot.negative_prompt.strip()}"
 
+    prompt = build_prompt(avatar, shot, selected)
     assets: dict[str, str | int | float | None] = {
-        "PROMPT": build_prompt(avatar, shot),
+        "PROMPT": prompt,
         "NEGATIVE_PROMPT": negative,
         "INIT_IMAGE": init_image,
         "LAST_FRAME": shot.references.last_frame,
@@ -78,19 +156,22 @@ def build_job(avatar: AvatarManifest, shot: ShotSpec) -> RenderJob:
         "HEIGHT": shot.height,
         "FPS": shot.fps,
         "FRAMES": shot.frames,
+        "DURATION": shot.duration_s,
         "SEED": shot.seed,
     }
     _add_ref_pack(assets, "IDENTITY_REF", avatar.identity_refs)
     _add_ref_pack(assets, "BODY_REF", avatar.body_refs)
     _add_ref_pack(assets, "HAIR_REF", avatar.hair_refs)
     _add_ref_pack(assets, "WARDROBE_REF", avatar.wardrobe_refs)
+    if selected == "h3_ref2va":
+        _add_h3_refs(assets, avatar, shot)
 
     return RenderJob(
         job_id=f"{shot.shot_id}-{uuid4().hex[:8]}",
         avatar=avatar,
         shot=shot,
         selected_engine=selected,
-        prompt=str(assets["PROMPT"]),
+        prompt=prompt,
         negative_prompt=negative,
         asset_map=assets,
     )
