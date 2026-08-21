@@ -5,7 +5,15 @@ from pydantic import BaseModel, Field, model_validator
 
 ContentClass = Literal["general", "adult_nudity", "adult_sexual"]
 SubjectKind = Literal["synthetic", "consenting_adult", "unknown"]
-EngineName = Literal["auto", "wan22", "ltx25", "seedance", "custom"]
+EngineName = Literal[
+    "auto",
+    "h3_ref2va",
+    "h3_fl2va",
+    "wan22",
+    "ltx25",
+    "seedance",
+    "custom",
+]
 
 
 class SubjectSpec(BaseModel):
@@ -65,6 +73,9 @@ class ReferenceSpec(BaseModel):
     motion_video: str | None = None
     scene_image: str | None = None
     audio: str | None = None
+    extra_images: list[str] = Field(default_factory=list, max_length=9)
+    extra_videos: list[str] = Field(default_factory=list, max_length=3)
+    extra_audios: list[str] = Field(default_factory=list, max_length=3)
 
 
 class ShotSpec(BaseModel):
