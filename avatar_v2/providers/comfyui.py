@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import json
+import shutil
+import time
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from ..models import ProviderConfig, RenderJob
+
+
+def replace_placeholders(value: Any, mapping: dict[str, Any]) -> Any:
+    if isinstance(value, dict):
+        return {k: replace_placeholders(v, mapping) for k, v in value.items()}
+    if isinstance(value, list):
+        return [replace_placeholders(v, mapping) for v in value]
+    if not isinstance(value, str):
+        return value
+
+    for key, replacement in mapping.items():
+        token = "${" + key + "}"
+        if value == token:
+            return replacement
+        if token in value and replacement is not None:
+            value = value.replace(token, str(replacement))
+    return value
+
+
+class ComfyUIProvider:
+    def __init__(self, config: ProviderConfig):
+        self.config = config
+        self.base_url = config.base_url.rstrip("/")
+
+    def health(self) -> dict[str, Any]:
+        with httpx.Client(timeout=10) as client:
+            response = client.get(f"{self.base_url}/system_stats")
+            response.raise_for_status()
+            return response.json()
+
+    def _stage_assets(self, job: RenderJob) -> dict[str, Any]:
+        mapping = dict(job.asset_map)
+        if not self.config.input_dir:
+            return mapping
+
+        input_dir = Path(self.config.input_dir).expanduser().resolve()
+        input_dir.mkdir(parents=True, exist_ok=True)
+        asset_keys = ["INIT_IMAGE", "LAST_FRAME", "MOTION_VIDEO", "SCENE_IMAGE", "AUDIO"]
+        for key in asset_keys:
+            raw = mapping.get(key)
+            if not raw:
+                continue
+            src = Path(str(raw)).expanduser().resolve()
+            if not src.exists():
+                raise FileNotFoundError(f"{key} asset does not exist: {src}")
+            dest_name = f"avatar_v2_{job.job_id}_{src.name}"
+            dest = input_dir / dest_name
+            if src != dest:
+                shutil.copy2(src, dest)
+            mapping[key] = dest_name
+        return mapping
+
+    def resolve_workflow(self, workflow_path: str | Path, job: RenderJob) -> dict[str, Any]:
+        workflow = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
+        mapping = self._stage_assets(job)
+        return replace_placeholders(workflow, mapping)
+
+    def queue(self, workflow: dict[str, Any]) -> str:
+        with httpx.Client(timeout=30) as client:
+            response = client.post(f"{self.base_url}/prompt", json={"prompt": workflow})
+            response.raise_for_status()
+            data = response.json()
+        prompt_id = data.get("prompt_id")
+        if not prompt_id:
+            raise RuntimeError(f"ComfyUI did not return prompt_id: {data}")
+        return str(prompt_id)
+
+    def wait(self, prompt_id: str) -> dict[str, Any]:
+        deadline = time.monotonic() + self.config.timeout_s
+        with httpx.Client(timeout=30) as client:
+            while time.monotonic() < deadline:
+                response = client.get(f"{self.base_url}/history/{prompt_id}")
+                response.raise_for_status()
+                data = response.json()
+                if prompt_id in data:
+                    item = data[prompt_id]
+                    status = item.get("status", {})
+                    if status.get("completed") is True or item.get("outputs"):
+                        return item
+                time.sleep(1.5)
+        raise TimeoutError(f"ComfyUI job {prompt_id} exceeded {self.config.timeout_s}s")
+
+    @staticmethod
+    def output_files(history_item: dict[str, Any]) -> list[str]:
+        found: list[str] = []
+        for node_output in history_item.get("outputs", {}).values():
+            for key in ("images", "gifs", "videos", "audio"):
+                for item in node_output.get(key, []) or []:
+                    filename = item.get("filename") if isinstance(item, dict) else None
+                    subfolder = item.get("subfolder", "") if isinstance(item, dict) else ""
+                    if filename:
+                        found.append(str(Path(subfolder) / filename))
+        return found
+
+    def render(self, workflow_path: str | Path, job: RenderJob) -> dict[str, Any]:
+        workflow = self.resolve_workflow(workflow_path, job)
+        prompt_id = self.queue(workflow)
+        history = self.wait(prompt_id)
+        outputs = self.output_files(history)
+        return {"prompt_id": prompt_id, "outputs": outputs, "history": history}
