@@ -1,8 +1,11 @@
 from avatar_v2.composer import build_job
+from avatar_v2.h3_access import recommend_local_h3
+from avatar_v2.h3_runtime import actual_duration_s, preset_by_id, valid_frame_count
 from avatar_v2.models import AvatarManifest, ShotSpec
 from avatar_v2.policy import evaluate_policy
 from avatar_v2.providers.comfyui import replace_placeholders
 from avatar_v2.router import choose_engine
+from avatar_v2.runtime_profiles import resolve_profile
 
 
 def synthetic_avatar():
@@ -15,15 +18,15 @@ def synthetic_avatar():
             "age_verified_18_plus": True,
             "consent_confirmed": True,
         }],
-        "identity_refs": ["front.png"],
+        "identity_refs": ["front.png", "three-quarter.png"],
+        "body_refs": ["body.png"],
         "persistent_features": ["freckles"],
     })
 
 
 def test_general_job_allowed():
     shot = ShotSpec.model_validate({"shot_id": "s1", "user_prompt": "walk toward camera"})
-    decision = evaluate_policy(synthetic_avatar(), shot)
-    assert decision.allowed
+    assert evaluate_policy(synthetic_avatar(), shot).allowed
 
 
 def test_adult_job_requires_verified_consent():
@@ -42,22 +45,36 @@ def test_verified_synthetic_adult_job_allowed():
     assert evaluate_policy(synthetic_avatar(), shot).allowed
 
 
-def test_motion_reference_routes_to_wan():
+def test_motion_reference_routes_to_h3_ref2va():
     shot = ShotSpec.model_validate({
         "shot_id": "s1",
         "user_prompt": "walk",
         "references": {"motion_video": "walk.mp4"},
     })
-    assert choose_engine(shot) == "wan22"
+    assert choose_engine(shot) == "h3_ref2va"
 
 
-def test_last_frame_routes_to_ltx():
+def test_last_frame_routes_to_h3_fl2va():
     shot = ShotSpec.model_validate({
         "shot_id": "s1",
         "user_prompt": "turn",
         "references": {"last_frame": "end.png"},
     })
-    assert choose_engine(shot) == "ltx25"
+    assert choose_engine(shot) == "h3_fl2va"
+
+
+def test_h3_prompt_binds_identity_and_motion_refs():
+    shot = ShotSpec.model_validate({
+        "shot_id": "s1",
+        "user_prompt": "walk naturally",
+        "engine_preference": "h3_ref2va",
+        "references": {"motion_video": "walk.mp4", "scene_image": "street.png"},
+    })
+    job = build_job(synthetic_avatar(), shot)
+    assert "<Picture 1> = primary identity anchor" in job.prompt
+    assert "<Video 1> = motion and camera choreography only" in job.prompt
+    assert job.asset_map["H3_PICTURE_1"] == "front.png"
+    assert job.asset_map["H3_VIDEO_1"] == "walk.mp4"
 
 
 def test_composer_builds_temporal_prompt():
@@ -65,6 +82,7 @@ def test_composer_builds_temporal_prompt():
         "shot_id": "s1",
         "user_prompt": "walk",
         "duration_s": 4,
+        "engine_preference": "h3_fl2va",
         "action_beats": [
             {"start_s": 0, "end_s": 2, "description": "walk"},
             {"start_s": 2, "end_s": 4, "description": "smile"},
@@ -75,9 +93,70 @@ def test_composer_builds_temporal_prompt():
     assert job.asset_map["FRAMES"] == 96
 
 
+def test_h3_native_frame_grid_and_preset():
+    frames = valid_frame_count(5)
+    assert frames >= 120
+    assert (frames - 5) % 17 == 0
+    assert actual_duration_s(5) == frames / 24
+    preset = preset_by_id("vertical_4070")
+    assert (preset.width, preset.height) == (480, 864)
+
+
+def test_12gb_auto_prefers_installed_int8():
+    stats = {"devices": [{"vram_total": 12 * 1024**3}]}
+    models = [
+        "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "minimax_h3_ref2va_bf16.safetensors",
+    ]
+    rec = recommend_local_h3(
+        mode="ref2va",
+        system_stats=stats,
+        diffusion_models=models,
+        local_h3_authorized=True,
+    )
+    assert rec.model == "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+
+
+def test_local_h3_disabled_without_authorization():
+    stats = {"devices": [{"vram_total": 12 * 1024**3}]}
+    rec = recommend_local_h3(
+        mode="ref2va",
+        system_stats=stats,
+        diffusion_models=["minimax_h3_ref2va_pruned_int8_convrot.safetensors"],
+        local_h3_authorized=False,
+    )
+    assert rec.route == "wan22"
+    assert rec.local_allowed is False
+
+
+def test_low_memory_profile_forces_fast_vertical_canvas():
+    stats = {"devices": [{"vram_total": 12 * 1024**3}]}
+    runtime = resolve_profile(
+        profile_id="low_memory",
+        engine="h3_ref2va",
+        system_stats=stats,
+        diffusion_models=["minimax_h3_ref2va_pruned_int8_convrot.safetensors"],
+        local_h3_authorized=True,
+        requested_preset="vertical_max",
+        duration_s=5,
+    )
+    assert runtime["model"].endswith("pruned_int8_convrot.safetensors")
+    assert (runtime["width"], runtime["height"]) == (352, 608)
+    assert runtime["steps"] == 12
+
+
 def test_placeholder_replacement_preserves_numeric_types():
-    workflow = {"a": "${WIDTH}", "b": "x-${FPS}", "c": ["${PROMPT}"]}
-    result = replace_placeholders(workflow, {"WIDTH": 720, "FPS": 24, "PROMPT": "hello"})
-    assert result["a"] == 720
+    workflow = {
+        "a": "${WIDTH}",
+        "b": "x-${FPS}",
+        "c": ["${PROMPT}"],
+        "d": "${H3_DIFFUSION_MODEL}",
+    }
+    result = replace_placeholders(
+        workflow,
+        {"WIDTH": 480, "FPS": 24, "PROMPT": "hello", "H3_DIFFUSION_MODEL": "model.safetensors"},
+    )
+    assert result["a"] == 480
     assert result["b"] == "x-24"
     assert result["c"] == ["hello"]
+    assert result["d"] == "model.safetensors"
