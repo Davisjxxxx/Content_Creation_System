@@ -156,30 +156,35 @@ def resolve_profile(
 
     chosen = recommendation.model
     reason = recommendation.reason
+    effective_route = recommendation.route
+
     if local_h3_authorized:
         if profile.force_int8:
             forced = _int8_model(diffusion_models, mode)
             if forced:
                 chosen = forced
+                effective_route = f"h3_{mode}"
                 reason = "Profile forced the installed pruned INT8 H3 checkpoint."
             else:
-                reason = "INT8 profile selected, but no matching INT8 H3 checkpoint is installed."
+                chosen = None
+                effective_route = profile.fallback_engine
+                reason = "INT8 profile selected, but no matching INT8 H3 checkpoint is installed; using fallback."
         elif profile.prefer_full:
             full = _full_model(diffusion_models, mode)
             if full:
                 chosen = full
+                effective_route = f"h3_{mode}"
                 reason = "Quality profile selected the installed non-INT8 H3 checkpoint."
 
     preset_id = requested_preset or profile.preferred_preset
     if profile.id == "low_memory":
-        # Preserve orientation while forcing the smallest practical canvas.
         requested = preset_by_id(preset_id)
         preset_id = "vertical_fast" if requested.height >= requested.width else "landscape_fast"
     preset = preset_by_id(preset_id)
 
     return {
         "profile": profile.id,
-        "engine": recommendation.route if recommendation.route != f"h3_{mode}" else engine,
+        "engine": effective_route if effective_route != f"h3_{mode}" else engine,
         "model": chosen,
         "preset": preset.id,
         "width": preset.width,
