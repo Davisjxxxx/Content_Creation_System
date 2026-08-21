@@ -187,6 +187,15 @@ class ComfyUIProvider:
             response = client.post(f"{self.base_url}/interrupt", json={})
             response.raise_for_status()
 
+    def free_memory(self, *, unload_models: bool = True, free_memory: bool = True) -> None:
+        """Ask ComfyUI to unload models and release allocator/cache memory when idle."""
+        with httpx.Client(timeout=10) as client:
+            response = client.post(
+                f"{self.base_url}/free",
+                json={"unload_models": bool(unload_models), "free_memory": bool(free_memory)},
+            )
+            response.raise_for_status()
+
     def wait(self, prompt_id: str) -> dict[str, Any]:
         deadline = time.monotonic() + self.config.timeout_s
         with httpx.Client(timeout=30) as client:
