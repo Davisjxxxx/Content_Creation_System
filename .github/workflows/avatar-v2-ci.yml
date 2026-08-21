@@ -4,7 +4,7 @@ on:
   push:
     branches: [avatar-v2-cli, avatar-v2-h3-desktop]
   pull_request:
-    branches: [main]
+    branches: [main, avatar-v2-cli]
 
 jobs:
   test:
