@@ -65,9 +65,15 @@ class ComfyUIProvider:
             mapping[key] = dest_name
         return mapping
 
-    def resolve_workflow(self, workflow_path: str | Path, job: RenderJob) -> dict[str, Any]:
+    def resolve_workflow(
+        self,
+        workflow_path: str | Path,
+        job: RenderJob,
+        *,
+        stage_assets: bool = True,
+    ) -> dict[str, Any]:
         workflow = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
-        mapping = self._stage_assets(job)
+        mapping = self._stage_assets(job) if stage_assets else dict(job.asset_map)
         return replace_placeholders(workflow, mapping)
 
     def queue(self, workflow: dict[str, Any]) -> str:
@@ -108,7 +114,7 @@ class ComfyUIProvider:
         return found
 
     def render(self, workflow_path: str | Path, job: RenderJob) -> dict[str, Any]:
-        workflow = self.resolve_workflow(workflow_path, job)
+        workflow = self.resolve_workflow(workflow_path, job, stage_assets=True)
         prompt_id = self.queue(workflow)
         history = self.wait(prompt_id)
         outputs = self.output_files(history)
