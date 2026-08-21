@@ -7,6 +7,7 @@ duration_s: 6
 fps: 24
 width: 720
 height: 1280
+seed: 41001
 engine_preference: auto
 local_only: true
 action_beats:
