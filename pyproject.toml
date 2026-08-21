@@ -22,6 +22,7 @@ desktop = [
 dev = [
   "pytest>=8,<9",
   "pyinstaller>=6.10,<7",
+  "Pillow>=10.4,<12",
 ]
 
 [project.scripts]
