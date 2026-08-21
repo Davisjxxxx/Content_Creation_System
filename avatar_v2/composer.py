@@ -53,6 +53,11 @@ def build_prompt(avatar: AvatarManifest, shot: ShotSpec) -> str:
     return "\n".join(sections)
 
 
+def _add_ref_pack(assets: dict[str, str | int | float | None], prefix: str, refs: list[str]) -> None:
+    for index, path in enumerate(refs, start=1):
+        assets[f"{prefix}_{index}"] = path
+
+
 def build_job(avatar: AvatarManifest, shot: ShotSpec) -> RenderJob:
     enforce_policy(avatar, shot)
     selected = choose_engine(shot)
@@ -75,6 +80,11 @@ def build_job(avatar: AvatarManifest, shot: ShotSpec) -> RenderJob:
         "FRAMES": shot.frames,
         "SEED": shot.seed,
     }
+    _add_ref_pack(assets, "IDENTITY_REF", avatar.identity_refs)
+    _add_ref_pack(assets, "BODY_REF", avatar.body_refs)
+    _add_ref_pack(assets, "HAIR_REF", avatar.hair_refs)
+    _add_ref_pack(assets, "WARDROBE_REF", avatar.wardrobe_refs)
+
     return RenderJob(
         job_id=f"{shot.shot_id}-{uuid4().hex[:8]}",
         avatar=avatar,
