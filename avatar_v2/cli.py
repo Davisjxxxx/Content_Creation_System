@@ -52,12 +52,34 @@ def plan(
     shot: Path = typer.Argument(..., exists=True, readable=True),
     out: Path = typer.Option(Path("build/job.json"), "--out", "-o"),
 ) -> None:
-    """Compose a renderer-neutral job from identity, scene and motion references."""
+    """Compose one renderer-neutral job from identity, scene and motion references."""
     job = build_job(_load_avatar(avatar), _load_shot(shot))
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(job.model_dump_json(indent=2), encoding="utf-8")
     typer.echo(f"planned {job.job_id} -> {out}")
-    typer.echo(f"selected engine: {job.selected_engine}")
+    typer.echo(f"selected engine: {job.selected_engine}; seed: {job.shot.seed}")
+
+
+@app.command("plan-batch")
+def plan_batch(
+    avatar: Path = typer.Argument(..., exists=True, readable=True),
+    shot: Path = typer.Argument(..., exists=True, readable=True),
+    count: int = typer.Option(4, "--count", "-n", min=1, max=32),
+    out_dir: Path = typer.Option(Path("build/jobs"), "--out-dir"),
+) -> None:
+    """Create best-of-N jobs using consecutive deterministic seeds."""
+    avatar_obj = _load_avatar(avatar)
+    base = _load_shot(shot)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest = []
+    for index in range(count):
+        candidate_shot = base.model_copy(update={"seed": base.seed + index})
+        job = build_job(avatar_obj, candidate_shot)
+        path = out_dir / f"{base.shot_id}_seed_{candidate_shot.seed}.json"
+        path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
+        manifest.append({"seed": candidate_shot.seed, "job": str(path), "engine": job.selected_engine})
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    typer.echo(json.dumps(manifest, indent=2))
 
 
 @app.command()
@@ -95,9 +117,9 @@ def render(
     render_job = RenderJob.model_validate_json(job.read_text(encoding="utf-8"))
     config = _load_provider(provider)
     engine = ComfyUIProvider(config)
-    resolved = engine.resolve_workflow(workflow, render_job)
 
     if dry_run:
+        resolved = engine.resolve_workflow(workflow, render_job)
         resolved_out.parent.mkdir(parents=True, exist_ok=True)
         resolved_out.write_text(json.dumps(resolved, indent=2), encoding="utf-8")
         typer.echo(f"resolved workflow -> {resolved_out}")
