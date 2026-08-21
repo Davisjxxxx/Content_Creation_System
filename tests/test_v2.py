@@ -63,7 +63,7 @@ def test_last_frame_routes_to_h3_fl2va():
     assert choose_engine(shot) == "h3_fl2va"
 
 
-def test_h3_prompt_binds_identity_and_motion_refs():
+def test_h3_prompt_uses_official_ref2va_section_order_and_roles():
     shot = ShotSpec.model_validate({
         "shot_id": "s1",
         "user_prompt": "walk naturally",
@@ -71,10 +71,35 @@ def test_h3_prompt_binds_identity_and_motion_refs():
         "references": {"motion_video": "walk.mp4", "scene_image": "street.png"},
     })
     job = build_job(synthetic_avatar(), shot)
-    assert "<Picture 1> = primary identity anchor" in job.prompt
-    assert "<Video 1> = motion and camera choreography only" in job.prompt
+    sections = [
+        "subject_definitions:",
+        "summary:",
+        "retention_analysis:",
+        "detailed_description:",
+        "overall_soundscape:",
+        "non_diegetic_music:",
+    ]
+    positions = [job.prompt.index(section) for section in sections]
+    assert positions == sorted(positions)
+    assert "<Subject 1> is the target synthetic adult person" in job.prompt
+    assert "<Video 1>: attribute_transfer" in job.prompt
+    assert "without transferring source identity" in job.prompt
     assert job.asset_map["H3_PICTURE_1"] == "front.png"
     assert job.asset_map["H3_VIDEO_1"] == "walk.mp4"
+
+
+def test_fl2va_prompt_uses_three_core_fields():
+    shot = ShotSpec.model_validate({
+        "shot_id": "s1",
+        "user_prompt": "turn smoothly",
+        "engine_preference": "h3_fl2va",
+        "references": {"init_image": "start.png", "last_frame": "end.png"},
+    })
+    job = build_job(synthetic_avatar(), shot)
+    assert "integrated_multimodal_description:" in job.prompt
+    assert "overall_soundscape:" in job.prompt
+    assert "non_diegetic_music:" in job.prompt
+    assert "<Picture 1> aligns with 0.00 seconds" in job.prompt
 
 
 def test_composer_builds_temporal_prompt():
@@ -143,6 +168,21 @@ def test_low_memory_profile_forces_fast_vertical_canvas():
     assert runtime["model"].endswith("pruned_int8_convrot.safetensors")
     assert (runtime["width"], runtime["height"]) == (352, 608)
     assert runtime["steps"] == 12
+
+
+def test_forced_int8_profile_falls_back_if_int8_missing():
+    stats = {"devices": [{"vram_total": 24 * 1024**3}]}
+    runtime = resolve_profile(
+        profile_id="int8_12gb",
+        engine="h3_fl2va",
+        system_stats=stats,
+        diffusion_models=["minimax_h3_fl2va_bf16.safetensors"],
+        local_h3_authorized=True,
+        requested_preset="vertical_4070",
+        duration_s=5,
+    )
+    assert runtime["engine"] == "wan22"
+    assert runtime["model"] is None
 
 
 def test_placeholder_replacement_preserves_numeric_types():
