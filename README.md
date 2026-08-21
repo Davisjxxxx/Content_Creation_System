@@ -6,10 +6,11 @@ The first vertical slice is deliberately **renderer-agnostic** and uses ComfyUI 
 
 ## What V2 does now
 
-- Persistent avatar manifest with multiple identity/body/hair references.
+- Persistent avatar manifest with multiple identity/body/hair/wardrobe references.
 - Shot manifest with timed motion beats, camera, wind, wardrobe and environment controls.
 - Renderer routing hint (`wan22`, `ltx25`, `seedance`, `custom`) while keeping your supplied workflow authoritative.
-- Generic ComfyUI workflow placeholder injection.
+- Generic ComfyUI workflow placeholder injection, including multi-reference bindings.
+- Deterministic seeds and best-of-N batch planning.
 - Local asset staging into the ComfyUI input directory.
 - Queue/poll/output discovery through the ComfyUI HTTP API.
 - Structural video QA with `ffprobe`.
@@ -26,7 +27,7 @@ Prerequisites:
 
 - Python 3.11+
 - `ffmpeg` / `ffprobe`
-- ComfyUI for local rendering
+- ComfyUI for actual local rendering
 - The checkpoints/custom nodes required by the particular Wan/LTX/etc. workflow you choose
 
 ```bash
@@ -45,17 +46,23 @@ Windows PowerShell activation:
 pip install -e ".[dev]"
 ```
 
-## Fast CLI test without a GPU render
+## Fast CLI test without a GPU or real assets
 
-The example asset paths are placeholders, so first replace them with your real avatar/reference paths. Then:
+The shipped example paths are intentionally placeholders. Planning and workflow dry-runs do not require those files to exist.
 
 ```bash
 avatar-v2 validate examples/avatar.synthetic.yaml examples/shot.realism.yaml
 avatar-v2 plan examples/avatar.synthetic.yaml examples/shot.realism.yaml -o build/job.json
+avatar-v2 plan-batch examples/avatar.synthetic.yaml examples/shot.realism.yaml -n 4
+avatar-v2 render build/job.json examples/provider.comfyui.yaml \
+  --workflow workflows/mock_placeholder_workflow.json \
+  --dry-run
 pytest
 ```
 
-## Connect ComfyUI
+The resolved workflow will be written to `build/resolved_workflow.json`; inspect it to confirm prompts, timed motion instructions, reference bindings, resolution, FPS, frame count and seed substitution.
+
+## Connect ComfyUI for an actual render
 
 Edit `examples/provider.comfyui.yaml` with the real absolute paths to your ComfyUI `input` and `output` directories.
 
@@ -63,9 +70,9 @@ Edit `examples/provider.comfyui.yaml` with the real absolute paths to your Comfy
 avatar-v2 doctor examples/provider.comfyui.yaml
 ```
 
-In ComfyUI, load the Wan/LTX workflow you want, export it using **Save (API Format)**, and replace the values V2 should control with placeholders described in [`workflows/README.md`](workflows/README.md).
+In ComfyUI, load the exact Wan/LTX workflow you want, export it using **Save (API Format)**, and replace the values V2 should control with placeholders described in [`workflows/README.md`](workflows/README.md).
 
-Resolve a workflow without rendering:
+Resolve your real workflow before sending it to ComfyUI:
 
 ```bash
 avatar-v2 render build/job.json examples/provider.comfyui.yaml \
@@ -73,7 +80,7 @@ avatar-v2 render build/job.json examples/provider.comfyui.yaml \
   --dry-run
 ```
 
-Run the actual generation:
+Then run the actual generation:
 
 ```bash
 avatar-v2 render build/job.json examples/provider.comfyui.yaml \
@@ -108,7 +115,7 @@ avatar_v2/
   router.py              renderer selection hints
   providers/comfyui.py   generic ComfyUI API adapter
 examples/                 starter manifests
-workflows/                workflow placeholder documentation
+workflows/                placeholder docs + dry-run fixture
 tests/                    unit tests
 ```
 
