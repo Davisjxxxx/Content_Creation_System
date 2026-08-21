@@ -13,6 +13,8 @@ body_refs:
   - assets/ava_demo/full_body_front.png
 hair_refs:
   - assets/ava_demo/hair_loose.png
+wardrobe_refs:
+  - assets/ava_demo/wardrobe_jacket.png
 persistent_features:
   - consistent eye color
   - stable hairline
