@@ -121,3 +121,34 @@ def test_queue_history_manifest_written(tmp_path: Path, monkeypatch):
     assert saved["status"] == "queued"
     assert saved["seed"] == shot.seed
     assert saved["resolution"] == [shot.width, shot.height]
+
+
+def test_wan_frame_count_snaps_to_4k_plus_1():
+    from avatar_v2.workflows_builder import wan_frame_count
+    for duration, expect_min in [(1, 16), (3, 49), (6, 97)]:
+        frames = wan_frame_count(duration)
+        assert (frames - 1) % 4 == 0
+        assert frames >= expect_min
+    assert wan_frame_count(3) == 49
+    assert wan_frame_count(6) == 97
+
+
+def test_wan_funcontrol_builder_wires_identity_and_motion():
+    from avatar_v2.workflows_builder import build_wan_funcontrol_workflow
+    graph = build_wan_funcontrol_workflow({
+        "PROMPT": "walk", "NEGATIVE_PROMPT": "bad",
+        "WIDTH": 832, "HEIGHT": 480, "FRAMES": 49, "FPS": 16,
+        "SEED": 1, "STEPS": 20, "CFG": 1.0,
+        "SAMPLER_NAME": "uni_pc", "SCHEDULER": "simple",
+        "WAN_DIFFUSION_MODEL": "m.safetensors",
+        "WAN_TEXT_ENCODER": "t.safetensors", "WAN_VAE": "v.safetensors",
+        "INIT_IMAGE": "id.png", "MOTION_VIDEO": "motion.mp4",
+        "OUTPUT_PREFIX": "p",
+    })
+    kinds = {nid: n["class_type"] for nid, n in graph.items()}
+    assert "Wan22FunControlToVideo" in kinds.values()
+    task_id = next(nid for nid, k in kinds.items() if k == "Wan22FunControlToVideo")
+    inputs = graph[task_id]["inputs"]
+    assert inputs["ref_image"] == [str(int(task_id) - 2), 0]
+    assert inputs["control_video"][0] == str(int(task_id) - 1)
+    assert inputs["length"] == 49

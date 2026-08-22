@@ -21,6 +21,7 @@ from .providers import ComfyUIProvider
 from .render_queue import QueuedRender, RenderQueue
 from .runtime_profiles import payload as runtime_profiles_payload
 from .runtime_profiles import resolve_profile
+from .workflows_builder import WAN_FPS, wan_frame_count
 
 APP_HOME = Path.home() / ".avatar_v2"
 CONFIG_PATH = APP_HOME / "desktop.json"
@@ -54,6 +55,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "wan_diffusion_model": "",
     "wan_text_encoder": "",
     "wan_vae": "",
+    "wan_lora": "",
+    "wan_lora_strength": 1.0,
     "timeout_s": 1800,
     "local_h3_authorized": False,
     "h3_local_fallback": "wan22",
@@ -375,10 +378,19 @@ class DesktopAPI:
             job.asset_map.setdefault("WAN_DIFFUSION_MODEL", settings.get("wan_diffusion_model") or "")
             job.asset_map.setdefault("WAN_TEXT_ENCODER", settings.get("wan_text_encoder") or "")
             job.asset_map.setdefault("WAN_VAE", settings.get("wan_vae") or "")
+            job.asset_map.setdefault("WAN_LORA", settings.get("wan_lora") or "")
+            job.asset_map.setdefault("WAN_LORA_STRENGTH", float(settings.get("wan_lora_strength") or 1.0))
+            job.asset_map["FPS"] = WAN_FPS
+            job.asset_map["FRAMES"] = wan_frame_count(shot.duration_s)
+            job = job.model_copy(update={"shot": shot.model_copy(update={"fps": WAN_FPS})})
         job.asset_map.setdefault("OUTPUT_PREFIX", f"avatar_v2_{shot.shot_id[:24]}")
         workflow = self._workflow_for(payload, job.selected_engine)
         if not workflow and job.selected_engine in {"h3_ref2va", "h3_fl2va", "wan22"}:
-            workflow = f"builtin:{job.selected_engine}"
+            if job.selected_engine == "wan22":
+                mode = str((payload.get("advanced") or {}).get("WAN_MODE", "funcontrol"))
+                workflow = "builtin:wan22_funcontrol" if mode != "flf2v" else "builtin:wan22"
+            else:
+                workflow = f"builtin:{job.selected_engine}"
         return job, runtime, workflow
 
     def compose(self, payload: dict[str, Any]) -> dict[str, Any]:

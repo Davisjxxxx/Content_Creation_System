@@ -32,6 +32,19 @@ def _value(mapping: dict[str, Any], key: str, default: Any) -> Any:
     return value if value not in (None, "") else default
 
 
+WAN_FPS = 16
+WAN_FRAME_STEP = 4
+WAN_FRAME_OFFSET = 1
+WAN_MAX_FRAMES = 481
+
+
+def wan_frame_count(duration_s: float) -> int:
+    """Snap a duration to a valid Wan 2.2 frame count (4k+1 grid, 16 fps)."""
+    requested = max(WAN_FRAME_OFFSET, round(float(duration_s) * WAN_FPS))
+    snapped = requested + (WAN_FRAME_OFFSET - (requested % WAN_FRAME_STEP)) % WAN_FRAME_STEP
+    return min(snapped, WAN_MAX_FRAMES)
+
+
 def build_h3_common(
     mapping: dict[str, Any],
     task_node: str,
@@ -314,8 +327,114 @@ def build_wan_flf2v_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
     return graph
 
 
+def build_wan_funcontrol_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
+    """Wan 2.2 Fun-Control graph: ref_image = identity, control_video = motion."""
+    graph: dict[str, Any] = {}
+    next_id = 1
+
+    graph[str(next_id)] = _node(
+        "UNETLoader",
+        unet_name=_value(mapping, "WAN_DIFFUSION_MODEL", "wan2.2_fun_control_5B_bf16.safetensors"),
+        weight_dtype=_value(mapping, "WEIGHT_DTYPE", "default"),
+    )
+    unet_id = next_id
+    next_id += 1
+
+    lora = _stage_entry(mapping, "WAN_LORA")
+    if lora:
+        graph[str(next_id)] = _node(
+            "LoraLoaderModelOnly",
+            model=_link(unet_id),
+            lora_name=lora,
+            strength_model=float(_value(mapping, "WAN_LORA_STRENGTH", 1.0)),
+        )
+        unet_id = next_id
+        next_id += 1
+
+    graph[str(next_id)] = _node(
+        "CLIPLoader",
+        clip_name=_value(mapping, "WAN_TEXT_ENCODER", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
+        type="wan",
+    )
+    clip_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("VAELoader", vae_name=_value(mapping, "WAN_VAE", "wan2.2_vae.safetensors"))
+    vae_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("CLIPTextEncode", text=_value(mapping, "PROMPT", ""), clip=_link(clip_id))
+    pos_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("CLIPTextEncode", text=_value(mapping, "NEGATIVE_PROMPT", ""), clip=_link(clip_id))
+    neg_id = next_id
+    next_id += 1
+
+    task_inputs: dict[str, Any] = {
+        "positive": _link(pos_id),
+        "negative": _link(neg_id),
+        "vae": _link(vae_id),
+        "width": int(_value(mapping, "WIDTH", 832)),
+        "height": int(_value(mapping, "HEIGHT", 480)),
+        "length": int(_value(mapping, "FRAMES", 81)),
+        "batch_size": 1,
+    }
+
+    ref_image = _stage_entry(mapping, "INIT_IMAGE") or _stage_entry(mapping, "IDENTITY_REF_1")
+    if ref_image:
+        graph[str(next_id)] = _node("LoadImage", image=ref_image)
+        task_inputs["ref_image"] = _link(next_id)
+        next_id += 1
+
+    control_video = _stage_entry(mapping, "MOTION_VIDEO")
+    if control_video:
+        graph[str(next_id)] = _node("VHS_LoadVideoPath", video=control_video)
+        task_inputs["control_video"] = _link(next_id, 0)
+        next_id += 1
+
+    graph[str(next_id)] = _node("Wan22FunControlToVideo", **task_inputs)
+    task_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "KSampler",
+        model=_link(unet_id),
+        seed=int(_value(mapping, "SEED", 41001)),
+        steps=int(_value(mapping, "STEPS", 20)),
+        cfg=float(_value(mapping, "CFG", 1.0)),
+        sampler_name=_value(mapping, "SAMPLER_NAME", "uni_pc"),
+        scheduler=_value(mapping, "SCHEDULER", "simple"),
+        positive=_link(task_id, 0),
+        negative=_link(task_id, 1),
+        latent_image=_link(task_id, 2),
+        denoise=1.0,
+    )
+    sample_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("VAEDecode", samples=_link(sample_id), vae=_link(vae_id))
+    decode_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "VHS_VideoCombine",
+        images=_link(decode_id),
+        frame_rate=float(_value(mapping, "FPS", 16)),
+        loop_count=0,
+        filename_prefix=_value(mapping, "OUTPUT_PREFIX", "avatar_v2"),
+        format="video/h264-mp4",
+        pingpong=False,
+        save_output=True,
+    )
+    next_id += 1
+
+    return graph
+
+
 BUILTIN_BUILDERS = {
     "h3_ref2va": build_h3_ref2va_workflow,
     "h3_fl2va": build_h3_fl2va_workflow,
     "wan22": build_wan_flf2v_workflow,
+    "wan22_funcontrol": build_wan_funcontrol_workflow,
 }
