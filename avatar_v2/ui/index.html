@@ -5,7 +5,145 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Avatar V2</title>
 <style>
-:root{--bg:#050507;--panel:#0c0c11;--panel2:#111118;--line:rgba(255,255,255,.08);--text:#f7f7fa;--muted:#858592;--pink:#ff2d7d;--red:#ff3b30;--purple:#9b6cff;--green:#50e3a4;--amber:#ffc65c;--shadow:0 25px 80px rgba(0,0,0,.48)}*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{overflow:hidden;background:radial-gradient(circle at 15% 6%,rgba(255,45,125,.11),transparent 26%),radial-gradient(circle at 80% 12%,rgba(255,59,48,.07),transparent 25%),radial-gradient(circle at 70% 90%,rgba(155,108,255,.06),transparent 28%),#050507}button,input,textarea,select{font:inherit}.app{height:100vh;display:grid;grid-template-columns:220px minmax(650px,1fr) 340px}.side{border-right:1px solid var(--line);background:rgba(6,6,9,.78);backdrop-filter:blur(22px);padding:22px 16px;display:flex;flex-direction:column}.main{overflow:auto;padding:26px 30px 80px;scrollbar-width:thin;scrollbar-color:#2b2b34 transparent}.right{border-left:1px solid var(--line);background:rgba(6,6,9,.78);padding:20px;overflow:auto}.brand{display:flex;align-items:center;gap:12px;padding:4px 8px 28px}.heart{width:43px;height:43px;display:grid;place-items:center;filter:drop-shadow(0 0 16px rgba(255,45,125,.65));position:relative}.heart:after{content:"";position:absolute;width:34px;height:34px;border-radius:50%;background:rgba(255,45,125,.15);filter:blur(14px);animation:pulse 2.4s ease-in-out infinite}@keyframes pulse{50%{transform:scale(1.35);opacity:.55}}.brand h1{margin:0;font-size:14px;letter-spacing:.18em}.brand small{font-size:9px;color:var(--muted);letter-spacing:.17em;text-transform:uppercase}.nav-label{font-size:9px;color:#60606d;text-transform:uppercase;letter-spacing:.16em;padding:0 10px 8px}.nav{display:grid;gap:6px}.nav button{border:1px solid transparent;background:transparent;color:#8b8b98;border-radius:11px;padding:10px 11px;text-align:left;cursor:pointer;display:flex;gap:10px;align-items:center}.nav button.active{color:#fff;border-color:rgba(255,45,125,.16);background:linear-gradient(90deg,rgba(255,45,125,.14),rgba(255,45,125,.02))}.dot{width:7px;height:7px;border-radius:50%;background:#444450}.active .dot{background:var(--pink);box-shadow:0 0 12px var(--pink)}.local{margin-top:auto;border:1px solid var(--line);border-radius:14px;padding:12px;color:#777784;font-size:10px;line-height:1.45;background:rgba(255,255,255,.02)}.local strong{color:#dddde5;display:block;margin-bottom:4px}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}.eyebrow{color:var(--pink);font-size:9px;letter-spacing:.18em;text-transform:uppercase;margin-bottom:6px}.top h2{font-size:27px;margin:0;letter-spacing:-.035em}.status{display:flex;gap:8px;align-items:center}.pill{border:1px solid var(--line);background:rgba(255,255,255,.025);border-radius:999px;padding:8px 10px;font-size:10px;color:#a5a5b0;display:flex;gap:7px;align-items:center}.s-dot{width:7px;height:7px;border-radius:50%;background:#666674}.s-dot.live{background:var(--green);box-shadow:0 0 12px rgba(80,227,164,.7)}.section{margin-bottom:22px}.head{display:flex;justify-content:space-between;align-items:end;margin-bottom:10px}.head h3{margin:0;color:#c7c7d0;font-size:11px;text-transform:uppercase;letter-spacing:.12em}.head span{color:#666673;font-size:9px}.engines{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.engine{border:1px solid var(--line);background:linear-gradient(145deg,rgba(255,255,255,.035),rgba(255,255,255,.012));border-radius:16px;padding:14px;min-height:100px;cursor:pointer;position:relative;overflow:hidden}.engine.active{border-color:rgba(255,45,125,.43);box-shadow:inset 0 0 25px rgba(255,45,125,.04)}.engine.active:after{content:"";position:absolute;width:100px;height:100px;border-radius:50%;right:-45px;bottom:-55px;background:rgba(255,45,125,.15);filter:blur(25px)}.engine .tag{font-size:8px;letter-spacing:.12em;color:#63636f}.engine.active .tag{color:var(--pink)}.engine .name{font-size:12px;font-weight:650;margin-top:24px}.engine .desc{font-size:9px;color:#6f6f7b;margin-top:4px}.card{border:1px solid var(--line);background:rgba(13,13,18,.84);border-radius:17px;box-shadow:var(--shadow)}.prompt textarea{width:100%;min-height:140px;background:transparent;border:0;outline:0;color:#eeeeF3;padding:17px;resize:vertical;font-size:13px;line-height:1.55}.prompt-foot{border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;padding:9px 12px}.hint{font-size:9px;color:#696976}.chip{font-size:8px;border:1px solid rgba(255,45,125,.2);color:#d6a1ba;border-radius:999px;padding:5px 8px}.profiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.profile{border:1px solid var(--line);background:rgba(255,255,255,.02);border-radius:13px;padding:12px;cursor:pointer;min-height:88px}.profile.active{border-color:rgba(255,45,125,.4);background:rgba(255,45,125,.05)}.profile b{display:block;font-size:11px}.profile p{margin:6px 0 0;color:#747480;font-size:9px;line-height:1.35}.refs{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}.ref{border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02);padding:12px}.ref-top{display:flex;justify-content:space-between}.ref-title{font-size:10px;font-weight:650}.count{font-size:8px;color:var(--pink);border:1px solid rgba(255,45,125,.2);border-radius:999px;padding:3px 6px}.paths{font-size:9px;color:#6f6f7b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:7px 0 9px;min-height:13px}.row{display:flex;gap:6px;flex-wrap:wrap}.mini,.btn{border:1px solid var(--line);background:rgba(255,255,255,.025);color:#b0b0bb;border-radius:9px;padding:7px 9px;cursor:pointer;font-size:9px}.mini:hover,.btn:hover{border-color:rgba(255,255,255,.16);color:#fff}.grid6{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.field{display:grid;gap:5px}.field label{font-size:8px;color:#696976;text-transform:uppercase;letter-spacing:.11em}.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.025);color:#e8e8ee;padding:9px;outline:0;font-size:10px}.field select option{background:#111117}.field input:focus,.field select:focus,.field textarea:focus{border-color:rgba(255,45,125,.35)}.action{position:sticky;bottom:-65px;border:1px solid var(--line);background:rgba(7,7,10,.91);backdrop-filter:blur(20px);border-radius:16px;padding:11px;display:flex;justify-content:space-between;align-items:center;z-index:5;box-shadow:0 22px 70px rgba(0,0,0,.6)}.action-note{font-size:9px;color:#6f6f7b;line-height:1.4;max-width:43%}.buttons{display:flex;gap:7px}.btn{padding:9px 12px;font-size:10px}.btn.primary{background:linear-gradient(135deg,var(--pink),var(--red));border-color:rgba(255,45,125,.55);color:white;font-weight:650;box-shadow:0 0 25px rgba(255,45,125,.18)}.btn.glow{border-color:rgba(155,108,255,.35);background:rgba(155,108,255,.08);color:#c8b7ff}.right h3{font-size:9px;color:#696976;letter-spacing:.15em;text-transform:uppercase;margin:3px 0 9px}.metric{border:1px solid var(--line);background:rgba(255,255,255,.02);border-radius:12px;padding:11px;margin-bottom:8px}.metric-top{display:flex;justify-content:space-between;gap:8px;font-size:9px;color:#787885}.metric strong{color:#eeeef3;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar{height:3px;border-radius:99px;background:#24242d;margin-top:8px;overflow:hidden}.bar span{display:block;height:100%;background:linear-gradient(90deg,var(--pink),var(--red));width:0}.log{height:176px;overflow:auto;border:1px solid var(--line);border-radius:12px;background:#07070a;padding:9px;font:9px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#777784;white-space:pre-wrap}.queue{display:grid;gap:7px}.qitem{border:1px solid var(--line);border-radius:11px;padding:9px;background:rgba(255,255,255,.018)}.qtop{display:flex;justify-content:space-between;font-size:9px}.qname{color:#d7d7df}.qstatus{color:#8a8a96}.qstatus.done{color:var(--green)}.qstatus.error{color:#ff716b}.qmeta{font-size:8px;color:#666673;margin-top:5px}.settings{display:none}.settings.active{display:block}.studio.hidden{display:none}.settings-card{padding:15px;margin-bottom:10px}.setting-row{display:grid;grid-template-columns:1fr auto;gap:7px}.warning{border:1px solid rgba(255,198,92,.2);background:rgba(255,198,92,.045);color:#b9a36c;border-radius:12px;padding:10px;font-size:9px;line-height:1.45}.toggle{display:flex;align-items:flex-start;gap:8px}.toggle input{margin-top:2px}.tiny{font-size:8px;color:#666673}.ok{color:var(--green)!important}.warn{color:var(--amber)!important}.bad{color:#ff7771!important}@media(max-width:1260px){.app{grid-template-columns:190px 1fr}.right{display:none}.engines{grid-template-columns:repeat(2,1fr)}.profiles{grid-template-columns:repeat(2,1fr)}}
+:root{--bg:#050507;--panel:#0c0c11;--panel2:#111118;--line:rgba(255,255,255,.08);--text:#f7f7fa;--muted:#858592;--pink:#ff2d7d;--red:#ff3b30;--purple:#9b6cff;--green:#50e3a4;--amber:#ffc65c;--shadow:0 25px 80px rgba(0,0,0,.48)}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+body{overflow:hidden;background:radial-gradient(circle at 15% 6%,rgba(255,45,125,.11),transparent 26%),radial-gradient(circle at 80% 12%,rgba(255,59,48,.07),transparent 25%),radial-gradient(circle at 70% 90%,rgba(155,108,255,.06),transparent 28%),#050507}
+button,input,textarea,select{font:inherit}
+.app{height:100vh;display:grid;grid-template-columns:220px minmax(620px,1fr) 352px}
+.side{border-right:1px solid var(--line);background:rgba(6,6,9,.8);backdrop-filter:blur(22px);padding:22px 16px;display:flex;flex-direction:column}
+.main{overflow:auto;padding:26px 30px 90px;scrollbar-width:thin;scrollbar-color:#2b2b34 transparent}
+.right{border-left:1px solid var(--line);background:rgba(6,6,9,.8);padding:18px 16px;overflow:auto;display:flex;flex-direction:column;gap:14px}
+.brand{display:flex;align-items:center;gap:12px;padding:4px 8px 26px}
+.heart{width:43px;height:43px;display:grid;place-items:center;filter:drop-shadow(0 0 16px rgba(255,45,125,.65));position:relative}
+.heart:after{content:"";position:absolute;width:34px;height:34px;border-radius:50%;background:rgba(255,45,125,.15);filter:blur(14px);animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{50%{transform:scale(1.35);opacity:.55}}
+.brand h1{margin:0;font-size:14px;letter-spacing:.18em}
+.brand small{font-size:9px;color:var(--muted);letter-spacing:.17em;text-transform:uppercase}
+.nav-label{font-size:9px;color:#60606d;text-transform:uppercase;letter-spacing:.16em;padding:0 10px 8px}
+.nav{display:grid;gap:6px}
+.nav button{border:1px solid transparent;background:transparent;color:#8b8b98;border-radius:11px;padding:10px 11px;text-align:left;cursor:pointer;display:flex;gap:10px;align-items:center}
+.nav button:hover{color:#d8d8e2}
+.nav button.active{color:#fff;border-color:rgba(255,45,125,.16);background:linear-gradient(90deg,rgba(255,45,125,.14),rgba(255,45,125,.02))}
+.dot{width:7px;height:7px;border-radius:50%;background:#444450}
+.active .dot{background:var(--pink);box-shadow:0 0 12px var(--pink)}
+.local{margin-top:auto;border:1px solid var(--line);border-radius:14px;padding:12px;color:#777784;font-size:10px;line-height:1.45;background:rgba(255,255,255,.02)}
+.local strong{color:#dddde5;display:block;margin-bottom:4px}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+.eyebrow{color:var(--pink);font-size:9px;letter-spacing:.18em;text-transform:uppercase;margin-bottom:6px}
+.top h2{font-size:27px;margin:0;letter-spacing:-.035em}
+.status{display:flex;gap:8px;align-items:center}
+.pill{border:1px solid var(--line);background:rgba(255,255,255,.025);border-radius:999px;padding:8px 10px;font-size:10px;color:#a5a5b0;display:flex;gap:7px;align-items:center}
+.s-dot{width:7px;height:7px;border-radius:50%;background:#666674}
+.s-dot.live{background:var(--green);box-shadow:0 0 12px rgba(80,227,164,.7)}
+.s-dot.warn{background:var(--amber);box-shadow:0 0 12px rgba(255,198,92,.7)}
+.s-dot.bad{background:var(--red);box-shadow:0 0 12px rgba(255,59,48,.7)}
+.view{display:none}
+.view.active{display:block}
+.section{margin-bottom:22px}
+.head{display:flex;justify-content:space-between;align-items:end;margin-bottom:10px}
+.head h3{margin:0;color:#c7c7d0;font-size:11px;text-transform:uppercase;letter-spacing:.12em}
+.head span{color:#666673;font-size:9px}
+.engines{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+.engine{border:1px solid var(--line);background:linear-gradient(145deg,rgba(255,255,255,.035),rgba(255,255,255,.012));border-radius:16px;padding:14px;min-height:100px;cursor:pointer;position:relative;overflow:hidden}
+.engine.active{border-color:rgba(255,45,125,.43);box-shadow:inset 0 0 25px rgba(255,45,125,.04)}
+.engine.active:after{content:"";position:absolute;width:100px;height:100px;border-radius:50%;right:-45px;bottom:-55px;background:rgba(255,45,125,.15);filter:blur(25px)}
+.engine .tag{font-size:8px;letter-spacing:.12em;color:#63636f}
+.engine.active .tag{color:var(--pink)}
+.engine .name{font-size:12px;font-weight:650;margin-top:24px}
+.engine .desc{font-size:9px;color:#6f6f7b;margin-top:4px}
+.card{border:1px solid var(--line);background:rgba(13,13,18,.84);border-radius:17px;box-shadow:var(--shadow)}
+.prompt textarea{width:100%;min-height:130px;background:transparent;border:0;outline:0;color:#eeeef3;padding:17px;resize:vertical;font-size:13px;line-height:1.55}
+.prompt-foot{border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;padding:9px 12px}
+.hint{font-size:9px;color:#696976}
+.chip{font-size:8px;border:1px solid rgba(255,45,125,.2);color:#d6a1ba;border-radius:999px;padding:5px 8px}
+.profiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.profile{border:1px solid var(--line);background:rgba(255,255,255,.02);border-radius:13px;padding:12px;cursor:pointer;min-height:86px}
+.profile.active{border-color:rgba(255,45,125,.4);background:rgba(255,45,125,.05)}
+.profile b{display:block;font-size:11px}
+.profile p{margin:6px 0 0;color:#747480;font-size:9px;line-height:1.35}
+.refs{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}
+.ref{border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02);padding:12px}
+.ref-top{display:flex;justify-content:space-between}
+.ref-title{font-size:10px;font-weight:650}
+.count{font-size:8px;color:var(--pink);border:1px solid rgba(255,45,125,.2);border-radius:999px;padding:3px 6px}
+.paths{font-size:9px;color:#6f6f7b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:7px 0 9px;min-height:13px}
+.row{display:flex;gap:6px;flex-wrap:wrap}
+.mini,.btn{border:1px solid var(--line);background:rgba(255,255,255,.025);color:#b0b0bb;border-radius:9px;padding:7px 9px;cursor:pointer;font-size:9px}
+.mini:hover,.btn:hover{border-color:rgba(255,255,255,.16);color:#fff}
+.mini.danger:hover{border-color:rgba(255,59,48,.5);color:#ff9b96}
+.grid6{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.field{display:grid;gap:5px}
+.field label{font-size:8px;color:#696976;text-transform:uppercase;letter-spacing:.11em}
+.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.025);color:#e8e8ee;padding:9px;outline:0;font-size:10px}
+.field select option{background:#111117}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:rgba(255,45,125,.35)}
+.action{position:sticky;bottom:-75px;border:1px solid var(--line);background:rgba(7,7,10,.92);backdrop-filter:blur(20px);border-radius:16px;padding:11px;display:flex;justify-content:space-between;align-items:center;z-index:5;box-shadow:0 22px 70px rgba(0,0,0,.6)}
+.action-note{font-size:9px;color:#6f6f7b;line-height:1.4;max-width:40%}
+.buttons{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+.btn{padding:9px 12px;font-size:10px}
+.btn.primary{background:linear-gradient(135deg,var(--pink),var(--red));border-color:rgba(255,45,125,.55);color:white;font-weight:650;box-shadow:0 0 25px rgba(255,45,125,.18)}
+.btn.primary:hover{box-shadow:0 0 35px rgba(255,45,125,.35)}
+.btn.glow{border-color:rgba(155,108,255,.35);background:rgba(155,108,255,.08);color:#c8b7ff}
+.btn.danger{border-color:rgba(255,59,48,.35);background:rgba(255,59,48,.07);color:#ff9b96}
+.right h3{font-size:9px;color:#696976;letter-spacing:.15em;text-transform:uppercase;margin:3px 0 9px}
+.metric{border:1px solid var(--line);background:rgba(255,255,255,.02);border-radius:12px;padding:11px;margin-bottom:8px}
+.metric-top{display:flex;justify-content:space-between;gap:8px;font-size:9px;color:#787885}
+.metric strong{color:#eeeef3;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar{height:4px;border-radius:99px;background:#24242d;margin-top:8px;overflow:hidden}
+.bar span{display:block;height:100%;background:linear-gradient(90deg,var(--pink),var(--red));width:0}
+.bar.hot span{background:linear-gradient(90deg,var(--amber),var(--red))}
+.log{height:150px;overflow:auto;border:1px solid var(--line);border-radius:12px;background:#07070a;padding:9px;font:9px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#777784;white-space:pre-wrap}
+.queue{display:grid;gap:7px}
+.qitem{border:1px solid var(--line);border-radius:11px;padding:9px;background:rgba(255,255,255,.018)}
+.qtop{display:flex;justify-content:space-between;font-size:9px;gap:6px}
+.qname{color:#d7d7df;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qstatus{color:#8a8a96;flex-shrink:0}
+.qstatus.done{color:var(--green)}
+.qstatus.error{color:#ff716b}
+.qstatus.running{color:var(--pink)}
+.qmeta{font-size:8px;color:#666673;margin-top:5px}
+.qerr{font-size:8px;color:#ff9b96;margin-top:5px;line-height:1.4}
+.settings-card{padding:15px;margin-bottom:10px}
+.setting-row{display:grid;grid-template-columns:1fr auto;gap:7px}
+.warning{border:1px solid rgba(255,198,92,.2);background:rgba(255,198,92,.045);color:#b9a36c;border-radius:12px;padding:10px;font-size:9px;line-height:1.45}
+.info{border:1px solid rgba(80,227,164,.2);background:rgba(80,227,164,.04);color:#7fc9a8;border-radius:12px;padding:10px;font-size:9px;line-height:1.45}
+.toggle{display:flex;align-items:flex-start;gap:8px}
+.toggle input{margin-top:2px}
+.tiny{font-size:8px;color:#666673}
+.ok{color:var(--green)!important}
+.warn{color:var(--amber)!important}
+.bad{color:#ff7771!important}
+/* library views */
+.libgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.libcard{border:1px solid var(--line);border-radius:15px;background:rgba(13,13,18,.7);padding:14px}
+.libcard .lc-top{display:flex;justify-content:space-between;align-items:center}
+.libcard h4{margin:0;font-size:12px}
+.libcard .lc-id{font-size:8px;color:#63636f;letter-spacing:.1em;text-transform:uppercase}
+.libcard .lc-meta{font-size:9px;color:#747480;margin-top:7px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.libcard .lc-actions{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
+.formrow{display:grid;grid-template-columns:120px 1fr auto;gap:8px;align-items:center;margin-bottom:7px}
+.formrow label{font-size:9px;color:#8a8a96}
+.formrow input{width:100%;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);color:#e8e8ee;padding:7px 9px;outline:0;font-size:10px}
+/* tables */
+table{width:100%;border-collapse:collapse;font-size:9px}
+th{color:#696976;text-align:left;text-transform:uppercase;letter-spacing:.1em;font-size:8px;padding:7px 9px;border-bottom:1px solid var(--line)}
+td{padding:7px 9px;border-bottom:1px solid rgba(255,255,255,.04);color:#b9b9c4;vertical-align:top}
+tr:hover td{background:rgba(255,255,255,.015)}
+td.mono{font-family:ui-monospace,Menlo,monospace;font-size:8px}
+.ghost{color:#5b5b66;font-size:9px;padding:14px;text-align:center;border:1px dashed var(--line);border-radius:12px}
+.gpu-proc{display:grid;grid-template-columns:auto 1fr auto auto;gap:8px;align-items:center;font-size:9px;color:#a5a5b0;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+details.gpudet summary{cursor:pointer;font-size:9px;color:#8a8a96}
+details.gpudet{margin-top:6px}
+.modalback{position:fixed;inset:0;background:rgba(3,3,5,.72);backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center;z-index:50}
+.modalback.open{display:flex}
+.modal{width:min(560px,92vw);max-height:82vh;overflow:auto;border:1px solid var(--line);background:#0b0b10;border-radius:18px;padding:20px;box-shadow:var(--shadow)}
+.modal h3{margin:0 0 12px;font-size:14px}
+.sweepgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px}
+.sweepgrid .field{grid-column:span 1}
+@media(max-width:1320px){.app{grid-template-columns:190px 1fr}.right{display:none}.engines{grid-template-columns:repeat(2,1fr)}.profiles{grid-template-columns:repeat(2,1fr)}.libgrid{grid-template-columns:1fr}.grid6{grid-template-columns:repeat(3,1fr)}}
 </style>
 </head>
 <body>
@@ -13,12 +151,27 @@
 <aside class="side">
   <div class="brand"><div class="heart"><svg width="36" height="36" viewBox="0 0 32 32"><defs><linearGradient id="g" x1="4" y1="3" x2="27" y2="28"><stop stop-color="#ff2d7d"/><stop offset="1" stop-color="#ff3b30"/></linearGradient></defs><path fill="url(#g)" d="M16 27.6S4.1 20.2 4.1 11.7c0-4.5 3-7.4 6.9-7.4 2.4 0 4.2 1.2 5 2.9.8-1.7 2.6-2.9 5-2.9 3.9 0 6.9 2.9 6.9 7.4 0 8.5-11.9 15.9-11.9 15.9Z"/></svg></div><div><h1>AVATAR V2</h1><small>H3 Studio</small></div></div>
   <div class="nav-label">Workspace</div>
-  <div class="nav"><button id="nStudio" class="active" onclick="view('studio')"><span class="dot"></span>Studio</button><button onclick="scrollToId('refs')"><span class="dot"></span>References</button><button onclick="scrollToId('controls')"><span class="dot"></span>Render</button><button id="nSettings" onclick="view('settings')"><span class="dot"></span>Settings</button></div>
-  <div class="local"><strong>LOCAL-FIRST</strong>No repository or prompt needs to leave your machine for local ComfyUI rendering. Remote providers are separate explicit integrations.</div>
+  <div class="nav">
+    <button class="active" data-view="studio"><span class="dot"></span>Studio</button>
+    <button data-view="vault"><span class="dot"></span>Avatar Vault</button>
+    <button data-view="motions"><span class="dot"></span>Motion Library</button>
+    <button data-view="scenes"><span class="dot"></span>Scene Library</button>
+    <button data-view="history"><span class="dot"></span>History / Runs</button>
+    <button data-view="settings"><span class="dot"></span>Settings</button>
+  </div>
+  <div class="local"><strong>LOCAL-FIRST</strong>No prompt or reference needs to leave your machine for local ComfyUI rendering. Remote providers are separate explicit integrations.</div>
 </aside>
+
 <main class="main">
-<div id="studio" class="studio">
-  <div class="top"><div><div class="eyebrow">Reference-driven synthetic human production</div><h2>Reference Composer</h2></div><div class="status"><div class="pill"><span id="comfyDot" class="s-dot"></span><span id="comfyText">ComfyUI unchecked</span></div><button class="mini" onclick="doctor()">Check</button></div></div>
+
+<!-- ===================== STUDIO ===================== -->
+<div id="view-studio" class="view active">
+  <div class="top"><div><div class="eyebrow">Reference-driven synthetic human production</div><h2>Studio</h2></div>
+    <div class="status">
+      <div class="pill"><span id="comfyDot" class="s-dot"></span><span id="comfyText">ComfyUI unchecked</span></div>
+      <button class="mini" onclick="doctor()">Check</button>
+      <button class="mini" id="btnComfyStart" onclick="comfyStartStop()">Start ComfyUI</button>
+    </div></div>
 
   <section class="section"><div class="head"><h3>Renderer</h3><span>H3-first with local fallback</span></div><div class="engines">
     <div class="engine active" data-engine="h3_ref2va" onclick="setEngine('h3_ref2va')"><div class="tag">MULTI-REFERENCE</div><div class="name">MiniMax H3 · Ref2VA</div><div class="desc">Identity + motion + scene + audio</div></div>
@@ -29,7 +182,55 @@
 
   <section class="section"><div class="head"><h3>Runtime Profile</h3><span>Toggle setups and find what actually works</span></div><div class="profiles" id="profiles"></div></section>
 
-  <section class="section"><div class="head"><h3>Direction</h3><span>Motion-first prompting</span></div><div class="card prompt"><textarea id="prompt">Natural photorealistic handheld footage. Preserve the exact same synthetic adult identity. The subject moves with realistic weight transfer and subtle breathing. Hair strands and loose fabric respond asynchronously to the breeze. Camera motion is restrained and physically plausible.</textarea><div class="prompt-foot"><span class="hint">Timed beats and H3 reference-role bindings are compiled automatically.</span><span class="chip">PHOTOREAL</span></div></div></section>
+  <section class="section"><div class="head"><h3>Direction</h3><span>Motion-first prompting</span></div><div class="card prompt">
+    <textarea id="prompt">Natural photorealistic handheld footage. Preserve the exact same synthetic adult identity. The subject moves with realistic weight transfer and subtle breathing. Hair strands and loose fabric respond asynchronously to the breeze. Camera motion is restrained and physically plausible.</textarea>
+    <div class="prompt-foot"><span class="hint">Timed beats and H3 reference-role bindings are compiled automatically.</span><span class="chip">PHOTOREAL</span></div>
+  </div></section>
+
+  <section class="section"><div class="head"><h3>Shot Controls</h3><span>H3 snaps to valid frame/canvas rules</span></div><div class="card" style="padding:14px">
+    <div class="grid6">
+      <div class="field"><label>H3 preset</label><select id="preset"></select></div>
+      <div class="field"><label>Duration s</label><input id="duration" type="number" min="1" max="15" step=".5" value="6"></div>
+      <div class="field"><label>Seed</label><input id="seed" type="number" value="41001"></div>
+      <div class="field"><label>Content</label><select id="content"><option value="general">General</option><option value="adult_nudity">Adult nudity</option><option value="adult_sexual">Adult sexual</option></select></div>
+      <div class="field"><label>Camera framing</label><select id="framing"><option>medium portrait</option><option>three-quarter vertical portrait</option><option>full body</option><option>close-up</option><option>wide</option></select></div>
+      <div class="field"><label>Lens mm</label><input id="lens" type="number" min="10" max="200" value="26"></div>
+    </div>
+    <div class="grid3" style="margin-top:9px">
+      <div class="field"><label>Camera movement</label><input id="camera" value="handheld backward tracking, restrained stabilization"></div>
+      <div class="field"><label>Environment</label><input id="environment" placeholder="downtown sidewalk, late afternoon"></div>
+      <div class="field"><label>Wardrobe continuity</label><input id="wardrobe" placeholder="light jacket, fitted top, jeans"></div>
+    </div>
+    <div class="grid3" style="margin-top:9px">
+      <div class="field"><label>Wind direction</label><select id="winddir"><option>none</option><option>subject-left to subject-right</option><option>subject-right to subject-left</option><option>front to back</option><option>back to front</option></select></div>
+      <div class="field"><label>Wind m/s</label><input id="wind" type="number" min="0" step=".5" value="3"></div>
+      <div class="field"><label>Gust %</label><input id="gust" type="number" min="0" max="100" value="25"></div>
+    </div>
+    <div id="customPanel" style="display:none;margin-top:9px;border-top:1px solid var(--line);padding-top:9px">
+      <div class="head"><h3>Custom workflow values</h3><span>AnimateDiff presets ship with Avatar V2</span></div>
+      <div class="grid3">
+        <div class="field"><label>Workflow</label><select id="cwWorkflow">
+          <option value="ad_sd15">AnimateDiff · SD 1.5</option>
+          <option value="ad_sdxl">AnimateDiff · SDXL</option>
+          <option value="custom_file">Custom file (Settings)</option>
+        </select></div>
+        <div class="field"><label>Checkpoint</label><select id="cwCheckpoint"></select></div>
+        <div class="field"><label>Motion module</label><select id="cwMotion"></select></div>
+      </div>
+      <div class="grid6" style="margin-top:9px">
+        <div class="field"><label>Width</label><input id="cwWidth" type="number" min="256" step="32" value="512"></div>
+        <div class="field"><label>Height</label><input id="cwHeight" type="number" min="256" step="32" value="512"></div>
+        <div class="field"><label>FPS</label><input id="cwFps" type="number" min="1" max="60" value="8"></div>
+        <div class="field"><label>Steps</label><input id="cwSteps" type="number" min="1" max="60" value="8"></div>
+        <div class="field"><label>CFG</label><input id="cwCfg" type="number" min="1" max="20" step=".5" value="7"></div>
+        <div class="field"><label>Output prefix</label><input id="cwPrefix" value="avatar_v2"></div>
+      </div>
+      <div class="grid2" style="margin-top:9px">
+        <div class="field"><label>Sampler</label><select id="cwSampler"></select></div>
+        <div class="field"><label>Beta schedule</label><select id="cwBeta"></select></div>
+      </div>
+    </div>
+  </div></section>
 
   <section class="section" id="refs"><div class="head"><h3>Reference Stack</h3><span>Separate identity, motion, scene and audio</span></div><div class="refs">
     <div class="ref"><div class="ref-top"><div class="ref-title">Identity</div><span class="count" id="identityCount">0</span></div><div class="paths" id="identityPaths">No images selected</div><div class="row"><button class="mini" onclick="pickMulti('identity_refs','image')">Add images</button><button class="mini" onclick="clearRef('identity_refs')">Clear</button></div></div>
@@ -44,45 +245,435 @@
     <div class="ref"><div class="ref-top"><div class="ref-title">Extra visuals</div><span class="count" id="extraImageCount">0</span></div><div class="paths" id="extraImagePaths">Props / additional visual anchors</div><div class="row"><button class="mini" onclick="pickMulti('extra_images','image')">Add</button><button class="mini" onclick="clearRef('extra_images')">Clear</button></div></div>
   </div></section>
 
-  <section class="section" id="controls"><div class="head"><h3>Render Controls</h3><span>H3 snaps to valid frame/canvas rules</span></div><div class="card" style="padding:14px"><div class="grid6">
-    <div class="field"><label>Preset</label><select id="preset"></select></div><div class="field"><label>Duration</label><input id="duration" type="number" min="1" max="15" step=".5" value="6"></div><div class="field"><label>Seed</label><input id="seed" type="number" value="41001"></div><div class="field"><label>Content</label><select id="content"><option value="general">General</option><option value="adult_nudity">Adult nudity</option><option value="adult_sexual">Adult sexual</option></select></div><div class="field"><label>Wind m/s</label><input id="wind" type="number" min="0" step=".5" value="3"></div><div class="field"><label>Gust %</label><input id="gust" type="number" min="0" max="100" value="25"></div>
-  </div><div class="grid3" style="margin-top:9px"><div class="field"><label>Environment</label><input id="environment" placeholder="downtown sidewalk, late afternoon"></div><div class="field"><label>Wardrobe continuity</label><input id="wardrobe" placeholder="light jacket, fitted top, jeans"></div><div class="field"><label>Camera</label><input id="camera" value="handheld backward tracking, restrained stabilization"></div></div></div></section>
+  <section class="section"><div class="head"><h3>Profile Sweep</h3><span>Queue Auto · INT8 · Low Mem · Low Mem Quality with distinct seeds</span></div>
+    <div class="card" style="padding:14px">
+      <div class="row" style="margin-bottom:10px"><button class="btn glow" onclick="sweep()">Queue Profile Sweep</button><button class="mini" onclick="refreshSweep()">Refresh results</button><span class="tiny" style="align-self:center">Runs the same shot across runtime profiles to find what fits this GPU.</span></div>
+      <div id="sweepTable"></div>
+    </div>
+  </section>
 
-  <div class="action"><div class="action-note">Profile Sweep queues Auto, INT8, Low Memory and Low Memory · Quality using different seeds so we can compare fit, speed and output quality.</div><div class="buttons"><button class="btn" onclick="compose()">Plan</button><button class="btn" onclick="dryRun()">Dry run</button><button class="btn glow" onclick="sweep()">Profile Sweep</button><button class="btn primary" onclick="queueRender()">Queue Render</button></div></div>
+  <div class="action"><div class="action-note">Best-of-N renders N candidates changing only the seed. Profile Sweep compares runtime profiles empirically and retains per-job VRAM peaks.</div>
+    <div class="buttons">
+      <select id="bestOfN" class="mini" style="padding:8px"><option value="2">2</option><option value="4" selected>4</option><option value="6">6</option><option value="8">8</option></select>
+      <button class="btn" onclick="compose()">Compose</button>
+      <button class="btn" onclick="dryRun()">Dry Run</button>
+      <button class="btn" onclick="queueBestOf()">Best-of-N</button>
+      <button class="btn glow" onclick="sweep()">Profile Sweep</button>
+      <button class="btn primary" onclick="queueRender()">Queue Render</button>
+      <button class="btn danger" onclick="cancelActive()">Cancel Active</button>
+      <button class="btn" onclick="openOutput()">Open Output</button>
+    </div>
+  </div>
 </div>
 
-<div id="settings" class="settings">
+<!-- ===================== VAULT ===================== -->
+<div id="view-vault" class="view">
+  <div class="top"><div><div class="eyebrow">Persistent identity management</div><h2>Avatar Vault</h2></div></div>
+  <section class="section"><div class="head"><h3>Saved avatars</h3><span>Local-only · never uploaded unless you choose a remote provider</span></div><div id="vaultList" class="libgrid"></div></section>
+  <section class="section"><div class="head"><h3>Define avatar</h3><span>Reference roles map to H3 subject/retention bindings</span></div>
+  <div class="card settings-card">
+    <div class="grid2">
+      <div class="field"><label>Avatar ID</label><input id="vId" placeholder="ava_demo_01"></div>
+      <div class="field"><label>Display name</label><input id="vName" placeholder="Ava Demo"></div>
+    </div>
+    <div class="grid3" style="margin-top:9px">
+      <div class="field"><label>Subject kind</label><select id="vKind"><option value="synthetic">synthetic</option><option value="consenting_adult">consenting_adult</option><option value="unknown">unknown</option></select></div>
+      <div class="field"><label>Verified 18+</label><select id="vAge"><option value="true">true</option><option value="false">false</option></select></div>
+      <div class="field"><label>Consent confirmed</label><select id="vConsent"><option value="true">true</option><option value="false">false</option></select></div>
+    </div>
+    <div class="head" style="margin-top:14px"><h3>Identity references</h3></div>
+    <div class="formrow"><label>Front</label><input id="vi_front"><button class="mini" onclick="fileInto('vi_front','image')">Browse</button></div>
+    <div class="formrow"><label>3/4 left</label><input id="vi_34l"><button class="mini" onclick="fileInto('vi_34l','image')">Browse</button></div>
+    <div class="formrow"><label>3/4 right</label><input id="vi_34r"><button class="mini" onclick="fileInto('vi_34r','image')">Browse</button></div>
+    <div class="formrow"><label>Profile left</label><input id="vi_pl"><button class="mini" onclick="fileInto('vi_pl','image')">Browse</button></div>
+    <div class="formrow"><label>Profile right</label><input id="vi_pr"><button class="mini" onclick="fileInto('vi_pr','image')">Browse</button></div>
+    <div class="formrow"><label>Expressions</label><input id="vi_expr"><button class="mini" onclick="fileInto('vi_expr','image')">Browse</button></div>
+    <div class="formrow"><label>Eyes closed</label><input id="vi_eyes"><button class="mini" onclick="fileInto('vi_eyes','image')">Browse</button></div>
+    <div class="head" style="margin-top:14px"><h3>Body references</h3></div>
+    <div class="formrow"><label>Full front</label><input id="vb_front"><button class="mini" onclick="fileInto('vb_front','image')">Browse</button></div>
+    <div class="formrow"><label>Rear</label><input id="vb_rear"><button class="mini" onclick="fileInto('vb_rear','image')">Browse</button></div>
+    <div class="formrow"><label>Left</label><input id="vb_left"><button class="mini" onclick="fileInto('vb_left','image')">Browse</button></div>
+    <div class="formrow"><label>Right</label><input id="vb_right"><button class="mini" onclick="fileInto('vb_right','image')">Browse</button></div>
+    <div class="formrow"><label>Seated</label><input id="vb_seated"><button class="mini" onclick="fileInto('vb_seated','image')">Browse</button></div>
+    <div class="formrow"><label>Walking</label><input id="vb_walk"><button class="mini" onclick="fileInto('vb_walk','image')">Browse</button></div>
+    <div class="head" style="margin-top:14px"><h3>Hair references</h3></div>
+    <div class="formrow"><label>Loose</label><input id="vh_loose"><button class="mini" onclick="fileInto('vh_loose','image')">Browse</button></div>
+    <div class="formrow"><label>Tied</label><input id="vh_tied"><button class="mini" onclick="fileInto('vh_tied','image')">Browse</button></div>
+    <div class="formrow"><label>Front</label><input id="vh_front"><button class="mini" onclick="fileInto('vh_front','image')">Browse</button></div>
+    <div class="formrow"><label>Back</label><input id="vh_back"><button class="mini" onclick="fileInto('vh_back','image')">Browse</button></div>
+    <div class="formrow"><label>Side</label><input id="vh_side"><button class="mini" onclick="fileInto('vh_side','image')">Browse</button></div>
+    <div class="formrow"><label>Wind example</label><input id="vh_wind"><button class="mini" onclick="fileInto('vh_wind','image')">Browse</button></div>
+    <div class="head" style="margin-top:14px"><h3>Wardrobe references</h3></div>
+    <div class="formrow"><label>Wardrobe #1</label><input id="vw_1"><button class="mini" onclick="fileInto('vw_1','image')">Browse</button></div>
+    <div class="formrow"><label>Wardrobe #2</label><input id="vw_2"><button class="mini" onclick="fileInto('vw_2','image')">Browse</button></div>
+    <div class="formrow"><label>Wardrobe #3</label><input id="vw_3"><button class="mini" onclick="fileInto('vw_3','image')">Browse</button></div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="field"><label>Persistent features (comma separated)</label><input id="vFeatures" value="stable facial proportions, stable hairline, preserve distinctive skin details"></div>
+      <div class="field"><label>Notes</label><input id="vNotes"></div>
+    </div>
+    <div class="row" style="margin-top:14px"><button class="btn primary" onclick="vaultSave()">Save avatar</button><button class="mini" onclick="vaultClearForm()">Clear form</button></div>
+  </div></section>
+</div>
+
+<!-- ===================== MOTIONS ===================== -->
+<div id="view-motions" class="view">
+  <div class="top"><div><div class="eyebrow">Movement-only catalog</div><h2>Motion Library</h2></div></div>
+  <div class="info" style="margin-bottom:12px">Motion assets describe movement only. Identity from motion references never silently overrides avatar identity — the H3 compiler assigns them <b>attribute_transfer</b>.</div>
+  <section class="section"><div class="head"><h3>Catalog</h3><span id="motionCountLabel"></span></div><div id="motionList" class="libgrid"></div></section>
+  <section class="section"><div class="head"><h3>Add motion asset</h3></div>
+  <div class="card settings-card">
+    <div class="grid3">
+      <div class="field"><label>ID</label><input id="mId" placeholder="walk_confident_01"></div>
+      <div class="field"><label>Label</label><input id="mLabel" placeholder="Confident walk"></div>
+      <div class="field"><label>Category</label><select id="mCategory"></select></div>
+    </div>
+    <div class="grid2" style="margin-top:9px">
+      <div class="field"><label>Video file</label><div class="setting-row"><input id="mPath"><button class="mini" onclick="fileInto('mPath','video')">Browse</button></div></div>
+      <div class="field"><label>Description</label><input id="mDesc" placeholder="Strides, arm swing, gaze behavior"></div>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="btn primary" onclick="motionSave()">Save motion</button></div>
+  </div></section>
+</div>
+
+<!-- ===================== SCENES ===================== -->
+<div id="view-scenes" class="view">
+  <div class="top"><div><div class="eyebrow">Environment and lighting</div><h2>Scene Library</h2></div></div>
+  <section class="section"><div class="head"><h3>Catalog</h3><span id="sceneCountLabel"></span></div><div id="sceneList" class="libgrid"></div></section>
+  <section class="section"><div class="head"><h3>Add scene</h3></div>
+  <div class="card settings-card">
+    <div class="grid3">
+      <div class="field"><label>ID</label><input id="sId" placeholder="waterfront_sunset"></div>
+      <div class="field"><label>Label</label><input id="sLabel" placeholder="Waterfront sunset"></div>
+      <div class="field"><label>Location</label><select id="sLocation"><option value="outdoor">outdoor</option><option value="indoor">indoor</option><option value="studio">studio</option></select></div>
+    </div>
+    <div class="grid2" style="margin-top:9px">
+      <div class="field"><label>Scene image</label><div class="setting-row"><input id="sPath"><button class="mini" onclick="fileInto('sPath','image')">Browse</button></div></div>
+      <div class="field"><label>Environment</label><input id="sEnv" placeholder="pedestrian waterfront"></div>
+    </div>
+    <div class="grid3" style="margin-top:9px">
+      <div class="field"><label>Lighting</label><input id="sLight" placeholder="golden hour, soft shadows"></div>
+      <div class="field"><label>Time of day</label><input id="sTime" placeholder="late afternoon"></div>
+      <div class="field"><label>Camera style</label><input id="sCam" placeholder="handheld tracking"></div>
+    </div>
+    <div class="grid3" style="margin-top:9px">
+      <div class="field"><label>Aspect</label><select id="sAspect"><option value="vertical">vertical</option><option value="landscape">landscape</option><option value="square">square</option></select></div>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="btn primary" onclick="sceneSave()">Save scene</button></div>
+  </div></section>
+</div>
+
+<!-- ===================== HISTORY ===================== -->
+<div id="view-history" class="view">
+  <div class="top"><div><div class="eyebrow">Reproducible runs</div><h2>History / Runs</h2></div>
+    <div class="status"><button class="mini" onclick="refreshHistory()">Refresh</button><button class="mini" onclick="openOutput()">Open output</button></div></div>
+  <section class="section"><div class="card" style="overflow:auto;max-height:calc(100vh - 210px)">
+    <table id="historyTable"><thead><tr>
+      <th>When</th><th>Label</th><th>Engine</th><th>Profile</th><th>Status</th><th>Seed</th><th>Canvas</th><th>Frames</th><th>Steps</th><th>Peak VRAM</th><th>Elapsed</th><th>Output</th><th>Error</th>
+    </tr></thead><tbody id="historyBody"><tr><td colspan="13" class="ghost">No runs yet.</td></tr></tbody></table>
+  </div></section>
+</div>
+
+<!-- ===================== SETTINGS ===================== -->
+<div id="view-settings" class="view">
   <div class="top"><div><div class="eyebrow">Local renderer configuration</div><h2>Settings</h2></div><button class="btn primary" onclick="saveSettings()">Save</button></div>
   <div class="warning" id="licenseNotice">Local H3 license notice loading…</div>
-  <div class="card settings-card" style="margin-top:12px"><div class="head"><h3>ComfyUI</h3></div><div class="grid2"><div class="field"><label>Base URL</label><input id="sUrl" value="http://127.0.0.1:8188"></div><div class="field"><label>Timeout seconds</label><input id="sTimeout" type="number" value="1800"></div></div><div class="field" style="margin-top:9px"><label>ComfyUI input folder (optional; HTTP upload works without it)</label><div class="setting-row"><input id="sInput"><button class="mini" onclick="folderInto('sInput')">Browse</button></div></div><div class="field" style="margin-top:9px"><label>ComfyUI output folder</label><div class="setting-row"><input id="sOutput"><button class="mini" onclick="folderInto('sOutput')">Browse</button></div></div></div>
-  <div class="card settings-card"><div class="head"><h3>API-format Workflows</h3><span>Export from ComfyUI</span></div><div class="field"><label>H3 Ref2VA</label><div class="setting-row"><input id="sH3Ref"><button class="mini" onclick="fileInto('sH3Ref','workflow')">Browse</button></div></div><div class="field" style="margin-top:8px"><label>H3 FL2VA</label><div class="setting-row"><input id="sH3Fl"><button class="mini" onclick="fileInto('sH3Fl','workflow')">Browse</button></div></div><div class="field" style="margin-top:8px"><label>Wan 2.2</label><div class="setting-row"><input id="sWan"><button class="mini" onclick="fileInto('sWan','workflow')">Browse</button></div></div></div>
-  <div class="card settings-card"><div class="head"><h3>H3 Local Authorization</h3></div><div class="toggle"><input id="sAuth" type="checkbox"><div><div style="font-size:10px">I confirm my local use of MiniMax H3 open weights is permitted by the current license or a separate written MiniMax license.</div><div class="tiny" style="margin-top:4px">This is intentionally off by default. The app never downloads H3 weights automatically.</div></div></div></div>
+
+  <div class="card settings-card" style="margin-top:12px"><div class="head"><h3>ComfyUI service</h3><span id="svcState"></span></div>
+    <div class="grid2">
+      <div class="field"><label>Base URL</label><input id="sUrl" value="http://127.0.0.1:8188"></div>
+      <div class="field"><label>Timeout seconds</label><input id="sTimeout" type="number" value="1800"></div>
+    </div>
+    <div class="grid2" style="margin-top:9px">
+      <div class="field"><label>ComfyUI directory (contains main.py)</label><div class="setting-row"><input id="sDir"><button class="mini" onclick="folderInto('sDir')">Browse</button></div></div>
+      <div class="field"><label>Python for ComfyUI</label><div class="setting-row"><input id="sPython"><button class="mini" onclick="fileInto('sPython','all')">Browse</button></div></div>
+    </div>
+    <div class="grid2" style="margin-top:9px">
+      <div class="field"><label>ComfyUI input folder (optional; HTTP upload works without it)</label><div class="setting-row"><input id="sInput"><button class="mini" onclick="folderInto('sInput')">Browse</button></div></div>
+      <div class="field"><label>ComfyUI output folder</label><div class="setting-row"><input id="sOutput"><button class="mini" onclick="folderInto('sOutput')">Browse</button></div></div>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="btn primary" onclick="comfyStartStop()" id="svcBtn">Start ComfyUI</button><button class="mini" onclick="comfyStatus()">Refresh status</button></div>
+  </div>
+
+  <div class="card settings-card"><div class="head"><h3>API-format Workflows</h3><span>Export from ComfyUI</span></div>
+    <div class="field"><label>H3 Ref2VA</label><div class="setting-row"><input id="sH3Ref"><button class="mini" onclick="fileInto('sH3Ref','workflow')">Browse</button></div></div>
+    <div class="field" style="margin-top:8px"><label>H3 FL2VA</label><div class="setting-row"><input id="sH3Fl"><button class="mini" onclick="fileInto('sH3Fl','workflow')">Browse</button></div></div>
+    <div class="field" style="margin-top:8px"><label>Wan 2.2</label><div class="setting-row"><input id="sWan"><button class="mini" onclick="fileInto('sWan','workflow')">Browse</button></div></div>
+    <div class="field" style="margin-top:8px"><label>Custom ComfyUI</label><div class="setting-row"><input id="sCustom"><button class="mini" onclick="fileInto('sCustom','workflow')">Browse</button></div></div>
+    <div class="field" style="margin-top:8px"><label>AnimateDiff SD 1.5 (bundled)</label><input id="sAd15" value=""></div>
+    <div class="field" style="margin-top:8px"><label>AnimateDiff SDXL (bundled)</label><input id="sAdSdxl" value=""></div>
+  </div>
+
+  <div class="card settings-card"><div class="head"><h3>H3 Local Authorization</h3></div>
+    <div class="toggle"><input id="sAuth" type="checkbox"><div><div style="font-size:10px">I confirm my local use of MiniMax H3 open weights is permitted by the current license or a separate written MiniMax license.</div><div class="tiny" style="margin-top:4px">This is intentionally off by default. The app never downloads H3 weights automatically.</div></div></div>
+  </div>
+
+  <div class="card settings-card"><div class="head"><h3>GPU memory auto-clean</h3></div>
+    <div class="grid3">
+      <div class="field"><label>Auto-clean enabled</label><select id="sGpuAuto"><option value="true">enabled</option><option value="false">disabled</option></select></div>
+      <div class="field"><label>Cleanup threshold (0.50–0.99)</label><input id="sGpuThr" type="number" min="0.5" max="0.99" step="0.01" value="0.85"></div>
+      <div class="field"><label>Poll interval seconds</label><input id="sGpuInt" type="number" min="1" max="60" value="5"></div>
+    </div>
+    <div class="tiny" style="margin-top:8px">Forces a safe ComfyUI /free preflight for INT8 · 12 GB, Low Memory and Low Memory · Quality profiles. Never kills arbitrary processes.</div>
+  </div>
+
+  <div class="card settings-card"><div class="head"><h3>Output</h3></div>
+    <div class="field"><label>Preferred output directory (finished renders are archived here)</label><div class="setting-row"><input id="sOutDir"><button class="mini" onclick="folderInto('sOutDir')">Browse</button></div></div>
+  </div>
 </div>
+
 </main>
 
 <aside class="right">
-  <h3>Runtime</h3><div class="metric"><div class="metric-top"><span>Profile</span><strong id="rProfile">Auto</strong></div><div class="bar"><span id="rBar" style="width:20%"></span></div></div><div class="metric"><div class="metric-top"><span>Model</span><strong id="rModel">Not inspected</strong></div></div><div class="metric"><div class="metric-top"><span>VRAM</span><strong id="rVram">—</strong></div></div><div class="metric"><div class="metric-top"><span>Canvas</span><strong id="rCanvas">480×864</strong></div></div><div class="metric"><div class="metric-top"><span>H3 nodes</span><strong id="rH3">Unchecked</strong></div></div>
-  <h3 style="margin-top:18px">Queue</h3><div class="row" style="margin-bottom:8px"><button class="mini" onclick="refreshQueue()">Refresh</button><button class="mini" onclick="clearFinished()">Clear finished</button></div><div id="queue" class="queue"></div>
-  <h3 style="margin-top:18px">Activity</h3><div id="log" class="log">Avatar V2 ready.</div>
+  <h3>GPU</h3>
+  <div id="gpuPanel"></div>
+  <button class="btn glow" style="width:100%;margin-top:6px" onclick="gpuFree()">FREE GPU MEMORY</button>
+
+  <h3 style="margin-top:16px">Queue</h3>
+  <div class="row" style="margin-bottom:8px"><button class="mini" onclick="refreshQueue()">Refresh</button><button class="mini" onclick="clearFinished()">Clear finished</button></div>
+  <div id="queue" class="queue"></div>
+
+  <h3 style="margin-top:16px">Activity</h3>
+  <div id="log" class="log">Avatar V2 ready.</div>
 </aside>
 </div>
+
+<!-- Emergency termination modal -->
+<div class="modalback" id="termModal">
+  <div class="modal">
+    <h3>Emergency process termination</h3>
+    <p class="tiny" style="line-height:1.6">This feature requires you to explicitly select each PID. Only NVIDIA compute processes are listed. Prefer FREE GPU MEMORY or ComfyUI Stop first.</p>
+    <div id="termList"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn danger" onclick="terminateApproved()">Terminate selected PIDs</button>
+      <button class="btn" onclick="closeTerm()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <script>
-const state={engine:'h3_ref2va',profile:'auto',refs:{identity_refs:[],body_refs:[],hair_refs:[],wardrobe_refs:[],extra_images:[],extra_videos:[],extra_audios:[],motion_video:'',scene_image:'',init_image:'',last_frame:'',audio:''},settings:{},presets:[],profiles:[]};
-const $=id=>document.getElementById(id);function log(x){const el=$('log');const stamp=new Date().toLocaleTimeString();el.textContent=`[${stamp}] ${x}\n`+el.textContent.slice(0,6000)}
-function view(v){$('studio').classList.toggle('hidden',v!=='studio');$('settings').classList.toggle('active',v==='settings');$('nStudio').classList.toggle('active',v==='studio');$('nSettings').classList.toggle('active',v==='settings')}function scrollToId(id){view('studio');setTimeout(()=>$(id).scrollIntoView({behavior:'smooth',block:'start'}),30)}
-function setEngine(e){state.engine=e;document.querySelectorAll('.engine').forEach(x=>x.classList.toggle('active',x.dataset.engine===e));log(`Renderer: ${e}`)}
-function setProfile(p){state.profile=p;document.querySelectorAll('.profile').forEach(x=>x.classList.toggle('active',x.dataset.profile===p));$('rProfile').textContent=(state.profiles.find(x=>x.id===p)||{}).label||p;log(`Runtime profile: ${p}`)}
-function renderProfiles(){const root=$('profiles');root.innerHTML='';state.profiles.forEach(p=>{const d=document.createElement('div');d.className='profile'+(p.id===state.profile?' active':'');d.dataset.profile=p.id;d.onclick=()=>setProfile(p.id);d.innerHTML=`<b>${p.label}</b><p>${p.description}</p>`;root.appendChild(d)})}
-function shortPaths(v){if(Array.isArray(v))return v.length?v.map(x=>x.split(/[\\/]/).pop()).join(' · '):'None selected';return v?v.split(/[\\/]/).pop():'None selected'}
-function refreshRefs(){const map=[['identity_refs','identity'],['body_refs','body'],['hair_refs','hair'],['wardrobe_refs','wardrobe'],['extra_images','extraImage']];map.forEach(([k,p])=>{const v=state.refs[k]||[];$(p+'Count').textContent=v.length;$(p+'Paths').textContent=shortPaths(v)});const singles=[['motion_video','motion'],['scene_image','scene'],['init_image','init'],['last_frame','last'],['audio','audio']];singles.forEach(([k,p])=>{$(p+'Count').textContent=(state.refs[k]?1:0)+((k==='motion_video'?state.refs.extra_videos:k==='audio'?state.refs.extra_audios:[])||[]).length;$(p+'Paths').textContent=shortPaths(state.refs[k])})}
-async function pickMulti(key,kind){const f=await window.pywebview.api.choose_files(kind,true);if(f&&f.length)state.refs[key]=[...(state.refs[key]||[]),...f];refreshRefs()}async function pickSingle(key,kind){const f=await window.pywebview.api.choose_files(kind,false);if(f&&f.length)state.refs[key]=f[0];refreshRefs()}function clearRef(k){state.refs[k]=Array.isArray(state.refs[k])?[]:'';refreshRefs()}
-function payload(){return{runtime_profile:state.profile,h3_preset:$('preset').value,settings:state.settings,avatar:{avatar_id:'desktop-avatar',display_name:'Desktop Avatar',subject_kind:'synthetic',age_verified_18_plus:true,consent_confirmed:true,identity_refs:state.refs.identity_refs,body_refs:state.refs.body_refs,hair_refs:state.refs.hair_refs,wardrobe_refs:state.refs.wardrobe_refs,persistent_features:['stable facial proportions','stable hairline','preserve distinctive skin details']},shot:{shot_id:'desktop-shot',content_class:$('content').value,user_prompt:$('prompt').value,duration_s:Number($('duration').value),seed:Number($('seed').value),engine_preference:state.engine,h3_preset:$('preset').value,camera:{framing:'vertical portrait',movement:$('camera').value},wind:{direction:'subject-left to subject-right',speed_mps:Number($('wind').value),gust_variation_pct:Number($('gust').value)},wardrobe:$('wardrobe').value,environment:$('environment').value,references:{init_image:state.refs.init_image,last_frame:state.refs.last_frame,motion_video:state.refs.motion_video,scene_image:state.refs.scene_image,audio:state.refs.audio,extra_images:state.refs.extra_images,extra_videos:state.refs.extra_videos,extra_audios:state.refs.extra_audios}}}}
-function applyRuntime(rt){if(!rt)return;$('rProfile').textContent=rt.profile||state.profile;$('rModel').textContent=rt.model?rt.model.split(/[\\/]/).pop():'fallback / workflow';$('rVram').textContent=rt.vram_gb?`${rt.vram_gb.toFixed(1)} GB`:'—';if(rt.width&&rt.height)$('rCanvas').textContent=`${rt.width}×${rt.height}`;log(rt.reason||'Runtime resolved')}
-async function compose(){log('Composing job…');const r=await window.pywebview.api.compose(payload());if(r.ok){applyRuntime(r.runtime);log(`Plan ready: ${r.job_id}`)}else log(`ERROR: ${r.error}`)}async function dryRun(){log('Resolving workflow…');const r=await window.pywebview.api.dry_run(payload());if(r.ok){applyRuntime(r.runtime);log(`Resolved: ${r.resolved_workflow}`)}else log(`ERROR: ${r.error}`)}async function queueRender(){log('Queueing render…');const r=await window.pywebview.api.queue_render(payload());if(r.ok){applyRuntime(r.runtime);log(`Queued ${r.queue_id}`);refreshQueue()}else log(`ERROR: ${r.error}`)}async function sweep(){log('Queueing profile sweep…');const r=await window.pywebview.api.queue_profile_sweep(payload(),['auto','int8_12gb','low_memory','low_memory_quality']);(r.created||[]).forEach(x=>log(`Sweep queued: ${x.profile}`));(r.errors||[]).forEach(x=>log(`Sweep skip ${x.profile}: ${x.error}`));refreshQueue()}
-async function doctor(){log('Checking ComfyUI and H3 models…');const r=await window.pywebview.api.doctor({settings:state.settings});$('comfyDot').classList.toggle('live',!!r.comfyui);$('comfyText').textContent=r.comfyui?'ComfyUI connected':'ComfyUI unavailable';$('rH3').textContent=r.h3_available?'Available':'Not detected';$('rH3').className=r.h3_available?'ok':'warn';if(r.system_stats){const d=(r.system_stats.devices||[])[0];if(d&&d.vram_total)$('rVram').textContent=`${(d.vram_total/1073741824).toFixed(1)} GB`}if(r.h3_models){const m=r.h3_models.diffusion_models||[];$('rModel').textContent=m.length?`${m.length} H3 model(s)`:'No H3 diffusion model'}if(r.error)log(`Doctor: ${r.error}`);else log(`Doctor complete · H3 ${r.h3_available?'available':'not detected'}`)}
-async function refreshQueue(){const r=await window.pywebview.api.queue_state();const root=$('queue');root.innerHTML='';(r.items||[]).slice().reverse().forEach(q=>{const d=document.createElement('div');d.className='qitem';d.innerHTML=`<div class="qtop"><span class="qname">${q.label}</span><span class="qstatus ${q.status}">${q.status}</span></div><div class="qmeta">${q.profile} · seed ${q.seed} · ${Math.round(q.elapsed_s)}s</div>`;if(q.status==='queued'||q.status==='running'){const b=document.createElement('button');b.className='mini';b.style.marginTop='7px';b.textContent='Cancel';b.onclick=async()=>{await window.pywebview.api.cancel_queue_item(q.id);refreshQueue()};d.appendChild(b)}root.appendChild(d)});if(!(r.items||[]).length)root.innerHTML='<div class="tiny">Queue is empty.</div>'}async function clearFinished(){await window.pywebview.api.clear_finished();refreshQueue()}
-async function folderInto(id){const p=await window.pywebview.api.choose_folder();if(p)$(id).value=p}async function fileInto(id,kind){const p=await window.pywebview.api.choose_files(kind,false);if(p&&p.length)$(id).value=p[0]}async function saveSettings(){state.settings={comfyui_url:$('sUrl').value,comfyui_input:$('sInput').value,comfyui_output:$('sOutput').value,workflow_h3_ref2va:$('sH3Ref').value,workflow_h3_fl2va:$('sH3Fl').value,workflow_wan22:$('sWan').value,timeout_s:Number($('sTimeout').value),local_h3_authorized:$('sAuth').checked,default_h3_preset:$('preset').value,default_runtime_profile:state.profile};const r=await window.pywebview.api.save_settings(state.settings);log(r.ok?'Settings saved':'Settings save failed')}
-window.addEventListener('pywebviewready',async()=>{const s=await window.pywebview.api.get_state();state.settings=s.settings||{};state.presets=s.h3_presets||[];state.profiles=s.runtime_profiles||[];state.profile=state.settings.default_runtime_profile||'auto';const p=$('preset');state.presets.forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=x.label;p.appendChild(o)});p.value=state.settings.default_h3_preset||'vertical_4070';renderProfiles();refreshRefs();$('licenseNotice').textContent=s.h3_license_notice;$('sUrl').value=state.settings.comfyui_url||'http://127.0.0.1:8188';$('sInput').value=state.settings.comfyui_input||'';$('sOutput').value=state.settings.comfyui_output||'';$('sH3Ref').value=state.settings.workflow_h3_ref2va||'';$('sH3Fl').value=state.settings.workflow_h3_fl2va||'';$('sWan').value=state.settings.workflow_wan22||'';$('sTimeout').value=state.settings.timeout_s||1800;$('sAuth').checked=!!state.settings.local_h3_authorized;const preset=state.presets.find(x=>x.id===p.value);if(preset)$('rCanvas').textContent=`${preset.width}×${preset.height}`;p.onchange=()=>{const x=state.presets.find(y=>y.id===p.value);if(x)$('rCanvas').textContent=`${x.width}×${x.height}`};refreshQueue();setInterval(refreshQueue,2500);log('Desktop app initialized.')});
+const state={engine:'h3_ref2va',profile:'auto',refs:{identity_refs:[],body_refs:[],hair_refs:[],wardrobe_refs:[],extra_images:[],extra_videos:[],extra_audios:[],motion_video:'',scene_image:'',init_image:'',last_frame:'',audio:''},settings:{},presets:[],profiles:[],bundledWorkflows:{ad_sd15:'',ad_sdxl:''},activeQueueId:null};
+const $=id=>document.getElementById(id);
+function log(x){const el=$('log');const stamp=new Date().toLocaleTimeString();el.textContent=`[${stamp}] ${x}\n`+el.textContent.slice(0,6000)}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function base(v){return (v||'').split(/[\\/]/).pop()}
+function fmtBytes(mb){return mb>=1024?(mb/1024).toFixed(1)+' GB':Math.round(mb)+' MB'}
+function fmtTime(ts){if(!ts)return'—';const d=new Date(ts*1000);return d.toLocaleString()}
+
+/* ---------- navigation ---------- */
+function view(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='view-'+v));document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));if(v==='vault')refreshVault();if(v==='motions')refreshMotions();if(v==='scenes')refreshScenes();if(v==='history')refreshHistory();if(v==='settings'){comfyStatus();fillBundled()}}
+document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>view(b.dataset.view));
+
+/* ---------- studio ---------- */
+function setEngine(e){state.engine=e;document.querySelectorAll('.engine').forEach(x=>x.classList.toggle('active',x.dataset.engine===e));$('customPanel').style.display=e==='custom'?'block':'none';log(`Renderer: ${e}`)}
+function setProfile(p){state.profile=p;document.querySelectorAll('.profile').forEach(x=>x.classList.toggle('active',x.dataset.profile===p));log(`Runtime profile: ${p}`)}
+function renderProfiles(){const root=$('profiles');root.innerHTML='';state.profiles.forEach(p=>{const d=document.createElement('div');d.className='profile'+(p.id===state.profile?' active':'');d.dataset.profile=p.id;d.onclick=()=>setProfile(p.id);d.innerHTML=`<b>${esc(p.label)}</b><p>${esc(p.description)}</p>`;root.appendChild(d)})}
+function shortPaths(v){if(Array.isArray(v))return v.length?v.map(base).join(' · '):'None selected';return v?base(v):'None selected'}
+function refreshRefs(){const map=[['identity_refs','identity'],['body_refs','body'],['hair_refs','hair'],['wardrobe_refs','wardrobe'],['extra_images','extraImage']];map.forEach(([k,p])=>{const v=state.refs[k]||[];$(p+'Count').textContent=v.length;$(p+'Paths').textContent=shortPaths(v)});const singles=[['motion_video','motion'],['scene_image','scene'],['init_image','init'],['last_frame','last'],['audio','audio']];singles.forEach(([k,p])=>{const extra=k==='motion_video'?state.refs.extra_videos:k==='audio'?state.refs.extra_audios:[];$(p+'Count').textContent=(state.refs[k]?1:0)+((extra||[]).length);$(p+'Paths').textContent=shortPaths(state.refs[k])})}
+async function pickMulti(key,kind){const f=await window.pywebview.api.choose_files(kind,true);if(f&&f.length)state.refs[key]=[...(state.refs[key]||[]),...f];refreshRefs()}
+async function pickSingle(key,kind){const f=await window.pywebview.api.choose_files(kind,false);if(f&&f.length)state.refs[key]=f[0];refreshRefs()}
+function clearRef(k){state.refs[k]=Array.isArray(state.refs[k])?[]:'';refreshRefs()}
+
+function payload(){
+  const shot={
+    shot_id:'desktop-shot',
+    content_class:$('content').value,
+    user_prompt:$('prompt').value,
+    duration_s:Number($('duration').value),
+    seed:Number($('seed').value),
+    engine_preference:state.engine,
+    h3_preset:$('preset').value,
+    camera:{framing:$('framing').value,movement:$('camera').value,lens_equivalent_mm:Number($('lens').value)||null},
+    wind:{direction:$('winddir').value,speed_mps:Number($('wind').value),gust_variation_pct:Number($('gust').value)},
+    wardrobe:$('wardrobe').value,
+    environment:$('environment').value,
+    references:{init_image:state.refs.init_image,last_frame:state.refs.last_frame,motion_video:state.refs.motion_video,scene_image:state.refs.scene_image,audio:state.refs.audio,extra_images:state.refs.extra_images,extra_videos:state.refs.extra_videos,extra_audios:state.refs.extra_audios}
+  };
+  const p={runtime_profile:state.profile,h3_preset:$('preset').value,settings:state.settings,avatar:{avatar_id:'desktop-avatar',display_name:'Desktop Avatar',subject_kind:'synthetic',age_verified_18_plus:true,consent_confirmed:true,identity_refs:state.refs.identity_refs,body_refs:state.refs.body_refs,hair_refs:state.refs.hair_refs,wardrobe_refs:state.refs.wardrobe_refs,persistent_features:['stable facial proportions','stable hairline','preserve distinctive skin details']},shot};
+  if(state.engine==='custom'){
+    const kind=$('cwWorkflow').value;
+    if(kind==='ad_sd15')p.workflow=state.bundledWorkflows.ad_sd15;
+    else if(kind==='ad_sdxl')p.workflow=state.bundledWorkflows.ad_sdxl;
+    shot.width=Number($('cwWidth').value);shot.height=Number($('cwHeight').value);shot.fps=Number($('cwFps').value);
+    p.advanced={CHECKPOINT:$('cwCheckpoint').value,MOTION_MODEL:$('cwMotion').value,BETA_SCHEDULE:$('cwBeta').value,SAMPLER_NAME:$('cwSampler').value,SCHEDULER:'karras',OUTPUT_PREFIX:$('cwPrefix').value,STEPS:Number($('cwSteps').value),CFG:Number($('cwCfg').value)};
+  }
+  return p;
+}
+
+function applyRuntime(rt){if(!rt)return;if(rt.width&&rt.height)$('rCanvas').textContent=`${rt.width}×${rt.height}`;log(rt.reason||'Runtime resolved')}
+
+async function compose(){log('Composing job…');const r=await window.pywebview.api.compose(payload());if(r.ok){applyRuntime(r.runtime);log(`Plan ready: ${r.job_id} · engine ${r.engine} · prompt ${(r.prompt||'').length} chars`)}else log(`ERROR: ${r.error}`)}
+async function dryRun(){log('Resolving workflow…');const r=await window.pywebview.api.dry_run(payload());if(r.ok){applyRuntime(r.runtime);log(`Resolved: ${r.resolved_workflow}`)}else log(`ERROR: ${r.error}`)}
+async function queueRender(){log('Queueing render…');const r=await window.pywebview.api.queue_render(payload());if(r.ok){applyRuntime(r.runtime);log(`Queued ${r.queue_id}`);refreshQueue()}else log(`ERROR: ${r.error}`)}
+async function queueBestOf(){const n=Number($('bestOfN').value);log(`Queueing best-of-${n}…`);const r=await window.pywebview.api.queue_best_of(payload(),n);(r.created||[]).forEach(x=>log(`Candidate ${x.index} queued: ${x.queue_id}`));(r.errors||[]).forEach(x=>log(`Candidate ${x.index} skipped: ${x.error}`));refreshQueue()}
+async function sweep(){log('Queueing profile sweep…');const r=await window.pywebview.api.queue_profile_sweep(payload(),['auto','int8_12gb','low_memory','low_memory_quality']);(r.created||[]).forEach(x=>log(`Sweep queued: ${x.profile} · ${x.queue_id}`));(r.errors||[]).forEach(x=>log(`Sweep skip ${x.profile}: ${x.error}`));refreshQueue();setTimeout(refreshSweep,800)}
+async function cancelActive(){const items=(await window.pywebview.api.queue_state()).items||[];const running=items.find(i=>i.status==='running');const queued=items.find(i=>i.status==='queued');const target=running||queued;if(!target){log('Nothing active to cancel');return}const r=await window.pywebview.api.cancel_queue_item(target.id);log(r.ok?`Cancel requested for ${target.id}`:`Cancel failed: ${r}`);refreshQueue()}
+async function openOutput(){await window.pywebview.api.open_output_dir();}
+
+async function doctor(){log('Checking ComfyUI and models…');const r=await window.pywebview.api.doctor({settings:state.settings});$('comfyDot').className='s-dot'+(r.comfyui?' live':' bad');$('comfyText').textContent=r.comfyui?'ComfyUI connected':'ComfyUI unavailable';
+  if(r.ok){state.comfyModels={checkpoints:r.checkpoints||[],motions:r.motion_modules||[],samplers:r.samplers||[],betas:r.beta_schedules||[]};fillCustomOptions();
+    const m=(r.h3_models&&r.h3_models.diffusion_models)||[];const n=r.h3_nodes||[];
+    log(`Doctor: ${r.node_count||'?'} nodes · checkpoints ${(r.checkpoints||[]).length} · H3 nodes ${n.length} · H3 models ${m.length}`)}
+  if(r.error)log(`Doctor: ${r.error}`);else log(`Doctor complete · H3 ${r.h3_available?'available':'not detected'}`)}
+function fillCustomOptions(){if(!state.comfyModels)return;$('cwCheckpoint').innerHTML=state.comfyModels.checkpoints.map(m=>`<option>${esc(m)}</option>`).join('');$('cwMotion').innerHTML=state.comfyModels.motions.map(m=>`<option>${esc(m)}</option>`).join('');$('cwSampler').innerHTML=state.comfyModels.samplers.map(m=>`<option>${esc(m)}</option>`).join('');$('cwBeta').innerHTML=state.comfyModels.betas.map(m=>`<option>${esc(m)}</option>`).join('')}
+
+/* ---------- GPU panel ---------- */
+function renderGpu(g){
+  const el=$('gpuPanel');if(!g||!g.manager){el.innerHTML='<div class="ghost">GPU unknown</div>';return}
+  const gpus=g.manager.gpus||[];const peak=g.peak||[];
+  el.innerHTML=gpus.map(x=>{
+    const pct=Math.round(x.usage*100);const hot=pct>=85;
+    return `<div class="metric"><div class="metric-top"><span>${esc(x.name)}</span><strong>${fmtBytes(x.used_mb)} / ${fmtBytes(x.total_mb)}</strong></div><div class="bar${hot?' hot':''}"><span style="width:${pct}%"></span></div><div class="metric-top" style="margin-top:5px"><span>${pct}% used</span><span class="${hot?'bad':'ok'}">threshold ${Math.round(g.manager.threshold*100)}%</span></div></div>`;
+  }).join('')
+  + (g.active_render&&g.active_render.label?`<div class="metric"><div class="metric-top"><span>Active render</span><strong>${esc(g.active_render.label)}</strong></div><div class="metric-top" style="margin-top:4px"><span>${esc(g.active_render.engine)} · ${esc(g.active_render.profile)}</span></div></div>`:'')
+  + (peak.length?`<div class="metric"><div class="metric-top"><span>Peak VRAM (current render)</span><strong>${peak.map(p=>fmtBytes(p.used_mb)).join(' · ')}</strong></div></div>`:'');
+}
+async function refreshGpu(){try{const g=await window.pywebview.api.gpu_status();renderGpu(g)}catch(e){/* window closing */}}
+async function gpuFree(){log('Requesting ComfyUI /free…');const r=await window.pywebview.api.gpu_free();if(r.ok){const ev=r.event;log(`GPU free requested · before ${(ev.before||[]).map(x=>fmtBytes(x.used_mb)).join(',')||'?'} → after ${(ev.after||[]).map(x=>fmtBytes(x.used_mb)).join(',')||'?'}${ev.error?' · '+ev.error:''}`)}else log(`ERROR: ${r.error}`);refreshGpu()}
+async function gpuDetails(){log('Loading GPU details…');const r=await window.pywebview.api.gpu_details();const list=$('termList');if(!r.ok){log(`ERROR: ${r.error}`);return}
+  const procs=(r.processes||[]).filter(p=>p.pid);
+  list.innerHTML=procs.length?procs.map(p=>`<div class="gpu-proc"><input type="checkbox" class="termPid" value="${p.pid}"><span class="mono">${p.pid}</span><span>${esc(p.name)}</span><span>${fmtBytes(p.memory_mb)}</span></div>`).join(''):'<div class="ghost">No NVIDIA compute processes.</div>';
+  $('termModal').classList.add('open')}
+function closeTerm(){$('termModal').classList.remove('open')}
+async function terminateApproved(){const pids=[...document.querySelectorAll('.termPid:checked')].map(x=>Number(x.value));if(!pids.length){log('No PID selected');return}if(!confirm(`Terminate GPU process PIDs ${pids.join(', ')}? This is a destructive action.`))return;const r=await window.pywebview.api.gpu_terminate_pids(pids);log(`Termination: ${JSON.stringify(r)}`);closeTerm();refreshGpu()}
+
+/* ---------- queue ---------- */
+async function refreshQueue(){try{const r=await window.pywebview.api.queue_state();const root=$('queue');const items=(r.items||[]).slice().reverse();root.innerHTML='';
+  if(!items.length){root.innerHTML='<div class="tiny">Queue is empty.</div>'}
+  items.forEach(q=>{const d=document.createElement('div');d.className='qitem';
+    d.innerHTML=`<div class="qtop"><span class="qname">${esc(q.label)}</span><span class="qstatus ${q.status}">${q.status}</span></div><div class="qmeta">${esc(q.profile||'')} · seed ${q.seed} · ${Math.round(q.elapsed_s)}s${q.outputs&&q.outputs.length?' · '+q.outputs.length+' out':''}</div>${q.error_message?`<div class="qerr">${esc(q.error_message)}</div>`:''}${q.error?`<div class="qerr mono">${esc(String(q.error).slice(0,180))}</div>`:''}`;
+    const row=document.createElement('div');row.className='row';row.style.marginTop='7px';
+    if(q.status==='queued'||q.status==='running'){const b=document.createElement('button');b.className='mini';b.textContent='Cancel';b.onclick=async()=>{await window.pywebview.api.cancel_queue_item(q.id);refreshQueue()};row.appendChild(b)}
+    if(q.outputs&&q.outputs.length){q.outputs.forEach(o=>{const b=document.createElement('button');b.className='mini';b.textContent='Open';b.onclick=()=>window.pywebview.api.open_path(o);row.appendChild(b)})}
+    d.appendChild(row);root.appendChild(d)});
+  }catch(e){}}
+async function clearFinished(){await window.pywebview.api.clear_finished();refreshQueue()}
+function sweepMarked(q){return /sweep|profile-test/i.test(q.label||'')||/sweep/i.test(q.job_id||'')}
+async function refreshSweep(){
+  const [qs,hs]=await Promise.all([window.pywebview.api.queue_state(),window.pywebview.api.history()]);
+  const items=[...(qs.items||[]),...(hs.items||[])];
+  const seen={};items.forEach(i=>{if(!sweepMarked(i))return;const key=i.label+'-'+i.seed;if(!seen[key]||i.status==='done'||i.status==='error')seen[key]=i});
+  const rows=Object.values(seen);
+  if(!rows.length){$('sweepTable').innerHTML='<div class="ghost">No sweep runs yet. Queue a Profile Sweep and results appear here.</div>';return}
+  $('sweepTable').innerHTML=`<table><thead><tr><th>Profile</th><th>Status</th><th>Model</th><th>Canvas</th><th>Frames</th><th>Steps</th><th>Elapsed</th><th>Peak VRAM</th><th>Error</th></tr></thead><tbody>`+
+  rows.map(r=>{const peak=(r.gpu_trace&&r.gpu_trace.peak||[]).map(p=>fmtBytes(p.used_mb)).join(' · ')||'—';
+    return `<tr><td>${esc(r.profile)}</td><td class="${r.status==='done'?'ok':r.status==='error'?'bad':''}">${r.status}</td><td class="mono">${esc(base(r.model)||'—')}</td><td class="mono">${(r.resolution||[]).join('×')}</td><td>${r.frames??'—'}</td><td>${r.steps??'—'}</td><td>${r.elapsed_s?Math.round(r.elapsed_s)+'s':'—'}</td><td>${peak}</td><td class="bad">${esc(r.error_message||'')}</td></tr>`}).join('')+`</tbody></table>`;
+}
+
+/* ---------- vault ---------- */
+const VAULT_ROLES=[['vi_front','front'],['vi_34l','three_quarter_left'],['vi_34r','three_quarter_right'],['vi_pl','profile_left'],['vi_pr','profile_right'],['vi_expr','expressions'],['vi_eyes','eyes_closed']];
+const BODY_ROLES=[['vb_front','full_front'],['vb_rear','rear'],['vb_left','left'],['vb_right','right'],['vb_seated','seated'],['vb_walk','walking']];
+const HAIR_ROLES=[['vh_loose','loose'],['vh_tied','tied'],['vh_front','front'],['vh_back','back'],['vh_side','side'],['vh_wind','wind_example']];
+const WARD_ROLES=[['vw_1','look_1'],['vw_2','look_2'],['vw_3','look_3']];
+function roleMap(roles){const out={};roles.forEach(([id,key])=>{const v=$(id).value.trim();if(v)out[key]=v});return out}
+async function refreshVault(){const r=await window.pywebview.api.vault_list();const root=$('vaultList');const list=r.avatars||[];
+  root.innerHTML=list.length?list.map(a=>`<div class="libcard"><div class="lc-top"><h4>${esc(a.display_name)}</h4><span class="lc-id">${esc(a.avatar_id)}</span></div><div class="lc-meta">identity ${Object.keys(a.identity_refs||{}).length} · body ${Object.keys(a.body_refs||{}).length} · hair ${Object.keys(a.hair_refs||{}).length} · wardrobe ${Object.keys(a.wardrobe_refs||{}).length}${a.notes?' · '+esc(a.notes):''}</div><div class="lc-actions"><button class="mini" onclick="vaultApply('${esc(a.avatar_id)}')">Apply to Studio</button><button class="mini" onclick="vaultEdit('${esc(a.avatar_id)}')">Edit</button><button class="mini danger" onclick="vaultDelete('${esc(a.avatar_id)}')">Delete</button></div></div>`).join(''):'<div class="ghost">No avatars saved yet.</div>'}
+async function vaultSave(){const entry={avatar_id:$('vId').value.trim(),display_name:$('vName').value.trim(),subject_kind:$('vKind').value,age_verified_18_plus:$('vAge').value==='true',consent_confirmed:$('vConsent').value==='true',identity_refs:roleMap(VAULT_ROLES),body_refs:roleMap(BODY_ROLES),hair_refs:roleMap(HAIR_ROLES),wardrobe_refs:roleMap(WARD_ROLES),persistent_features:$('vFeatures').value.split(',').map(s=>s.trim()).filter(Boolean),notes:$('vNotes').value};
+  const r=await window.pywebview.api.vault_save(entry);if(r.ok){log(`Avatar ${entry.avatar_id} saved to vault`);refreshVault()}else log(`ERROR: ${r.error}`)}
+async function vaultApply(id){const r=await window.pywebview.api.vault_apply(id);if(r.ok){const a=r.avatar;state.refs.identity_refs=a.identity_refs;state.refs.body_refs=a.body_refs;state.refs.hair_refs=a.hair_refs;state.refs.wardrobe_refs=a.wardrobe_refs;refreshRefs();view('studio');log(`Applied avatar ${id} to Studio`)}else log(`ERROR: ${r.error}`)}
+async function vaultEdit(id){const r=await window.pywebview.api.vault_apply(id);if(!r.ok){log(`ERROR: ${r.error}`);return}const a=r.avatar;const all=await window.pywebview.api.vault_list();const entry=(all.avatars||[]).find(x=>x.avatar_id===id);if(!entry)return;
+  $('vId').value=entry.avatar_id;$('vName').value=entry.display_name;$('vKind').value=entry.subject_kind;$('vAge').value=String(entry.age_verified_18_plus);$('vConsent').value=String(entry.consent_confirmed);$('vFeatures').value=(entry.persistent_features||[]).join(', ');$('vNotes').value=entry.notes||'';
+  const fill=(roles,map)=>{roles.forEach(([dom,key])=>{$(dom).value=(map||{})[key]||''})};
+  fill(VAULT_ROLES,entry.identity_refs);fill(BODY_ROLES,entry.body_refs);fill(HAIR_ROLES,entry.hair_refs);fill(WARD_ROLES,entry.wardrobe_refs);view('vault');}
+async function vaultDelete(id){if(!confirm(`Delete avatar ${id}?`))return;const r=await window.pywebview.api.vault_delete(id);log(r.ok?`Deleted ${id}`:'Delete failed');refreshVault()}
+function vaultClearForm(){['vId','vName','vFeatures','vNotes',...VAULT_ROLES.map(x=>x[0]),...BODY_ROLES.map(x=>x[0]),...HAIR_ROLES.map(x=>x[0]),...WARD_ROLES.map(x=>x[0])].forEach(id=>$(id).value='')}
+
+/* ---------- motions ---------- */
+async function refreshMotions(){const r=await window.pywebview.api.motions_list();const root=$('motionList');const list=r.motions||[];$('motionCountLabel').textContent=list.length+' assets';
+  root.innerHTML=list.length?list.map(m=>`<div class="libcard"><div class="lc-top"><h4>${esc(m.label)}</h4><span class="lc-id">${esc(m.category)}</span></div><div class="lc-meta mono">${esc(m.path)}${m.description?' · '+esc(m.description):''}</div><div class="lc-actions"><button class="mini" onclick="motionApply('${esc(m.motion_id)}')">Use in Studio</button><button class="mini danger" onclick="motionDelete('${esc(m.motion_id)}')">Delete</button></div></div>`).join(''):'<div class="ghost">No motion assets yet.</div>'}
+async function motionSave(){const entry={motion_id:$('mId').value.trim(),label:$('mLabel').value.trim(),category:$('mCategory').value,path:$('mPath').value.trim(),description:$('mDesc').value};const r=await window.pywebview.api.motions_save(entry);if(r.ok){log(`Motion ${entry.motion_id} saved`);refreshMotions()}else log(`ERROR: ${r.error}`)}
+async function motionApply(id){const r=await window.pywebview.api.motions_list();const m=(r.motions||[]).find(x=>x.motion_id===id);if(m){state.refs.motion_video=m.path;refreshRefs();view('studio');log(`Motion ${id} set as primary motion reference`)}else log(`Motion ${id} not found`)}
+async function motionDelete(id){if(!confirm(`Delete motion ${id}?`))return;await window.pywebview.api.motions_delete(id);refreshMotions()}
+
+/* ---------- scenes ---------- */
+async function refreshScenes(){const r=await window.pywebview.api.scenes_list();const root=$('sceneList');const list=r.scenes||[];$('sceneCountLabel').textContent=list.length+' assets';
+  root.innerHTML=list.length?list.map(s=>`<div class="libcard"><div class="lc-top"><h4>${esc(s.label)}</h4><span class="lc-id">${esc(s.location)} · ${esc(s.aspect)}</span></div><div class="lc-meta mono">${esc(s.path)}${s.environment?' · '+esc(s.environment):''}${s.time_of_day?' · '+esc(s.time_of_day):''}</div><div class="lc-actions"><button class="mini" onclick="sceneApply('${esc(s.scene_id)}')">Use in Studio</button><button class="mini danger" onclick="sceneDelete('${esc(s.scene_id)}')">Delete</button></div></div>`).join(''):'<div class="ghost">No scenes yet.</div>'}
+async function sceneSave(){const entry={scene_id:$('sId').value.trim(),label:$('sLabel').value.trim(),path:$('sPath').value.trim(),location:$('sLocation').value,environment:$('sEnv').value,lighting:$('sLight').value,time_of_day:$('sTime').value,camera_style:$('sCam').value,aspect:$('sAspect').value};const r=await window.pywebview.api.scenes_save(entry);if(r.ok){log(`Scene ${entry.scene_id} saved`);refreshScenes()}else log(`ERROR: ${r.error}`)}
+async function sceneApply(id){const r=await window.pywebview.api.scenes_list();const s=(r.scenes||[]).find(x=>x.scene_id===id);if(s){state.refs.scene_image=s.path;refreshRefs();view('studio');log(`Scene ${id} set as scene reference`)}else log(`Scene ${id} not found`)}
+async function sceneDelete(id){if(!confirm(`Delete scene ${id}?`))return;await window.pywebview.api.scenes_delete(id);refreshScenes()}
+
+/* ---------- history ---------- */
+async function refreshHistory(){const r=await window.pywebview.api.history();const body=$('historyBody');const items=r.items||[];
+  if(!items.length){body.innerHTML='<tr><td colspan="13" class="ghost">No runs yet.</td></tr>';return}
+  body.innerHTML=items.slice(0,200).map(h=>{const peak=(h.gpu_trace&&h.gpu_trace.peak||[]).map(p=>fmtBytes(p.used_mb)).join(' · ')||'—';
+    return `<tr><td class="mono">${fmtTime(h.finished_at||h.started_at)}</td><td>${esc(h.label)}</td><td>${esc(h.engine)}</td><td>${esc(h.profile)}</td><td class="${h.status==='done'?'ok':h.status==='error'?'bad':''}">${h.status}</td><td class="mono">${h.seed}</td><td class="mono">${(h.resolution||[]).join('×')}</td><td>${h.frames??'—'}</td><td>${h.steps??'—'}</td><td>${peak}</td><td>${h.elapsed_s?Math.round(h.elapsed_s)+'s':'—'}</td><td>${(h.outputs||[]).map(o=>`<button class="mini" onclick="window.pywebview.api.open_path('${esc(o)}')">open</button>`).join(' ')||'—'}</td><td class="bad">${esc(h.error_message||h.error||'')}</td></tr>`}).join('')}
+
+/* ---------- settings ---------- */
+async function saveSettings(){state.settings={comfyui_url:$('sUrl').value,comfyui_input:$('sInput').value,comfyui_output:$('sOutput').value,comfyui_dir:$('sDir').value,comfyui_python:$('sPython').value,workflow_h3_ref2va:$('sH3Ref').value,workflow_h3_fl2va:$('sH3Fl').value,workflow_wan22:$('sWan').value,workflow_custom:$('sCustom').value,workflow_ad_sd15:state.bundledWorkflows.ad_sd15,workflow_ad_sdxl:state.bundledWorkflows.ad_sdxl,timeout_s:Number($('sTimeout').value),local_h3_authorized:$('sAuth').checked,default_h3_preset:$('preset').value,default_runtime_profile:state.profile,gpu_autoclean:$('sGpuAuto').value==='true',gpu_threshold:Number($('sGpuThr').value),gpu_check_interval_s:Number($('sGpuInt').value),preferred_output_dir:$('sOutDir').value};
+  const r=await window.pywebview.api.save_settings(state.settings);log(r.ok?'Settings saved':'Settings save failed')}
+async function folderInto(id){const p=await window.pywebview.api.choose_folder();if(p)$(id).value=p}
+async function fileInto(id,kind){const kinds={image:'image',video:'video',audio:'audio',workflow:'workflow',all:'all'};const p=await window.pywebview.api.choose_files(kinds[kind]||kind,false);if(p&&p.length)$(id).value=p[0]}
+async function comfyStatus(){const r=await window.pywebview.api.comfyui_status();const st=$('svcState');const btn=$('svcBtn');const top=$('comfyDot');const txt=$('comfyText');
+  if(st)st.textContent='state: '+r.state+(r.pid?' · pid '+r.pid:'');
+  top.className='s-dot'+(r.state==='READY'?' live':r.state==='STARTING'?' warn':' bad');
+  txt.textContent=r.state==='READY'?'ComfyUI ready':r.state==='STARTING'?'ComfyUI starting':r.state==='ERROR'?'ComfyUI error':'ComfyUI stopped';
+  btn.textContent=r.state==='READY'||r.state==='STARTING'?'Stop ComfyUI':'Start ComfyUI';}
+async function comfyStartStop(){const r=await window.pywebview.api.comfyui_status();
+  if(r.state==='READY'||r.state==='STARTING'){const s=await window.pywebview.api.comfyui_stop();log(s.ok?'ComfyUI stop requested':'Stop: '+s.error)}else{const s=await window.pywebview.api.comfyui_start();log(s.ok?'ComfyUI start requested · pid '+s.pid:'Start: '+s.error)}
+  setTimeout(comfyStatus,1500)}
+function fillBundled(){if(state.bundledWorkflows.ad_sd15)$('sAd15').value=state.bundledWorkflows.ad_sd15;if(state.bundledWorkflows.ad_sdxl)$('sAdSdxl').value=state.bundledWorkflows.ad_sdxl}
+
+/* ---------- init ---------- */
+window.addEventListener('pywebviewready',async()=>{
+  try{
+    const s=await window.pywebview.api.get_state();
+    state.settings=s.settings||{};state.presets=s.h3_presets||[];state.profiles=s.runtime_profiles||[];
+    state.profile=state.settings.default_runtime_profile||'auto';
+    state.bundledWorkflows.ad_sd15=state.settings.workflow_ad_sd15||'';
+    state.bundledWorkflows.ad_sdxl=state.settings.workflow_ad_sdxl||'';
+    const p=$('preset');state.presets.forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=x.label;p.appendChild(o)});p.value=state.settings.default_h3_preset||'vertical_4070';
+    renderProfiles();refreshRefs();
+    $('licenseNotice').textContent=s.h3_license_notice;
+    $('sUrl').value=state.settings.comfyui_url||'http://127.0.0.1:8188';$('sInput').value=state.settings.comfyui_input||'';$('sOutput').value=state.settings.comfyui_output||'';$('sDir').value=state.settings.comfyui_dir||'';$('sPython').value=state.settings.comfyui_python||'';
+    $('sH3Ref').value=state.settings.workflow_h3_ref2va||'';$('sH3Fl').value=state.settings.workflow_h3_fl2va||'';$('sWan').value=state.settings.workflow_wan22||'';$('sCustom').value=state.settings.workflow_custom||'';
+    $('sTimeout').value=state.settings.timeout_s||1800;$('sAuth').checked=!!state.settings.local_h3_authorized;
+    $('sGpuAuto').value=state.settings.gpu_autoclean===false?'false':'true';$('sGpuThr').value=state.settings.gpu_threshold??0.85;$('sGpuInt').value=state.settings.gpu_check_interval_s||5;
+    $('sOutDir').value=state.settings.preferred_output_dir||'';
+    const cats=$('mCategory');(s.motion_categories||[]).forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;cats.appendChild(o)});
+    refreshQueue();refreshGpu();comfyStatus();doctor();
+    setInterval(refreshQueue,3000);setInterval(refreshGpu,3000);
+    log('Desktop app initialized.');
+    if(location.search.indexOf('uitest')>=0){setTimeout(runUiTest,2500)}
+  }catch(e){log('INIT ERROR: '+e)}
+});
+
+/* ---- UI self-test (AVATAR_V2_UITEST=1) ---- */
+const uiErrors=[];
+window.addEventListener('error',ev=>uiErrors.push(String(ev.message||ev.error||'error')));
+window.addEventListener('unhandledrejection',ev=>uiErrors.push('rejection: '+String(ev.reason||'?')));
+async function runUiTest(){
+  const report={view_checks:{},api_checks:{},js_errors:uiErrors.slice(),preset_count:state.presets.length,profile_count:state.profiles.length};
+  const api=window.pywebview.api;
+  const probe=async(name,fn)=>{try{const r=await fn();report.api_checks[name]=r&&typeof r==='object'&&('ok' in r)?(r.ok?'ok':'ok='+r.ok+(r.error?' err='+r.error:'')):JSON.stringify(r).slice(0,120)}catch(e){report.api_checks[name]='THREW '+e}};
+  const wait=ms=>new Promise(r=>setTimeout(r,ms));
+  try{
+    for(const v of ['studio','vault','motions','scenes','history','settings']){
+      view(v);await wait(600);
+      const el=document.getElementById('view-'+v);
+      report.view_checks[v]=el&&el.classList.contains('active');
+    }
+    view('studio');await wait(400);
+    await probe('get_state',()=>api.get_state());
+    await probe('vault_list',()=>api.vault_list());
+    await probe('motions_list',()=>api.motions_list());
+    await probe('scenes_list',()=>api.scenes_list());
+    await probe('history',()=>api.history());
+    await probe('queue_state',()=>api.queue_state());
+    await probe('gpu_status',()=>api.gpu_status());
+    await probe('comfyui_status',()=>api.comfyui_status());
+    await probe('doctor',()=>api.doctor({settings:state.settings}));
+    setEngine('custom');
+    await probe('dry_run_custom',()=>api.dry_run(payload()));
+    setEngine('h3_ref2va');
+    await probe('dry_run_h3_gated',()=>api.dry_run(payload()));
+    await wait(400);
+    report.js_errors=uiErrors.slice();
+    await api.ui_test_report(report);
+    log('UI TEST COMPLETE: '+JSON.stringify(report));
+  }catch(e){
+    report.fatal=String(e);
+    try{await api.ui_test_report(report)}catch(_){}
+  }
+}
 </script>
 </body>
 </html>
