@@ -114,10 +114,10 @@ See `workflows/README.md` for the placeholder contract.
 
 | Renderer | Status |
 |---|---|
+| **Wan 2.2 fun-control (5B)** | **READY** — identity+motion renders verified at 832×480/960×544/704²/768², 8–20 steps, 33–81 frames, peak VRAM 87–94%. Canvas dims must be multiples of 32 (app snaps automatically). |
 | Custom ComfyUI / AnimateDiff SD 1.5 | READY — real renders verified |
-| Custom ComfyUI / AnimateDiff SDXL | PARTIALLY READY — model present, fit pending |
+| Custom ComfyUI / AnimateDiff SDXL | READY — 512²×16f verified (80% peak VRAM) |
 | MiniMax H3 Ref2VA / FL2VA | PARTIALLY READY — native ComfyUI nodes present, workflows structurally validated; BLOCKED on weights + license gate |
-| Wan 2.2 | PARTIALLY READY — native ComfyUI nodes present, workflow structurally validated; BLOCKED on weights |
 
 ## Install for development (Linux)
 
