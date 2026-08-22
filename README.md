@@ -1,25 +1,31 @@
 # Avatar V2 — H3 Desktop Studio
 
-Avatar V2 is a local-first desktop application and CLI for reference-driven synthetic-human video production. It separates identity, body, hair, wardrobe, motion, scene, audio, camera and renderer configuration rather than asking one video model to invent everything from a single prompt.
+Avatar V2 is a local-first desktop application for reference-driven synthetic-human video production. It separates identity, body, hair, wardrobe, motion, scene, audio, camera and renderer configuration rather than asking one video model to invent everything from a single prompt.
 
-The desktop branch is **MiniMax H3-first** with Wan 2.2 as the local fallback. It communicates with ComfyUI over HTTP and keeps ComfyUI workflow graphs authoritative, so model checkpoints, LoRAs, samplers and nodes can evolve independently of the application.
+The desktop branch is **MiniMax H3-first** with Wan 2.2 as the local fallback and bundled AnimateDiff lanes for older GPUs. It communicates with ComfyUI over HTTP and keeps ComfyUI workflow graphs authoritative, so model checkpoints, LoRAs, samplers and nodes can evolve independently of the application.
 
-## Desktop experience
+```
+AVATAR IDENTITY VAULT + BODY/HAIR/WARDROBE/MOTION/SCENE/AUDIO REFS
+        ↓
+REFERENCE COMPOSER  →  H3-NATIVE PROMPT COMPILER
+        ↓
+RUNTIME PROFILE RESOLVER  →  MODEL / WORKFLOW ROUTER
+        ↓
+COMFYUI PROVIDER  →  GPU MEMORY MANAGER  →  RENDER QUEUE
+        ↓
+OUTPUT / QA / HISTORY  →  DESKTOP APPLICATION
+```
 
-The Windows app uses a black Web3-style interface with a glowing pink/red heart identity. It exposes:
+## What the desktop app exposes
 
-- MiniMax H3 Ref2VA and FL2VA lanes.
-- Wan 2.2 and custom ComfyUI workflow lanes.
-- Separate identity/body/hair/wardrobe reference packs.
-- Motion video, scene, first/last frame and audio references.
-- H3 positional reference binding (`<Picture N>`, `<Video N>`, `<Audio N>`).
-- Timed motion prompting and physical hair/fabric/wind direction.
-- Adult-capable content classes with hard age/consent/provenance boundaries.
-- ComfyUI model/node discovery.
-- Runtime profiles for trying different memory/quality setups.
-- Sequential render queue with cancellation.
-- Profile Sweep for empirical 4070 testing.
-- Local job/run records under `~/.avatar_v2`.
+- **Studio** — renderer lanes (MiniMax H3 Ref2VA, H3 FL2VA, Wan 2.2, Custom ComfyUI), runtime profiles, timed motion prompting, wind physics, H3 reference-role bindings, best-of-N and Profile Sweep.
+- **Avatar Vault** — persistent local avatar definitions with structured identity/body/hair/wardrobe reference roles and stable-persona characteristics.
+- **Motion Library** — movement-only video assets with categories (walk_confident, turn_and_smile, …). Motion references transfer choreography, never identity.
+- **Scene Library** — local scene references with location/lighting/time-of-day/camera metadata.
+- **History / Runs** — every queued run retains engine, profile, model, workflow, seed, canvas, frames, steps, CFG, GPU, peak VRAM, elapsed time, cleanup events, outputs and the exact error.
+- **Settings** — ComfyUI URL/folders/service control, workflow files, H3 license gate, GPU auto-clean threshold/interval, preferred output directory. Persisted under `~/.avatar_v2/`.
+
+All libraries, runs, and settings live under `~/.avatar_v2/`. Nothing is uploaded anywhere.
 
 ## Runtime profiles
 
@@ -34,15 +40,15 @@ The app does not assume one configuration will work everywhere. Use the **Runtim
 | **H3 Low Memory · Quality** | INT8 + 4070-class canvas + reduced steps |
 | **Wan 2.2 Fallback** | Skip H3 and use the configured Wan workflow |
 
-**Profile Sweep** queues Auto, INT8, Low Memory and Low Memory · Quality with different deterministic seeds. Each queue record retains the exact profile, model, canvas, seed, timing and result/error so the working configuration can be determined experimentally.
+**Profile Sweep** queues Auto, INT8, Low Memory and Low Memory · Quality with different deterministic seeds. Each queue record retains the exact profile, model, canvas, seed, timing, VRAM peak and result/error so the working configuration can be determined empirically.
 
 ### Important 12 GB H3 note
 
 The H3 community UI we reviewed reports that FL2VA text/image-to-video works on a 12 GB RTX 3060 around 864×480, while Ref2VA remained roughly 1 GB over the card's available VRAM even after reducing resolution, steps, frame count and reference size. That makes the low-memory Ref2VA profiles genuine experiments, not a promise that Ref2VA will fit on 12 GB. If they still fail, Avatar V2 can move the shot to Wan locally or a separately configured larger/hosted renderer.
 
-## H3-native rules incorporated into V2
+## H3-native rules
 
-Avatar V2 now handles H3's practical generation constraints:
+Avatar V2 enforces H3's practical generation constraints:
 
 - 24 fps.
 - Dimensions from multiple-of-32 presets.
@@ -56,117 +62,123 @@ Avatar V2 now handles H3's practical generation constraints:
 
 Avatar V2 **does not download MiniMax H3 weights automatically**. Local H3 execution is disabled by default. The user/admin must explicitly confirm in Settings that local open-weight use is permitted by the current MiniMax H3 license or covered by a separate written MiniMax license.
 
-This is important because the current H3 Community License includes territorial restrictions. If local H3 is not enabled, the app can use the configured Wan local fallback instead. Hosted/API H3 can be added as a separate explicit provider rather than silently sending local prompts or avatar assets off-machine.
+If local H3 is not enabled, H3 queue requests are refused with that exact reason (they are not silently rerouted), and the app can use the configured Wan local fallback instead. Hosted/API H3 can be added as a separate explicit provider rather than silently sending local prompts or avatar assets off-machine.
 
 ## Hard content boundaries
 
 Adult workflows are supported only when every represented subject is an age-verified consenting adult or a synthetic adult persona with explicit adult provenance. Unknown provenance fails closed. Do not use the system for minors, non-consensual sexual content, or sexualized impersonation/deepfakes without the represented adult's consent.
 
-## Install for development
+## GPU memory auto-clean (mandatory architecture)
 
-Prerequisites:
+`avatar_v2/gpu_memory.py` is the production-safe evolution of the user's GPU auto-cleaner concept. It:
 
-- Windows 10/11 or Linux desktop
-- Python 3.11+
-- ComfyUI
-- `ffmpeg` / `ffprobe`
-- WebView2 Runtime on Windows (normally already present)
-- Renderer checkpoints/workflows you are authorized to use
+- reads all visible NVIDIA GPUs through `nvidia-smi`;
+- records VRAM used/total and utilization fraction;
+- samples VRAM during each render and records per-GPU peak usage;
+- defaults to an 85% cleanup threshold;
+- forces pre-render cleanup for `int8_12gb`, `low_memory`, and `low_memory_quality` profiles;
+- requests post-render cleanup after failed/cancelled renders and low-memory runs;
+- requests ComfyUI cleanup through `POST /free` with `unload_models=true` and `free_memory=true`;
+- records before/after memory snapshots and cleanup errors in queue state;
+- **never automatically kills arbitrary Python processes**. The emergency termination dialog in the GPU panel requires explicitly selected PIDs and confirmation.
+
+Environment controls:
+
+```text
+AVATAR_V2_GPU_AUTOCLEAN=1
+AVATAR_V2_GPU_THRESHOLD=0.85
+AVATAR_V2_GPU_CHECK_INTERVAL=5
+```
+
+The ComfyUI `/free` path matters because `torch.cuda.empty_cache()` in the Avatar V2 controller process cannot clear allocator/cache memory owned by the separate ComfyUI process. See `docs/GPU_MEMORY_MANAGER.md` and `docs/CUDA_ERROR_999_QUICK_REFERENCE.txt`.
+
+## ComfyUI integration
+
+Avatar V2 talks to ComfyUI at `http://127.0.0.1:8188` by default and supports:
+
+- `GET /system_stats`, `GET /object_info` (model/node discovery)
+- `POST /prompt`, `GET /history/{prompt_id}` (queueing and polling)
+- `POST /interrupt`, `POST /free` (cancel and memory release)
+- HTTP upload staging (`POST /upload/image`) or direct input-folder staging
+
+The Settings screen can start/stop a locally managed ComfyUI (only the process Avatar V2 itself started, bound to 127.0.0.1 — never 0.0.0.0).
+
+### Bundled workflows
+
+- `workflows/animatediff_sd15_api.json` and `workflows/animatediff_sdxl_api.json` — validated AnimateDiff T2V graphs (AnimateDiff-Evolved + VideoHelperSuite) selectable in the Custom lane.
+- Built-in dynamic workflow builders for **MiniMax H3 Ref2VA**, **MiniMax H3 FL2VA** and **Wan 2.2 first/last-frame-to-video**, constructed from the live ComfyUI schemas (ComfyUI 0.33 core nodes). When you configure your own exported API-format workflow in Settings, that file wins.
+
+See `workflows/README.md` for the placeholder contract.
+
+### Renderer availability on this machine (as deployed)
+
+| Renderer | Status |
+|---|---|
+| Custom ComfyUI / AnimateDiff SD 1.5 | READY — real renders verified |
+| Custom ComfyUI / AnimateDiff SDXL | PARTIALLY READY — model present, fit pending |
+| MiniMax H3 Ref2VA / FL2VA | PARTIALLY READY — native ComfyUI nodes present, workflows structurally validated; BLOCKED on weights + license gate |
+| Wan 2.2 | PARTIALLY READY — native ComfyUI nodes present, workflow structurally validated; BLOCKED on weights |
+
+## Install for development (Linux)
+
+Prerequisites: Ubuntu desktop (X11 or Wayland), Python 3.11+, ComfyUI, `ffmpeg`/`ffprobe`, GTK3 + WebKit2GTK (for pywebview).
 
 ```bash
 git clone https://github.com/Davisjxxxx/Content_Creation_System.git
 cd Content_Creation_System
 git checkout avatar-v2-h3-desktop
-python -m venv .venv
-```
-
-Windows PowerShell:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[desktop,dev]"
-avatar-v2-desktop
-```
-
-Linux/macOS shell:
-
-```bash
+python3 -m venv --system-site-packages .venv   # system gi is used by pywebview on Linux
 source .venv/bin/activate
 pip install -e '.[desktop,dev]'
 avatar-v2-desktop
 ```
 
-## Build the physical Windows desktop app
+## Linux desktop launcher
 
-From PowerShell in the repository root:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
+```bash
+./scripts/install_linux_desktop.sh
 ```
 
-The build script:
+This installs:
 
-1. creates/uses `.venv`,
-2. installs desktop + build dependencies,
-3. generates the black/pink/red glowing-heart app icon,
-4. packages the UI and Python backend with PyInstaller,
-5. produces:
+- `~/.local/share/applications/avatar-v2.desktop` (launcher: **Avatar V2**)
+- icons under `~/.local/share/icons/hicolor/`
+- a desktop shortcut when `~/Desktop` exists
 
-```text
-dist\AvatarV2\AvatarV2.exe
+The launcher prefers the PyInstaller build at `dist/AvatarV2/AvatarV2` when present and otherwise runs the project venv. It is working-directory independent.
+
+### Build the packaged app (optional)
+
+```bash
+python -m PyInstaller --noconfirm --clean scripts/avatar_v2.spec
 ```
 
-The generated `.exe` is the physical desktop launcher. ComfyUI remains a separate local renderer service so you can update GPU/model stacks without rebuilding the entire app.
-
-## Connect ComfyUI
-
-Open **Settings** in Avatar V2 and configure:
-
-- ComfyUI base URL, normally `http://127.0.0.1:8188`
-- optional ComfyUI input folder
-- ComfyUI output folder
-- H3 Ref2VA API-format workflow
-- H3 FL2VA API-format workflow
-- Wan 2.2 API-format workflow
-
-If the input directory is omitted, Avatar V2 can stage inputs through ComfyUI's HTTP upload endpoint. This also allows a separate ComfyUI machine on your LAN without giving that machine access to this GitHub repository.
-
-See [`workflows/README.md`](workflows/README.md) for supported placeholders and H3 bindings.
+Produces `dist/AvatarV2/`. The venv launcher remains a supported fallback if a future pywebview/GTK packaging change breaks the bundle.
 
 ## CLI remains available
-
-The V2 CLI from the previous branch remains intact:
 
 ```bash
 avatar-v2 validate examples/avatar.synthetic.yaml examples/shot.realism.yaml
 avatar-v2 plan examples/avatar.synthetic.yaml examples/shot.realism.yaml -o build/job.json
 avatar-v2 plan-batch examples/avatar.synthetic.yaml examples/shot.realism.yaml -n 4
-pytest
+avatar-v2 doctor examples/provider.comfyui.yaml
+avatar-v2 qa output.mp4
 ```
 
-## Repository map
+## Developer commands
 
-```text
-avatar_v2/
-  desktop.py             pywebview desktop backend
-  ui/index.html          Web3/neon heart desktop UI
-  h3_runtime.py          H3 frame/canvas constraints + presets
-  h3_access.py           model discovery and license-aware recommendation
-  runtime_profiles.py    Auto / quality / INT8 / low-memory profiles
-  render_queue.py        sequential render queue + chaining seam
-  composer.py            timed prompt + reference binding compiler
-  models.py              avatar/shot/job contracts
-  policy.py              adult-capable hard boundaries
-  providers/comfyui.py   ComfyUI HTTP client, discovery, upload/render
-  cli.py                 CLI entry point
-scripts/
-  build_windows.ps1      one-command Windows app package
-  make_icon.py           glowing-heart .ico generator
-  desktop_entry.py       PyInstaller entry point
-workflows/
-  README.md              workflow placeholder contract
+```bash
+python -m compileall -q avatar_v2 scripts
+pytest -q
 ```
 
-## Design rule
+## Privacy
 
-The application should remain **renderer modular**. H3 is currently the primary multimodal experiment, not a permanent dependency. Better engines can be added behind the same identity/reference/job contracts without rebuilding the avatar library or production workflow.
+Local-first by design: no analytics, no telemetry, no automatic prompt or avatar uploading, no public network binding, no secrets in source, and no hosted model provider enabled implicitly. Private files live in ignored directories (`assets/private/`, `runs/`) and model weights/media are gitignored.
+
+## Troubleshooting
+
+- **ComfyUI unreachable** — use Settings → Start ComfyUI (requires `comfyui_dir` + `comfyui_python`), or start it manually and press Check in Studio.
+- **CUDA out of memory** — smaller canvas / fewer frames / Low Memory profile. The error message includes the classification.
+- **CUDA error 999 while nvidia-smi works** — see `docs/CUDA_ERROR_999_QUICK_REFERENCE.txt` (privileged fixes are never executed automatically).
+- **Render failed** — every run in History retains the exact underlying exception plus a human-readable diagnosis; the app never reduces failures to "Render failed."
