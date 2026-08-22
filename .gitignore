@@ -19,3 +19,5 @@ assets/private/
 *.gguf
 *.pt
 *.pth
+renders/
+logs/
