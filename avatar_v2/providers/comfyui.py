@@ -10,6 +10,15 @@ from typing import Any
 import httpx
 
 from ..models import ProviderConfig, RenderJob
+from ..workflows_builder import BUILTIN_BUILDERS
+
+
+class ComfyUIExecutionError(RuntimeError):
+    """A ComfyUI workflow executed but one of its nodes failed."""
+
+
+class ComfyUINotReadyError(RuntimeError):
+    """ComfyUI is unreachable at the configured base URL."""
 
 
 def replace_placeholders(value: Any, mapping: dict[str, Any]) -> Any:
@@ -168,6 +177,14 @@ class ComfyUIProvider:
         *,
         stage_assets: bool = True,
     ) -> dict[str, Any]:
+        raw = str(workflow_path)
+        if raw.startswith("builtin:"):
+            engine = raw.split(":", 1)[1]
+            builder = BUILTIN_BUILDERS.get(engine)
+            if builder is None:
+                raise RuntimeError(f"No builtin workflow builder for engine '{engine}'.")
+            mapping = self._stage_assets(job) if stage_assets else dict(job.asset_map)
+            return builder(mapping)
         workflow = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
         mapping = self._stage_assets(job) if stage_assets else dict(job.asset_map)
         return replace_placeholders(workflow, mapping)
@@ -208,6 +225,17 @@ class ComfyUIProvider:
                     status = item.get("status", {})
                     if status.get("completed") is True or item.get("outputs"):
                         return item
+                    if status.get("status_str") == "error":
+                        messages = status.get("messages") or []
+                        for message in reversed(messages):
+                            if message[0] == "execution_error":
+                                detail = message[1]
+                                raise ComfyUIExecutionError(
+                                    f"ComfyUI node {detail.get('node_id')} "
+                                    f"({detail.get('node_type')}) failed: "
+                                    f"{detail.get('exception_message', 'unknown error').strip()}"
+                                )
+                        raise ComfyUIExecutionError("ComfyUI execution failed without a node-level message")
                 time.sleep(1.5)
         raise TimeoutError(f"ComfyUI job {prompt_id} exceeded {self.config.timeout_s}s")
 

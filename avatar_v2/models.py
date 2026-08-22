@@ -34,11 +34,9 @@ class AvatarManifest(BaseModel):
     persistent_features: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def require_subject_and_identity(self) -> "AvatarManifest":
+    def require_subject(self) -> "AvatarManifest":
         if not self.subjects:
             raise ValueError("avatar manifest requires at least one subject")
-        if not self.identity_refs:
-            raise ValueError("avatar manifest requires at least one identity reference")
         return self
 
 

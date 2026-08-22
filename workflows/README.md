@@ -15,10 +15,29 @@ Avatar V2 keeps the desktop application independent from ComfyUI internals. Expo
 - `${HEIGHT}`
 - `${FPS}`
 - `${FRAMES}`
+- `${DURATION}`
 - `${SEED}`
 - `${STEPS}`
 - `${CFG}`
 - `${RUNTIME_PROFILE}`
+
+## Bundled AnimateDiff workflows
+
+Avatar V2 ships two validated API-format AnimateDiff workflows built from the installed ComfyUI node schemas (AnimateDiff-Evolved + VideoHelperSuite):
+
+- `animatediff_sd15_api.json` — SD 1.5 lane (e.g. `Deliberate_v6.safetensors` + `mm_sd_v15_v2.ckpt`)
+- `animatediff_sdxl_api.json` — SDXL lane (e.g. `Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors` + `mm_sdxl_v10_beta.ckpt`)
+
+These are selected in the Studio's **Custom ComfyUI** renderer lane and support the additional placeholders:
+
+- `${CHECKPOINT}` — checkpoint filename visible to ComfyUI
+- `${MOTION_MODEL}` — AnimateDiff motion module filename
+- `${BETA_SCHEDULE}` — e.g. `sqrt_linear (AnimateDiff)` for SD 1.5, `linear (AnimateDiff-SDXL)` for SDXL
+- `${SAMPLER_NAME}` — KSampler sampler
+- `${SCHEDULER}` — KSampler scheduler
+- `${OUTPUT_PREFIX}` — VHS_VideoCombine filename prefix
+
+The graph is: `CheckpointLoaderSimple → ADE_AnimateDiffLoaderWithContext → KSampler → VAEDecode → VHS_VideoCombine` (h264 MP4 output at the requested fps). Re-validate these files if you swap in a different ComfyUI build with different node signatures.
 
 ## MiniMax H3 placeholders
 

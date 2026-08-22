@@ -69,7 +69,7 @@ def _h3_reference_sets(
     shot: ShotSpec,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
     refs = shot.references
-    primary = refs.init_image or avatar.identity_refs[0]
+    primary = refs.init_image or (avatar.identity_refs[0] if avatar.identity_refs else None)
 
     image_candidates: list[tuple[str | None, str]] = [(primary, "primary identity anchor")]
     image_candidates += [(p, "additional identity anchor") for p in avatar.identity_refs]
@@ -238,7 +238,7 @@ def _add_h3_refs(assets: dict[str, str | int | float | None], avatar: AvatarMani
 def build_job(avatar: AvatarManifest, shot: ShotSpec) -> RenderJob:
     enforce_policy(avatar, shot)
     selected = choose_engine(shot)
-    init_image = shot.references.init_image or avatar.identity_refs[0]
+    init_image = shot.references.init_image or (avatar.identity_refs[0] if avatar.identity_refs else None)
     negative = DEFAULT_NEGATIVE
     if shot.negative_prompt:
         negative = f"{DEFAULT_NEGATIVE}, {shot.negative_prompt.strip()}"

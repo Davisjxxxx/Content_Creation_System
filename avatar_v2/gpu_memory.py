@@ -137,6 +137,17 @@ class GPUMemoryManager:
             interval = 5.0
         return cls(threshold=threshold, check_interval_s=interval, enabled=enabled)
 
+    def update_settings(
+        self,
+        *,
+        enabled: bool,
+        threshold: float,
+        check_interval_s: float,
+    ) -> None:
+        self.enabled = bool(enabled)
+        self.threshold = min(max(float(threshold), 0.50), 0.99)
+        self.check_interval_s = max(float(check_interval_s), 1.0)
+
     def status(self) -> dict[str, Any]:
         snapshots = query_gpu_memory()
         return {
@@ -185,6 +196,10 @@ class GPUMemoryManager:
             self._trace_peak = {}
             self._trace_samples = 0
         return report
+
+    def current_trace_peak(self) -> list[dict[str, Any]]:
+        with self._trace_lock:
+            return [self._trace_peak[index].public() for index in sorted(self._trace_peak)]
 
     def maybe_cleanup(
         self,
