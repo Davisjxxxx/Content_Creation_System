@@ -21,6 +21,7 @@ _PERMISSION = re.compile(r"permission denied|errno 13", re.IGNORECASE)
 _H3_DIMS = re.compile(r"dimension|multiple of 32|canvas", re.IGNORECASE)
 _H3_FRAMES = re.compile(r"frame count|17k|frame grid|valid frame", re.IGNORECASE)
 _SWAP_OOM = re.compile(r"cannot allocate memory|killed", re.IGNORECASE)
+_ROPE_DIMS = re.compile(r"apply_rope freqs|broadcastable", re.IGNORECASE)
 
 
 def classify_exception(exc: BaseException) -> ClassifiedError:
@@ -63,6 +64,12 @@ def classify_exception(exc: BaseException) -> ClassifiedError:
         return ClassifiedError("disk_full", "The output disk is full. Free space before rendering.", text)
     if _PERMISSION.search(text):
         return ClassifiedError("permission_error", "A file or folder permission was denied.", text)
+    if _ROPE_DIMS.search(text):
+        return ClassifiedError(
+            "invalid_canvas",
+            "The requested canvas is invalid for this renderer (Wan 2.2 requires dimensions that are multiples of 32).",
+            text,
+        )
     if _H3_FRAMES.search(text):
         return ClassifiedError(
             "invalid_h3_frames",

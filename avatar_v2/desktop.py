@@ -21,7 +21,7 @@ from .providers import ComfyUIProvider
 from .render_queue import QueuedRender, RenderQueue
 from .runtime_profiles import payload as runtime_profiles_payload
 from .runtime_profiles import resolve_profile
-from .workflows_builder import WAN_FPS, wan_frame_count
+from .workflows_builder import WAN_FPS, snap_wan_canvas, wan_frame_count
 
 APP_HOME = Path.home() / ".avatar_v2"
 CONFIG_PATH = APP_HOME / "desktop.json"
@@ -382,7 +382,12 @@ class DesktopAPI:
             job.asset_map.setdefault("WAN_LORA_STRENGTH", float(settings.get("wan_lora_strength") or 1.0))
             job.asset_map["FPS"] = WAN_FPS
             job.asset_map["FRAMES"] = wan_frame_count(shot.duration_s)
-            job = job.model_copy(update={"shot": shot.model_copy(update={"fps": WAN_FPS})})
+            wan_width, wan_height = snap_wan_canvas(shot.width, shot.height)
+            job.asset_map["WIDTH"] = wan_width
+            job.asset_map["HEIGHT"] = wan_height
+            job = job.model_copy(update={
+                "shot": shot.model_copy(update={"fps": WAN_FPS, "width": wan_width, "height": wan_height})
+            })
         job.asset_map.setdefault("OUTPUT_PREFIX", f"avatar_v2_{shot.shot_id[:24]}")
         workflow = self._workflow_for(payload, job.selected_engine)
         if not workflow and job.selected_engine in {"h3_ref2va", "h3_fl2va", "wan22"}:

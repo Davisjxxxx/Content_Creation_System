@@ -152,3 +152,16 @@ def test_wan_funcontrol_builder_wires_identity_and_motion():
     assert inputs["ref_image"] == [str(int(task_id) - 2), 0]
     assert inputs["control_video"][0] == str(int(task_id) - 1)
     assert inputs["length"] == 49
+
+
+def test_wan_canvas_snaps_to_multiple_of_32():
+    from avatar_v2.workflows_builder import snap_wan_canvas
+    assert snap_wan_canvas(720, 720) == (704, 704)
+    snapped = snap_wan_canvas(480, 272)
+    assert snapped[0] % 32 == 0 and snapped[1] % 32 == 0
+    assert snap_wan_canvas(832, 480) == (832, 480)
+
+
+def test_classify_rope_canvas_error():
+    classified = classify_exception(RuntimeError("apply_rope freqs shape is not broadcastable to input"))
+    assert classified.category == "invalid_canvas"

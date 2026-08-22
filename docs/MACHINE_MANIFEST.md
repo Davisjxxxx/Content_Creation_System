@@ -52,17 +52,36 @@ ComfyUI `models/` at `/home/jd/AvatarForge/comfyui/models/`:
 
 Checkpoints `Deliberate_v6`, `Juggernaut-XL_v9`, `v1-5-pruned-emaonly` and `sdxl_vae` are symlinks into the preserved legacy tree at `/home/jd/avatar_project_legacy/`.
 
-## Wan 2.2 additions (2026-08-22, in progress)
+## Wan 2.2 additions (2026-08-22)
 
 Downloaded from `Comfy-Org/Wan_2.2_ComfyUI_Repackaged` (split_files):
 
 | File | Target dir | sha256 |
 |---|---|---|
-| wan2.2_fun_control_5B_bf16.safetensors (10.0 GB) | diffusion_models/ | pending download |
-| umt5_xxl_fp8_e4m3fn_scaled.safetensors (6.74 GB) | text_encoders/ | pending download |
-| wan2.2_vae.safetensors (1.41 GB) | vae/ | pending download |
-| wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors (1.23 GB) | loras/ | pending download |
-| wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors (1.23 GB) | loras/ | pending download |
+| wan2.2_fun_control_5B_bf16.safetensors (10.0 GB) | diffusion_models/ | `ace4718a7c87ee3e5606a68ab79142c4395e81aece76b8120bc886f0fbbe1d16` |
+| umt5_xxl_fp8_e4m3fn_scaled.safetensors (6.74 GB) | text_encoders/ | `c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68` |
+| wan2.2_vae.safetensors (1.41 GB) | vae/ | `e40321bd36b9709991dae2530eb4ac303dd168276980d3e9bc4b6e2b75fed156` |
+| wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors (1.23 GB) | loras/ | `698321cb86bd30c4af06c9b84e656a1048c8cb54e06d50694536fb5de37fde41` |
+| wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors (1.23 GB) | loras/ | `ec95216e614b3c132c11bfb387b11feedf62163150ccc9068bca8a189771e75a` |
+
+Note: the lightx2v LoRAs target the 14B t2v/i2v models, not fun_control_5B.
+
+## Wan 2.2 fun-control render envelope (AV2-RENDER-GATE-001, 2026-08-22)
+
+ComfyUI started with `--fp8_e4m3fn-unet` (on-the-fly fp8 UNet weights).
+
+| Config | Frames | Steps | Peak VRAM | Result |
+|---|---|---|---|---|
+| 832×480 ref-image only | 81 | 8 | 7095 MB (87%) | PASS |
+| 832×480 identity+motion | 33 | 12 | 7555 MB (92%) | PASS |
+| 832×480 identity+motion | 49 | 20 | 7283 MB (89%) | PASS |
+| 832×480 identity+motion | 81 | 20 | 7616 MB (93%) | PASS |
+| 960×544 identity+motion | 33 | 20 | 7251 MB (89%) | PASS |
+| 704×704 identity+motion | 33 | 20 | 7737 MB (94%) | PASS |
+| 768×768 identity+motion | 33 | 20 | 7737 MB (94%) | PASS |
+| 480×272 / 720×720 | — | — | — | FAIL — `apply_rope freqs shape is not broadcastable` |
+
+**Wan 2.2 canvas rule: both dimensions must be multiples of 32** (RoPE fails on odd latent dims). The desktop app now snaps Wan canvases to 32 automatically.
 
 ## Proven render envelope (2026-08-21, RTX 4070 Laptop 8 GB)
 

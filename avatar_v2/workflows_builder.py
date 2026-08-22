@@ -36,6 +36,7 @@ WAN_FPS = 16
 WAN_FRAME_STEP = 4
 WAN_FRAME_OFFSET = 1
 WAN_MAX_FRAMES = 481
+WAN_CANVAS_MULTIPLE = 32
 
 
 def wan_frame_count(duration_s: float) -> int:
@@ -43,6 +44,13 @@ def wan_frame_count(duration_s: float) -> int:
     requested = max(WAN_FRAME_OFFSET, round(float(duration_s) * WAN_FPS))
     snapped = requested + (WAN_FRAME_OFFSET - (requested % WAN_FRAME_STEP)) % WAN_FRAME_STEP
     return min(snapped, WAN_MAX_FRAMES)
+
+
+def snap_wan_canvas(width: int, height: int) -> tuple[int, int]:
+    """Snap to multiples of 32 — Wan 2.2 RoPE fails on odd latent dims otherwise."""
+    width = max(WAN_CANVAS_MULTIPLE, round(width / WAN_CANVAS_MULTIPLE) * WAN_CANVAS_MULTIPLE)
+    height = max(WAN_CANVAS_MULTIPLE, round(height / WAN_CANVAS_MULTIPLE) * WAN_CANVAS_MULTIPLE)
+    return width, height
 
 
 def build_h3_common(
@@ -108,12 +116,21 @@ def build_h3_common(
                 next_id += 1
             elif key == "videos":
                 node_id = str(next_id)
-                graph[node_id] = _node("VHS_LoadVideoPath", video=value)
+                graph[node_id] = _node(
+                    "VHS_LoadVideoPath",
+                    video=f"input/{value}",
+                    force_rate=0,
+                    custom_width=0,
+                    custom_height=0,
+                    frame_load_cap=0,
+                    skip_first_frames=0,
+                    select_every_nth=1,
+                )
                 slot_links[key].append(_link(node_id))
                 next_id += 1
             elif key == "audios":
                 node_id = str(next_id)
-                graph[node_id] = _node("VHS_LoadAudio", audio_file=value)
+                graph[node_id] = _node("VHS_LoadAudio", audio_file=f"input/{value}")
                 slot_links[key].append(_link(node_id))
                 next_id += 1
 
@@ -389,7 +406,16 @@ def build_wan_funcontrol_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
 
     control_video = _stage_entry(mapping, "MOTION_VIDEO")
     if control_video:
-        graph[str(next_id)] = _node("VHS_LoadVideoPath", video=control_video)
+        graph[str(next_id)] = _node(
+            "VHS_LoadVideoPath",
+            video=f"input/{control_video}",
+            force_rate=0,
+            custom_width=0,
+            custom_height=0,
+            frame_load_cap=0,
+            skip_first_frames=0,
+            select_every_nth=1,
+        )
         task_inputs["control_video"] = _link(next_id, 0)
         next_id += 1
 
