@@ -57,6 +57,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "wan_vae": "",
     "wan_lora": "",
     "wan_lora_strength": 1.0,
+    "upscale_model": "4x-UltraSharp.pth",
     "timeout_s": 1800,
     "local_h3_authorized": False,
     "h3_local_fallback": "wan22",
@@ -390,7 +391,7 @@ class DesktopAPI:
             })
         job.asset_map.setdefault("OUTPUT_PREFIX", f"avatar_v2_{shot.shot_id[:24]}")
         workflow = self._workflow_for(payload, job.selected_engine)
-        if not workflow and job.selected_engine in {"h3_ref2va", "h3_fl2va", "wan22"}:
+        if not workflow and job.selected_engine in {"h3_ref2va", "h3_fl2va", "wan22", "upscale"}:
             if job.selected_engine == "wan22":
                 mode = str((payload.get("advanced") or {}).get("WAN_MODE", "funcontrol"))
                 workflow = "builtin:wan22_funcontrol" if mode != "flf2v" else "builtin:wan22"
@@ -726,6 +727,57 @@ class DesktopAPI:
         preferred = str(self._settings().get("preferred_output_dir") or "")
         target = preferred or str(Path.home())
         return self.open_path(target)
+
+    def queue_upscale(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Queue an upscale job for a finished render's MP4 output."""
+        try:
+            video = str((payload.get("video") or "").strip())
+            if not video:
+                return {"ok": False, "error": "video path is required"}
+            source = Path(video).expanduser()
+            if not source.is_file():
+                return {"ok": False, "error": f"video not found: {source}"}
+            fps = 16
+            try:
+                from .qa import ffprobe_video
+
+                probe = ffprobe_video(source)
+                num, _, den = str(probe.get("avg_frame_rate") or "16/1").partition("/")
+                if den and float(den):
+                    fps = float(num) / float(den)
+                else:
+                    fps = float(probe.get("avg_frame_rate") or 16)
+            except Exception:
+                pass
+            upscale_payload = {
+                "runtime_profile": "auto",
+                "label": str(payload.get("label") or f"upscale · {source.stem}"),
+                "avatar": {
+                    "avatar_id": "upscale", "display_name": "Upscale",
+                    "subject_kind": "synthetic", "age_verified_18_plus": True, "consent_confirmed": True,
+                    "identity_refs": [], "body_refs": [], "hair_refs": [], "wardrobe_refs": [],
+                    "persistent_features": [],
+                },
+                "shot": {
+                    "shot_id": "upscale", "content_class": "general",
+                    "user_prompt": "Upscale pass",
+                    "duration_s": 2, "seed": 41001, "engine_preference": "upscale",
+                    "width": 832, "height": 480, "fps": int(round(fps)),
+                    "camera": {}, "wind": {},
+                    "references": {"init_image": None, "last_frame": None, "motion_video": None,
+                                   "scene_image": None, "audio": None,
+                                   "extra_images": [], "extra_videos": [], "extra_audios": []},
+                },
+                "advanced": {
+                    "UPSCALE_MODEL": str(payload.get("scale_model")
+                                         or self._settings().get("upscale_model") or "4x-UltraSharp.pth"),
+                    "OUTPUT_PREFIX": f"upscale_{source.stem[:40]}",
+                    "SOURCE_VIDEO": str(source),
+                },
+            }
+            return self.queue_render(upscale_payload)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     def queue_best_of(self, payload: dict[str, Any], count: int = 4) -> dict[str, Any]:
         count = max(2, min(int(count), 8))

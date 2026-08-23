@@ -13,6 +13,7 @@ EngineName = Literal[
     "ltx25",
     "seedance",
     "custom",
+    "upscale",
 ]
 
 

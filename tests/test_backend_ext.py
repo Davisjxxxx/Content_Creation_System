@@ -165,3 +165,22 @@ def test_wan_canvas_snaps_to_multiple_of_32():
 def test_classify_rope_canvas_error():
     classified = classify_exception(RuntimeError("apply_rope freqs shape is not broadcastable to input"))
     assert classified.category == "invalid_canvas"
+
+
+def test_upscale_builder_wires_video_and_model():
+    from avatar_v2.workflows_builder import build_upscale_workflow
+    graph = build_upscale_workflow({
+        "SOURCE_VIDEO": "src.mp4", "UPSCALE_MODEL": "4x-UltraSharp.pth",
+        "FPS": 16, "OUTPUT_PREFIX": "up",
+    })
+    kinds = {nid: n["class_type"] for nid, n in graph.items()}
+    assert set(kinds.values()) == {"VHS_LoadVideoPath", "UpscaleModelLoader", "ImageUpscaleWithModel", "VHS_VideoCombine"}
+    loader = next(n for n in graph.values() if n["class_type"] == "VHS_LoadVideoPath")
+    assert loader["inputs"]["video"] == "input/src.mp4"
+
+
+def test_upscale_builder_requires_source():
+    import pytest
+    from avatar_v2.workflows_builder import build_upscale_workflow
+    with pytest.raises(RuntimeError):
+        build_upscale_workflow({"UPSCALE_MODEL": "m.pth"})

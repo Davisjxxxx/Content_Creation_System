@@ -39,7 +39,7 @@ def replace_placeholders(value: Any, mapping: dict[str, Any]) -> Any:
 
 
 def _is_asset_key(key: str) -> bool:
-    fixed = {"INIT_IMAGE", "LAST_FRAME", "MOTION_VIDEO", "SCENE_IMAGE", "AUDIO"}
+    fixed = {"INIT_IMAGE", "LAST_FRAME", "MOTION_VIDEO", "SCENE_IMAGE", "AUDIO", "SOURCE_VIDEO"}
     dynamic_prefixes = (
         "IDENTITY_REF_",
         "BODY_REF_",

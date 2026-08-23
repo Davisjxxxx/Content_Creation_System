@@ -458,9 +458,62 @@ def build_wan_funcontrol_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
     return graph
 
 
+def build_upscale_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
+    """Upscale an existing MP4 frame-by-frame through an ESRGAN-style model."""
+    graph: dict[str, Any] = {}
+    next_id = 1
+
+    source = _stage_entry(mapping, "SOURCE_VIDEO")
+    if source is None:
+        raise RuntimeError("SOURCE_VIDEO asset is required for the upscale workflow")
+
+    graph[str(next_id)] = _node(
+        "VHS_LoadVideoPath",
+        video=f"input/{source}",
+        force_rate=0,
+        custom_width=0,
+        custom_height=0,
+        frame_load_cap=0,
+        skip_first_frames=0,
+        select_every_nth=1,
+    )
+    load_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "UpscaleModelLoader",
+        model_name=_value(mapping, "UPSCALE_MODEL", "4x-UltraSharp.pth"),
+    )
+    model_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "ImageUpscaleWithModel",
+        upscale_model=_link(model_id),
+        image=_link(load_id, 0),
+    )
+    upscale_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "VHS_VideoCombine",
+        images=_link(upscale_id),
+        frame_rate=float(_value(mapping, "FPS", 16)),
+        loop_count=0,
+        filename_prefix=_value(mapping, "OUTPUT_PREFIX", "avatar_v2_upscale"),
+        format="video/h264-mp4",
+        pingpong=False,
+        save_output=True,
+    )
+    next_id += 1
+
+    return graph
+
+
 BUILTIN_BUILDERS = {
     "h3_ref2va": build_h3_ref2va_workflow,
     "h3_fl2va": build_h3_fl2va_workflow,
     "wan22": build_wan_flf2v_workflow,
     "wan22_funcontrol": build_wan_funcontrol_workflow,
+    "upscale": build_upscale_workflow,
 }
