@@ -65,15 +65,26 @@ def build_h3_common(
 
     graph[str(next_id)] = _node(
         "UNETLoader",
-        unet_name=_value(mapping, "H3_DIFFUSION_MODEL", "minimax_h3.safetensors"),
+        unet_name=_value(mapping, "H3_DIFFUSION_MODEL", "minimax_h3_fl2va_pruned_int8_convrot.safetensors"),
         weight_dtype=_value(mapping, "WEIGHT_DTYPE", "default"),
     )
     unet_id = next_id
     next_id += 1
 
+    h3_lora = _stage_entry(mapping, "H3_LORA")
+    if h3_lora:
+        graph[str(next_id)] = _node(
+            "LoraLoaderModelOnly",
+            model=_link(unet_id),
+            lora_name=h3_lora,
+            strength_model=float(_value(mapping, "H3_LORA_STRENGTH", 1.0)),
+        )
+        unet_id = next_id
+        next_id += 1
+
     graph[str(next_id)] = _node(
         "CLIPLoader",
-        clip_name=_value(mapping, "H3_TEXT_ENCODER", "qwen3vl_32b.safetensors"),
+        clip_name=_value(mapping, "H3_TEXT_ENCODER", "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"),
         type="minimax",
     )
     clip_id = next_id
@@ -81,14 +92,14 @@ def build_h3_common(
 
     graph[str(next_id)] = _node(
         "VAELoader",
-        vae_name=_value(mapping, "H3_VAE", "minimax_h3_vae.safetensors"),
+        vae_name=_value(mapping, "H3_VAE", "minimax_h3_video_vae_fp16.safetensors"),
     )
     vae_id = next_id
     next_id += 1
 
     graph[str(next_id)] = _node(
         "VAELoader",
-        vae_name=_value(mapping, "H3_AUDIO_VAE", "minimax_h3_audio_vae.safetensors"),
+        vae_name=_value(mapping, "H3_AUDIO_VAE", "minimax_h3_audio_vae_fp32.safetensors"),
     )
     audio_vae_id = next_id
     next_id += 1
