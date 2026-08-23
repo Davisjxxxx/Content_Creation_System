@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import shutil
 import time
 from pathlib import Path
@@ -38,18 +39,12 @@ def replace_placeholders(value: Any, mapping: dict[str, Any]) -> Any:
     return value
 
 
+_DYNAMIC_ASSET = re.compile(r"^(IDENTITY_REF|BODY_REF|HAIR_REF|WARDROBE_REF|H3_PICTURE|H3_VIDEO|H3_AUDIO)_\d+$")
+
+
 def _is_asset_key(key: str) -> bool:
     fixed = {"INIT_IMAGE", "LAST_FRAME", "MOTION_VIDEO", "SCENE_IMAGE", "AUDIO", "SOURCE_VIDEO"}
-    dynamic_prefixes = (
-        "IDENTITY_REF_",
-        "BODY_REF_",
-        "HAIR_REF_",
-        "WARDROBE_REF_",
-        "H3_PICTURE_",
-        "H3_VIDEO_",
-        "H3_AUDIO_",
-    )
-    return key in fixed or key.startswith(dynamic_prefixes)
+    return key in fixed or bool(_DYNAMIC_ASSET.match(key))
 
 
 def _combo_options(spec: Any) -> list[str]:

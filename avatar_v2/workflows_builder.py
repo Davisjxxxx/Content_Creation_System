@@ -148,13 +148,16 @@ def build_h3_common(
     inputs: dict[str, Any] = {
         "clip": _link(clip_id),
         "vae": _link(vae_id),
-        "audio_vae": _link(audio_vae_id),
         "prompt": _value(mapping, "PROMPT", ""),
         "width": int(_value(mapping, "WIDTH", 480)),
         "height": int(_value(mapping, "HEIGHT", 864)),
         "length": int(_value(mapping, "FRAMES", 125)),
         **task_inputs,
     }
+    # Only Ref2VA's execute() accepts audio_vae; FL2VA carries audio purely
+    # through the AV latent (decoded later by VAEDecodeAudio).
+    if task_node == "MiniMaxH3ReferenceToVideo":
+        inputs["audio_vae"] = _link(audio_vae_id)
     if slot_links.get("images"):
         inputs["ref_images"] = slot_links["images"]
     if slot_links.get("videos"):
