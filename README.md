@@ -114,7 +114,7 @@ See `workflows/README.md` for the placeholder contract.
 
 | Renderer | Status |
 |---|---|
-| **Wan 2.2 fun-control (5B)** | **READY** — identity+motion renders verified at 832×480/960×544/704²/768², 8–20 steps, 33–81 frames, peak VRAM 87–94%. Canvas dims must be multiples of 32 (app snaps automatically). |
+| **Wan 2.2 fun-control (5B)** | **READY** — identity+motion renders verified at 832×480/960×544/704²/768², 8–20 steps, 33–81 frames, peak VRAM 87–94%. Canvas dims must be multiples of 32 (app snaps automatically). Motion references must be generated at the exact target resolution with neutral color balance and matching framing — mismatched motion sources cause pixelation, color cast, and identity drift. |
 | Custom ComfyUI / AnimateDiff SD 1.5 | READY — real renders verified |
 | Custom ComfyUI / AnimateDiff SDXL | READY — 512²×16f verified (80% peak VRAM) |
 | MiniMax H3 Ref2VA / FL2VA | PARTIALLY READY — native ComfyUI nodes present, workflows structurally validated; BLOCKED on weights + license gate |

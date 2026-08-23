@@ -83,6 +83,8 @@ ComfyUI started with `--fp8_e4m3fn-unet` (on-the-fly fp8 UNet weights).
 
 **Wan 2.2 canvas rule: both dimensions must be multiples of 32** (RoPE fails on odd latent dims). The desktop app now snaps Wan canvases to 32 automatically.
 
+**Wan motion-reference rule (visual QA, 2026-08-23):** generate motion references at the exact target resolution with neutral color balance and framing that matches the identity reference. A 704² motion source resampled to 832×480 produced pixelated first frames, a red cast mid-clip, and end-clip identity drift (eye shape/color changes); regenerating the motion source at 832×480 with a neutral gray-studio prompt resolved all three — reference and all sampled output frames read as the same person.
+
 ## Proven render envelope (2026-08-21, RTX 4070 Laptop 8 GB)
 
 | Config | Peak VRAM | Result |
