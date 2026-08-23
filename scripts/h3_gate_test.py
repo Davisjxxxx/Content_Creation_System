@@ -25,8 +25,10 @@ NEGATIVE = "blurry, distorted, warped anatomy, flicker, low quality, distorted e
 
 def payload(label: str, seed: int, *, engine: str, width: int, height: int, duration_s: float,
             steps: int, ref_image: str | None, motion: str | None, lora: str | None = None) -> dict:
+    preset = "vertical_fast" if height <= 608 else "vertical_4070"
     return {
         "runtime_profile": "auto",
+        "h3_preset": preset,
         "label": label,
         "avatar": {
             "avatar_id": "h3-gate", "display_name": "H3 Gate Avatar",

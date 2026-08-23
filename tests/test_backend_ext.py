@@ -184,3 +184,13 @@ def test_upscale_builder_requires_source():
     from avatar_v2.workflows_builder import build_upscale_workflow
     with pytest.raises(RuntimeError):
         build_upscale_workflow({"UPSCALE_MODEL": "m.pth"})
+
+
+def test_model_names_are_not_treated_as_assets():
+    from avatar_v2.providers.comfyui import _is_asset_key
+    assert _is_asset_key("H3_PICTURE_1")
+    assert _is_asset_key("H3_AUDIO_1")
+    assert not _is_asset_key("H3_AUDIO_VAE")
+    assert not _is_asset_key("H3_VIDEO_VAE")
+    assert not _is_asset_key("WAN_DIFFUSION_MODEL")
+    assert not _is_asset_key("H3_DIFFUSION_MODEL")
