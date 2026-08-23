@@ -220,8 +220,9 @@ class DesktopAPI:
             ):
                 try:
                     spec = provider.object_info(node_name)[node_name]["input"]["required"][input_name]
-                    options = spec[0] if isinstance(spec, list) and spec else []
-                    report[field] = [str(item) for item in options]
+                    from .providers.comfyui import _combo_options
+
+                    report[field] = _combo_options(spec)
                 except (KeyError, TypeError, httpx.HTTPError):
                     report[field] = []
             diffusion_models = caps.get("models", {}).get("diffusion_models", [])
