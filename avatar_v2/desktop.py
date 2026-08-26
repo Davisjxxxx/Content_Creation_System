@@ -73,6 +73,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "gpu_check_interval_s": 5,
     "preferred_output_dir": "",
     "adult_prompt_custom": {},
+    "vision_classifier_url": "http://127.0.0.1:11434",
+    "vision_classifier_model": "qwen3-vl:2b-instruct",
 }
 
 MAX_DESIGNER_BODY_REFS = 8  # H3 accepts nine pictures; reserve one for primary identity.
@@ -292,7 +294,27 @@ class DesktopAPI:
 
     def avatar_designer_scan_cache(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            return {"ok": True, **scan_reference_cache(str(payload.get("cache_dir") or ""))}
+            queue = getattr(self, "queue", None)
+            active = [
+                item
+                for item in (queue.list() if queue is not None else [])
+                if item.get("status") in {"queued", "running"}
+            ]
+            if active:
+                return {
+                    "ok": False,
+                    "error": "Wait for the render queue to finish before local AI image analysis so the 8 GB GPU is not shared with H3.",
+                }
+            settings = self._settings() if hasattr(self, "library") else DEFAULT_SETTINGS
+            return {
+                "ok": True,
+                **scan_reference_cache(
+                    str(payload.get("cache_dir") or ""),
+                    use_visual=True,
+                    vision_base_url=str(settings.get("vision_classifier_url") or "http://127.0.0.1:11434"),
+                    vision_model=str(settings.get("vision_classifier_model") or "qwen3-vl:2b-instruct"),
+                ),
+            }
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
