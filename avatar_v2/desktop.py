@@ -383,6 +383,7 @@ class DesktopAPI:
             {
                 "avatar_id": avatar_payload.get("avatar_id") or "desktop-avatar",
                 "display_name": avatar_payload.get("display_name") or "Desktop Avatar",
+                "sex": avatar_payload.get("sex") or "",
                 "apparent_age_years": avatar_payload.get("apparent_age_years"),
                 "subjects": [
                     {
@@ -755,18 +756,49 @@ class DesktopAPI:
         profile: AvatarProfile,
         slot: Any | None = None,
         component_paths: list[str] | None = None,
+        *,
+        full_reference_pool: bool = False,
+        full_component_paths: list[str] | None = None,
+        primary_source: str = "",
+        cycle_index: int = 0,
+        cycle_total: int = 1,
     ) -> list[str]:
         refs: list[str] = []
-        prioritized = []
+        prioritized: list[str] = []
         include_profile_body = slot is None or slot.group != "identity"
-        if include_profile_body and slot is not None and slot.group == "body" and profile.body_refs.get(slot.role):
-            prioritized.append(profile.body_refs[slot.role])
-        prioritized.extend(component_paths or [])
-        if include_profile_body:
+        if slot is not None:
+            if full_reference_pool and slot.group == "identity" and profile.identity_refs.get(slot.role):
+                prioritized.append(profile.identity_refs[slot.role])
+            elif slot.group == "body" and profile.body_refs.get(slot.role):
+                prioritized.append(profile.body_refs[slot.role])
+            elif full_reference_pool and slot.group == "anatomy" and profile.anatomy_refs.get(slot.role):
+                prioritized.append(profile.anatomy_refs[slot.role])
+        if not full_reference_pool:
+            prioritized.extend(component_paths or [])
+        if full_reference_pool:
+            pool_candidates = [
+                *profile.source_refs,
+                *profile.ordered_identity,
+                *profile.body_refs.values(),
+                *profile.anatomy_refs.values(),
+                *profile.hair_refs.values(),
+                *profile.wardrobe_refs.values(),
+                *(full_component_paths or []),
+            ]
+            pool: list[str] = []
+            for value in pool_candidates:
+                path = str(value or "").strip()
+                if path and path != primary_source and path not in prioritized and path not in pool:
+                    pool.append(path)
+            if pool:
+                total = max(1, cycle_total)
+                start = (max(0, cycle_index) * len(pool)) // total
+                prioritized.extend([*pool[start:], *pool[:start]])
+        elif include_profile_body:
             prioritized.extend(profile.body_refs.values())
         for value in prioritized:
             path = str(value or "").strip()
-            if path and path not in refs:
+            if path and path != primary_source and path not in refs:
                 refs.append(path)
         return refs[:MAX_DESIGNER_BODY_REFS]
 
@@ -782,6 +814,11 @@ class DesktopAPI:
             profile = AvatarProfile.model_validate(payload.get("avatar") or {})
             slot = slot_by_id(str(payload.get("slot_id") or ""))
             requested_mode = str(payload.get("render_mode") or "fl2va")
+            coverage_mode = str(payload.get("coverage_variant") or profile.nude_mode)
+            if coverage_mode == "both":
+                coverage_mode = "nude"
+            if coverage_mode not in {"nude", "clothed"}:
+                return {"ok": False, "error": "Profile coverage must be nude, clothed, or both."}
             all_components = self.library.selected_appearance_components(profile.component_option_ids) if profile.component_option_ids else []
             components = [
                 component
@@ -807,7 +844,7 @@ class DesktopAPI:
             guides = self._selected_designer_guides(profile, slot) if selected_guides else []
             guided = bool(guides)
             body_referenced = bool(body_refs)
-            if (slot.adult_only or guided or body_referenced) and not (
+            if (coverage_mode == "nude" or slot.adult_only or guided or body_referenced) and not (
                 profile.subject_kind != "unknown"
                 and profile.age_verified_18_plus
                 and profile.consent_confirmed
@@ -823,6 +860,8 @@ class DesktopAPI:
                 "guided_ref2va" if guided else "body_ref2va" if body_referenced else "fl2va",
                 [f"{guide.label} ({guide.region.replace('_', ' ')})" for guide in guides],
                 component_labels,
+                sex=profile.sex,
+                coverage_mode=coverage_mode,
             )
             return {
                 "ok": True,
@@ -888,6 +927,23 @@ class DesktopAPI:
             profile = AvatarProfile.model_validate(payload.get("avatar") or {})
             slot = slot_by_id(str(payload.get("slot_id") or ""))
             requested_mode = str(payload.get("render_mode") or "fl2va")
+            coverage_mode = str(payload.get("coverage_variant") or profile.nude_mode)
+            if coverage_mode == "both":
+                coverage_mode = "nude"
+            if coverage_mode not in {"nude", "clothed"}:
+                return {"ok": False, "error": "Profile coverage must be nude, clothed, or both."}
+            validation_run = bool(payload.get("validation_run"))
+            full_reference_pool = validation_run and bool(payload.get("full_reference_pool"))
+            try:
+                cycle_index = max(0, int(payload.get("reference_cycle_index") or 0))
+                cycle_total = max(1, int(payload.get("reference_cycle_total") or 1))
+            except (TypeError, ValueError):
+                cycle_index, cycle_total = 0, 1
+            source = str(payload.get("source_image") or "").strip()
+            if not source:
+                source = next((path for path in [*profile.source_refs, *profile.ordered_identity] if path), "")
+            if not source or not Path(source).expanduser().is_file():
+                return {"ok": False, "error": "Select an existing primary source image before generating a candidate."}
             all_components = self.library.selected_appearance_components(profile.component_option_ids) if profile.component_option_ids else []
             components = [
                 component
@@ -902,18 +958,32 @@ class DesktopAPI:
                 )
             ]
             component_paths = [path for component in components for path in component.get("paths") or []]
+            full_component_paths = [path for component in all_components for path in component.get("paths") or []]
             component_labels = [f"{component['label']} ({component['category'].replace('_', ' ')})" for component in components]
             saved_body_ref_count = len({str(value).strip() for value in profile.body_refs.values() if str(value).strip()})
-            body_refs = self._designer_body_refs(profile, slot, component_paths) if requested_mode == "body_ref2va" else []
-            if requested_mode == "body_ref2va" and not (saved_body_ref_count or all_components):
+            use_reference_pool = requested_mode == "body_ref2va" or full_reference_pool
+            body_refs = self._designer_body_refs(
+                profile,
+                slot,
+                component_paths,
+                full_reference_pool=full_reference_pool,
+                full_component_paths=full_component_paths,
+                primary_source=source,
+                cycle_index=cycle_index,
+                cycle_total=cycle_total,
+            ) if use_reference_pool else []
+            effective_mode = "body_ref2va" if full_reference_pool and body_refs else requested_mode
+            if effective_mode == "body_ref2va" and not body_refs and (
+                full_reference_pool or not (saved_body_ref_count or all_components)
+            ):
                 return {"ok": False, "error": "Add at least one saved body / proportions reference or ready appearance component before using Ref2VA."}
-            selected_guides = self._selected_designer_guides(profile) if requested_mode == "guided_ref2va" else []
-            if requested_mode == "guided_ref2va" and not selected_guides:
+            selected_guides = self._selected_designer_guides(profile) if effective_mode == "guided_ref2va" else []
+            if effective_mode == "guided_ref2va" and not selected_guides:
                 return {"ok": False, "error": "Select at least one validated anatomy guide before using guided Ref2VA."}
             guides = self._selected_designer_guides(profile, slot) if selected_guides else []
             guided = bool(guides)
             body_referenced = bool(body_refs)
-            if (slot.adult_only or guided or body_referenced) and not (
+            if (coverage_mode == "nude" or slot.adult_only or guided or body_referenced) and not (
                 profile.subject_kind != "unknown"
                 and profile.age_verified_18_plus
                 and profile.consent_confirmed
@@ -922,11 +992,6 @@ class DesktopAPI:
                     "ok": False,
                     "error": "Adult anatomy slots require a synthetic or consenting-adult profile with verified 18+ age and confirmed consent.",
                 }
-            source = str(payload.get("source_image") or "").strip()
-            if not source:
-                source = next((path for path in [*profile.source_refs, *profile.ordered_identity] if path), "")
-            if not source or not Path(source).expanduser().is_file():
-                return {"ok": False, "error": "Select an existing primary source image before generating a candidate."}
             missing_guides = [guide.label for guide in guides if not Path(guide.path).expanduser().is_file()]
             if missing_guides:
                 return {
@@ -958,6 +1023,8 @@ class DesktopAPI:
                 "guided_ref2va" if guided else "body_ref2va" if body_referenced else "fl2va",
                 [f"{guide.label} ({guide.region.replace('_', ' ')})" for guide in guides],
                 component_labels,
+                sex=profile.sex,
+                coverage_mode=coverage_mode,
             )
             appearance_features = [
                 f"{key.replace('_', ' ')}: {value}"
@@ -974,6 +1041,7 @@ class DesktopAPI:
                 "avatar": {
                     "avatar_id": profile.avatar_id,
                     "display_name": profile.display_name,
+                    "sex": profile.sex,
                     "apparent_age_years": profile.apparent_age_years,
                     "subject_kind": profile.subject_kind,
                     "age_verified_18_plus": profile.age_verified_18_plus,
@@ -993,7 +1061,7 @@ class DesktopAPI:
                 },
                 "shot": {
                     "shot_id": f"designer-{slot.id}",
-                    "content_class": "adult_nudity" if slot.adult_only or guided else "general",
+                    "content_class": "adult_nudity" if coverage_mode == "nude" or slot.adult_only or guided else "general",
                     "user_prompt": prompt,
                     "duration_s": 4.0,
                     "seed": int(payload.get("seed") or 41001),
@@ -1023,10 +1091,16 @@ class DesktopAPI:
                 "designer_render_mode": "guided_ref2va" if guided else "body_ref2va" if body_referenced else "fl2va",
                 "guide_count": len(guides),
                 "body_ref_count": len(body_refs) if body_referenced else 0,
-                "saved_body_ref_count": saved_body_ref_count if requested_mode == "body_ref2va" else 0,
+                "saved_body_ref_count": saved_body_ref_count if effective_mode == "body_ref2va" else 0,
                 "component_count": len(components) if body_referenced else 0,
+                "profile_coverage": coverage_mode,
+                "validation_run": validation_run,
+                "full_reference_pool": full_reference_pool,
+                "reference_cycle_index": cycle_index if full_reference_pool else 0,
+                "reference_cycle_total": cycle_total if full_reference_pool else 0,
             }
-            job.asset_map["OUTPUT_PREFIX"] = f"avatar_designer_h3_{profile.avatar_id}_{slot.role}"
+            output_kind = "validation" if validation_run else "designer"
+            job.asset_map["OUTPUT_PREFIX"] = f"avatar_{output_kind}_h3_{profile.avatar_id}_{slot.role}"
             item = QueuedRender(
                 job=job,
                 workflow=workflow,
@@ -1035,7 +1109,7 @@ class DesktopAPI:
                 runtime=runtime,
                 output_dir=payload.get("output_dir"),
                 archive_dir=str(self._archive_dir()) if self._archive_dir() else None,
-                label=f"Avatar Designer H3 · {profile.display_name} · {slot.label}",
+                label=f"Avatar {'Validation' if validation_run else 'Designer'} H3 · {profile.display_name} · {slot.label}",
             )
             queue_id = self.queue.add(item)
             return {
@@ -1046,8 +1120,10 @@ class DesktopAPI:
                 "engine": job.selected_engine,
                 "guide_count": len(guides),
                 "body_ref_count": len(body_refs) if body_referenced else 0,
-                "saved_body_ref_count": saved_body_ref_count if requested_mode == "body_ref2va" else 0,
+                "saved_body_ref_count": saved_body_ref_count if effective_mode == "body_ref2va" else 0,
                 "component_count": len(components) if body_referenced else 0,
+                "validation_run": validation_run,
+                "full_reference_pool": full_reference_pool,
                 "runtime": runtime,
                 "reference_bindings": _reference_bindings(job),
             }

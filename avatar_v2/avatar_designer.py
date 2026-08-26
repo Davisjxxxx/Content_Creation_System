@@ -113,6 +113,8 @@ def build_designer_prompt(
     render_mode: Literal["fl2va", "body_ref2va", "guided_ref2va"] = "fl2va",
     guide_labels: list[str] | None = None,
     component_labels: list[str] | None = None,
+    sex: Literal["", "female", "male"] = "",
+    coverage_mode: Literal["nude", "clothed"] = "nude",
 ) -> str:
     slot = slot_by_id(slot_id)
     clean = {
@@ -132,6 +134,17 @@ def build_designer_prompt(
         "younger or older. "
         if apparent_age_years is not None
         else ""
+    )
+    sex_anchor = (
+        f"The selected sex anatomy is {sex}; preserve visibly adult {sex} skeletal proportions, soft-tissue distribution, "
+        f"chest and pelvic anatomy, and do not drift toward {'male' if sex == 'female' else 'female'} anatomy. "
+        if sex in {"female", "male"}
+        else ""
+    )
+    coverage_anchor = (
+        "This is the anatomy-first nude validation pass. Keep the subject fully unclothed in body, torso, and pelvis views so silhouette, landmarks, and external anatomy can be checked before any wardrobe is added. "
+        if coverage_mode == "nude"
+        else "This is the clothed continuity pass. Use plain, opaque, close-fitting neutral clothing without changing the validated body shape or proportions. "
     )
     guided = render_mode == "guided_ref2va"
     body_referenced = render_mode == "body_ref2va"
@@ -174,7 +187,7 @@ def build_designer_prompt(
         else ""
     )
     return (
-        f"{source_direction}{anatomy}{age_anchor}{transition}Preserve the exact facial identity, adult age, ethnicity, body type, "
+        f"{source_direction}{anatomy}{age_anchor}{sex_anchor}{coverage_anchor}{transition}Preserve the exact facial identity, adult age, ethnicity, body type, "
         "skeletal proportions, skin tone, hairline, and every visible distinguishing mark from the source image. "
         "Use a neutral reference-sheet presentation, 70 mm lens perspective, flat studio lighting, plain gray background, "
         "centered composition, and complete requested anatomy in frame. Keep left/right body landmarks consistent through "

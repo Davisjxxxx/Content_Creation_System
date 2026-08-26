@@ -76,6 +76,12 @@ def _physical_direction(avatar: AvatarManifest, shot: ShotSpec) -> list[str]:
         sections.append(f"Wardrobe continuity: {shot.wardrobe}.")
     if shot.environment:
         sections.append(f"Environment continuity: {shot.environment}.")
+    if avatar.sex in {"female", "male"}:
+        sex_term = "woman" if avatar.sex == "female" else "man"
+        sections.append(
+            f"Sex anchor: the subject is a {sex_term}. Maintain {avatar.sex} anatomy, skeletal structure, "
+            "body proportions, and soft-tissue distribution in every frame; do not drift toward the opposite sex."
+        )
     if avatar.apparent_age_years is not None:
         sections.append(
             f"Apparent-age anchor: the subject remains visibly {avatar.apparent_age_years} years old in every frame. "
@@ -237,8 +243,9 @@ def _h3_ref2va_prompt(avatar: AvatarManifest, shot: ShotSpec) -> str:
         if subject.kind == "consenting_adult" and subject.age_verified_18_plus
         else "target person"
     )
+    sex_qualifier = f" — {avatar.sex}" if avatar.sex in {"female", "male"} else ""
     subject_lines.append(
-        f"<Subject 1> is the target {subject_label}. Preserve appearance and identity from {identity_sources}; "
+        f"<Subject 1> is the target {subject_label}{sex_qualifier}. Preserve appearance and identity from {identity_sources}; "
         "do not inherit facial identity, body identity, clothing identity, or demographic traits from motion-reference videos."
     )
     if body_pictures:

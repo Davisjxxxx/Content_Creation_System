@@ -4,6 +4,8 @@ import pytest
 
 from avatar_v2.desktop import DesktopAPI
 from avatar_v2.reference_cache import (
+    VISION_PROMPT,
+    VISION_SCHEMA,
     _visual_facts_to_role,
     infer_reference_role,
     ollama_vision_available,
@@ -19,6 +21,23 @@ def test_filename_angle_inference_is_conservative():
     assert infer_reference_role(Path("ava_pelvis_rear.png")) == ("anatomy_refs", "pelvis_rear")
     assert infer_reference_role(Path("ava_hair_tied.png")) == ("hair_refs", "tied")
     assert infer_reference_role(Path("random_001.png")) is None
+    assert infer_reference_role(Path("Screenshot_001.png")) is None
+
+
+def test_visual_classifier_schema_is_geometry_only():
+    assert set(VISION_SCHEMA["properties"]) == {
+        "framing",
+        "facing",
+        "camera_pitch",
+        "region",
+        "pose",
+        "confidence",
+        "visible_evidence",
+    }
+    prompt = VISION_PROMPT.lower()
+    assert "do not identify the person" in prompt
+    assert "do not infer or report sex" in prompt
+    assert "classify only the camera/view geometry" in prompt
 
 
 def test_cache_scan_maps_images_and_separates_motion_media(tmp_path: Path):
@@ -101,7 +120,7 @@ def test_visual_facts_map_to_profile_roles_deterministically():
 
 def test_quick_builder_exposes_ai_analysis_and_saved_anatomy_selection():
     html = (Path(__file__).parents[1] / "avatar_v2" / "ui" / "index.html").read_text(encoding="utf-8")
-    assert "Local AI understands the views" in html
+    assert "Local AI sorts the views" in html
     assert "AI analyze cache" in html
     assert "Use saved anatomy references" in html
     assert "Advanced · Add a new anatomy reference" in html

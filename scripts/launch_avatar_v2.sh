@@ -13,7 +13,7 @@ fi
 
 cd "$APP_DIR"
 
-# Prefer the PyInstaller build when it exists; fall back to the project venv.
+# Prefer the tested PyInstaller build when it exists; fall back to the project venv.
 if [ -x "$APP_DIR/dist/AvatarV2/AvatarV2" ]; then
     exec "$APP_DIR/dist/AvatarV2/AvatarV2" "$@"
 fi

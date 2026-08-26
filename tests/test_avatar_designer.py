@@ -6,6 +6,7 @@ from avatar_v2.avatar_designer import (
     build_designer_prompt,
     coverage_report,
     designer_spec,
+    slot_by_id,
 )
 from avatar_v2.desktop import DesktopAPI
 from avatar_v2.library import AnatomyGuide, AvatarProfile, LibraryStore
@@ -65,6 +66,8 @@ def test_designer_prompt_is_identity_and_landmark_specific():
         "anatomy_pelvis_front",
         {"body_type": "athletic pear shape", "freckles_moles": "mole on left hip"},
         29,
+        sex="female",
+        coverage_mode="nude",
     )
     assert "H3 photorealistic avatar reference turn" in prompt
     assert "neutral clinical adult anatomy reference" in prompt
@@ -73,6 +76,20 @@ def test_designer_prompt_is_identity_and_landmark_specific():
     assert "do not make the subject look younger or older" in prompt
     assert "Hold that target view nearly motionless for the final 30%" in prompt
     assert "Do not beautify, reshape, add, remove, mirror, duplicate, or relocate" in prompt
+    assert "selected sex anatomy is female" in prompt
+    assert "anatomy-first nude validation pass" in prompt
+
+
+def test_designer_prompt_supports_male_clothed_continuity():
+    prompt = build_designer_prompt(
+        "body_full_front",
+        apparent_age_years=104,
+        sex="male",
+        coverage_mode="clothed",
+    )
+    assert "selected sex anatomy is male" in prompt
+    assert "104-year-old adult" in prompt
+    assert "plain, opaque, close-fitting neutral clothing" in prompt
 
 
 def test_library_round_trips_designer_profile_and_applies_anatomy(tmp_path: Path):
@@ -84,11 +101,15 @@ def test_library_round_trips_designer_profile_and_applies_anatomy(tmp_path: Path
             anatomy_refs={"pelvis_front": "/pelvis.png"},
             source_refs=["/source.png"],
             appearance_manifest={"tattoos": "small star on right shoulder"},
+            sex="female",
+            nude_mode="both",
             designer_iteration=3,
         )
     )
     assert saved["designer_iteration"] == 3
     assert saved["apparent_age_years"] == 29
+    assert saved["sex"] == "female"
+    assert saved["nude_mode"] == "both"
     payload = store.profile_to_avatar_payload("ava-01")
     assert payload["apparent_age_years"] == 29
     assert payload["body_refs"] == ["/body.png", "/pelvis.png"]
@@ -225,16 +246,23 @@ def test_desktop_designer_prompt_gates_unverified_adult_anatomy():
     )
     assert denied["ok"] is False
     allowed = api.avatar_designer_prompt(
-        {"avatar": _adult_profile(), "slot_id": "anatomy_pelvis_front"}
+        {"avatar": _adult_profile(sex="female", nude_mode="both"), "slot_id": "anatomy_pelvis_front"}
     )
     assert allowed["ok"] is True
     assert allowed["engine"] == "h3_fl2va"
     assert "29-year-old adult" in allowed["prompt"]
+    assert "selected sex anatomy is female" in allowed["prompt"]
+    assert "anatomy-first nude validation pass" in allowed["prompt"]
 
 
 def test_designer_rejects_apparent_age_below_18():
     with pytest.raises(ValueError, match="greater than or equal to 18"):
         AvatarProfile.model_validate(_adult_profile(apparent_age_years=17))
+
+
+def test_designer_accepts_apparent_age_above_100():
+    profile = AvatarProfile.model_validate(_adult_profile(apparent_age_years=104))
+    assert profile.apparent_age_years == 104
 
 
 def test_designer_rejects_unknown_subject_kind_values():
@@ -401,6 +429,7 @@ def test_body_reference_designer_queue_binds_identity_and_body_refs(tmp_path: Pa
         assert render_payload["advanced"]["H3_REF_IMAGE_SIZE"] == "match"
         assert avatar.identity_refs == [str(source)]
         assert avatar.body_refs == [str(body_front), str(body_rear)]
+        assert avatar.sex == "female"
         return build_job(avatar, shot), {
             "profile": "low_memory",
             "local_h3_allowed": True,
@@ -410,6 +439,7 @@ def test_body_reference_designer_queue_binds_identity_and_body_refs(tmp_path: Pa
     result = api.queue_avatar_designer(
         {
             "avatar": _adult_profile(
+                sex="female",
                 source_refs=[str(source)],
                 body_refs={"full_front": str(body_front), "rear": str(body_rear)},
             ),
@@ -425,6 +455,7 @@ def test_body_reference_designer_queue_binds_identity_and_body_refs(tmp_path: Pa
     assert result["reference_bindings"]["source_counts"]["body"] == 2
     assert result["reference_bindings"]["h3_pictures"] == 3
     assert captured["item"].runtime["designer_render_mode"] == "body_ref2va"
+    assert captured["item"].runtime["profile_coverage"] == "nude"
     assert "same-avatar" in result["prompt"]
 
 
@@ -569,6 +600,101 @@ def test_body_reference_mode_caps_h3_pack_and_prioritizes_requested_role(tmp_pat
     assert result["reference_bindings"]["h3_pictures"] == 9
 
 
+def test_complete_validation_rotates_full_pool_and_prioritizes_accepted_target():
+    primary = "/refs/source-0.png"
+    sources = [f"/refs/source-{index}.png" for index in range(12)]
+    target = "/accepted/body-left.png"
+    profile = AvatarProfile.model_validate(
+        _adult_profile(
+            source_refs=sources,
+            identity_refs={"front": "/accepted/face-front.png"},
+            body_refs={"left": target},
+            anatomy_refs={"pelvis_front": "/accepted/pelvis-front.png"},
+        )
+    )
+    slot = slot_by_id("body_full_left")
+
+    batches = [
+        DesktopAPI._designer_body_refs(
+            profile,
+            slot,
+            full_reference_pool=True,
+            primary_source=primary,
+            cycle_index=index,
+            cycle_total=3,
+        )
+        for index in range(3)
+    ]
+
+    assert all(len(batch) == 8 for batch in batches)
+    assert all(batch[0] == target for batch in batches)
+    assert all(primary not in batch for batch in batches)
+    assert set().union(*map(set, batches)) == {
+        *sources[1:],
+        "/accepted/face-front.png",
+        target,
+        "/accepted/pelvis-front.png",
+    }
+
+
+def test_complete_validation_queue_uses_ref2va_and_marks_candidates(tmp_path: Path):
+    paths = []
+    for index in range(10):
+        path = tmp_path / f"reference-{index}.png"
+        path.write_bytes(str(index).encode())
+        paths.append(str(path))
+    captured = {}
+
+    class FakeQueue:
+        def add(self, item):
+            captured["item"] = item
+            return "queue-validation-01"
+
+    api = DesktopAPI.__new__(DesktopAPI)
+    api.queue = FakeQueue()
+    api._settings = lambda: {"default_h3_preset": "vertical_4070"}
+    api._archive_dir = lambda: None
+    api._provider_config = lambda payload: ProviderConfig(base_url="http://127.0.0.1:8188")
+    api.avatar_designer_renderer_status = lambda payload=None: {"ready": True, "guided_ready": True}
+
+    def resolve(render_payload, avatar, shot):
+        from avatar_v2.composer import build_job
+
+        assert render_payload["reference_mode"] == "multi_match"
+        assert avatar.identity_refs == [paths[0]]
+        assert paths[0] not in avatar.body_refs
+        assert len(avatar.body_refs) == 8
+        return build_job(avatar, shot), {"profile": "low_memory", "local_h3_allowed": True}, "builtin:h3_ref2va"
+
+    api._resolve_runtime = resolve
+    result = api.queue_avatar_designer(
+        {
+            "avatar": _adult_profile(
+                source_refs=paths,
+                identity_refs={"front": paths[1]},
+                body_refs={"left": paths[2]},
+                anatomy_refs={"pelvis_front": paths[3]},
+            ),
+            "slot_id": "body_full_left",
+            "render_mode": "fl2va",
+            "source_image": paths[0],
+            "validation_run": True,
+            "full_reference_pool": True,
+            "reference_cycle_index": 1,
+            "reference_cycle_total": 3,
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["engine"] == "h3_ref2va"
+    assert result["validation_run"] is True
+    assert result["full_reference_pool"] is True
+    assert captured["item"].runtime["validation_run"] is True
+    assert captured["item"].runtime["full_reference_pool"] is True
+    assert captured["item"].label.startswith("Avatar Validation H3")
+    assert captured["item"].job.asset_map["OUTPUT_PREFIX"].startswith("avatar_validation_h3_")
+
+
 def test_h3_candidate_frame_is_appended_to_designer_outputs(tmp_path: Path, monkeypatch):
     video = tmp_path / "designer.mp4"
     video.write_bytes(b"video")
@@ -593,13 +719,32 @@ def test_desktop_exposes_profile_build_controls():
     assert 'id="designerRunProfile"' in html
     assert "function designerRunNext()" in html
     assert "function designerRunProfile()" in html
-    assert "Existing accepted views will be skipped" in html
+    assert 'id="designerRunFullProfile"' in html
+    assert "function designerRunFullProfile()" in html
+    assert "full_reference_pool:validationRun" in html
+    assert "referencePasses=Math.max" in html
+    assert "full rotating image pool" in html
+    assert "existing accepted images stay preserved" in html
+    assert "Existing accepted views will be skipped" not in html
+    assert "complete ${slots.length}-view" not in html
     assert 'id="designerRunProfile" onclick="designerRunProfile()">' in html
     assert "function designerEnsureIdentityDefaults()" in html
     assert "function designerShowPrerequisiteErrors(errors)" in html
     assert 'id="vApparentAge"' in html
+    assert 'id="vApparentAge" type="number" min="18" value="25"' in html
+    assert 'id="vApparentAge" type="number" min="18" max=' not in html
     assert "apparent_age_years:Number($('vApparentAge').value)||null" in html
-    assert "errors.push('apparent age from 18 to 100')" in html
+    assert "errors.push('adult apparent age of 18 or older')" in html
+    assert 'id="vSex"' in html
+    assert '<option value="female">female</option>' in html
+    assert '<option value="male">male</option>' in html
+    assert 'id="vAdultAuth"' in html
+    assert 'id="vNude"' in html
+    assert '<option value="both">Nude, then clothed</option>' in html
+    assert "coverage_variant:coverage" in html
+    assert "coverageVariants=$('vNude').value==='both'?['nude','clothed']" in html
+    assert "Do not identify the person and do not infer or report sex" not in html
+    assert "It does not identify the person or infer sex" in html
     assert "prompt_has_age" in html
     assert 'id="designerRenderMode"' in html
     assert '<option value="body_ref2va">Identity + body refs · Ref2VA · 8 GB experimental</option>' in html
@@ -609,6 +754,8 @@ def test_desktop_exposes_profile_build_controls():
     assert "bodyReferenced=mode==='body_ref2va'&&(slot.group!=='identity'||identityComponent)" in html
     assert 'id="designerCacheDir"' in html
     assert "function designerAnalyzeCache()" in html
+    assert "function designerResetCacheMappings()" in html
+    assert "previous working mappings replaced" in html
     assert 'id="componentSelectors"' in html
     assert "function componentSave()" in html
     assert 'id="guideList"' in html
@@ -626,3 +773,5 @@ def test_desktop_exposes_profile_build_controls():
     assert "profileConfirmUntil=Date.now()+15000" in html
     assert "const r=await vaultSave();if(r.ok)" in html
     assert "else $('designerIteration').value=previous" in html
+    assert "A1111" not in html
+    assert "Juggernaut" not in html

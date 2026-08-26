@@ -73,7 +73,7 @@ VISION_SCHEMA = {
     "required": ["framing", "facing", "camera_pitch", "region", "pose", "confidence", "visible_evidence"],
 }
 
-VISION_PROMPT = """Inspect the pixels of this adult avatar reference image, never its filename. Ignore phone and social-media UI. Report simple visible facts only. face_closeup means face dominant; upper_body ends near waist; full_body has knees or feet visible; body_detail has one region dominant. REAR means the person's back faces the camera even if their head turns. OVERHEAD looks down; LOW_ANGLE looks up. LEFT and RIGHT mean the person's visible side. Use unknown or other below 0.60 confidence. Keep visible_evidence under 16 words. Do not identify the person or add sexual description. Return only schema-valid JSON."""
+VISION_PROMPT = """Classify only the camera/view geometry visible in this image, never its filename. Ignore phone and social-media UI. Do not identify the person and do not infer or report sex, gender, name, ethnicity, or identity. Report only framing, facing direction, camera pitch, visible body region, pose, confidence, and short geometric evidence. face_closeup means face dominant; upper_body ends near waist; full_body has knees or feet visible; body_detail has one region dominant. REAR means the person's back faces the camera even if their head turns. OVERHEAD looks down; LOW_ANGLE looks up. LEFT and RIGHT mean the person's visible side. Use unknown or other below 0.60 confidence. Keep visible_evidence under 16 words and non-sexual. Return only schema-valid JSON."""
 
 
 def _visual_facts_to_role(content: dict[str, Any]) -> str:
@@ -269,7 +269,7 @@ def classify_reference_image(
         "messages": [{"role": "user", "content": VISION_PROMPT, "images": [encoded]}],
         "format": VISION_SCHEMA,
         "stream": False,
-        "keep_alive": "5m",
+        "keep_alive": 0,
         "options": {"temperature": 0, "num_ctx": 2048, "num_predict": 160},
     }
 

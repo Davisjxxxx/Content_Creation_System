@@ -54,7 +54,8 @@ class AvatarProfile(BaseModel):
     avatar_id: str
     display_name: str
     subject_kind: SubjectKind = "unknown"
-    apparent_age_years: int | None = Field(default=None, ge=18, le=100)
+    sex: Literal["", "female", "male"] = ""
+    apparent_age_years: int | None = Field(default=None, ge=18)
     age_verified_18_plus: bool = False
     consent_confirmed: bool = False
     identity_refs: dict[str, str] = Field(default_factory=dict)
@@ -67,6 +68,7 @@ class AvatarProfile(BaseModel):
     source_refs: list[str] = Field(default_factory=list)
     appearance_manifest: dict[str, str] = Field(default_factory=dict)
     designer_iteration: int = Field(default=0, ge=0)
+    nude_mode: Literal["nude", "clothed", "both"] = "nude"
     persistent_features: list[str] = Field(default_factory=list)
     notes: str = ""
 
@@ -370,6 +372,7 @@ class LibraryStore:
             "avatar_id": profile.avatar_id,
             "display_name": profile.display_name,
             "subject_kind": profile.subject_kind,
+            "sex": profile.sex,
             "apparent_age_years": profile.apparent_age_years,
             "age_verified_18_plus": profile.age_verified_18_plus,
             "consent_confirmed": profile.consent_confirmed,

@@ -34,7 +34,8 @@ class AnatomyGuideRef(BaseModel):
 class AvatarManifest(BaseModel):
     avatar_id: str
     display_name: str
-    apparent_age_years: int | None = Field(default=None, ge=18, le=100)
+    sex: Literal["", "female", "male"] = ""
+    apparent_age_years: int | None = Field(default=None, ge=18)
     subjects: list[SubjectSpec] = Field(default_factory=list)
     identity_refs: list[str] = Field(default_factory=list)
     body_refs: list[str] = Field(default_factory=list)
