@@ -160,7 +160,12 @@ class ComfyUIProvider:
             if self.config.input_dir:
                 staged = self._copy_to_input(src, job.job_id, key)
             else:
-                staged = self.upload_file(src)
+                # Separate each logical reference on the ComfyUI server. Distinct
+                # local files frequently share names such as body.png; a shared
+                # overwrite subfolder would silently replace the earlier image.
+                safe_job_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", job.job_id)
+                safe_key = re.sub(r"[^a-zA-Z0-9_.-]+", "_", key.lower())
+                staged = self.upload_file(src, subfolder=f"avatar_v2/{safe_job_id}/{safe_key}")
             staged_by_path[path_key] = staged
             mapping[key] = staged
         return mapping
@@ -198,6 +203,16 @@ class ComfyUIProvider:
         with httpx.Client(timeout=10) as client:
             response = client.post(f"{self.base_url}/interrupt", json={})
             response.raise_for_status()
+
+    def queue_status(self) -> dict[str, Any]:
+        """Return queue occupancy so cache cleanup can stay idle-only."""
+        with httpx.Client(timeout=10) as client:
+            response = client.get(f"{self.base_url}/queue")
+            response.raise_for_status()
+            data = response.json()
+        running = len(data.get("queue_running") or [])
+        pending = len(data.get("queue_pending") or [])
+        return {"running": running, "pending": pending, "busy": bool(running or pending)}
 
     def free_memory(self, *, unload_models: bool = True, free_memory: bool = True) -> None:
         """Ask ComfyUI to unload models and release allocator/cache memory when idle."""

@@ -18,14 +18,24 @@ OUTPUT / QA / HISTORY  →  DESKTOP APPLICATION
 
 ## What the desktop app exposes
 
-- **Studio** — renderer lanes (MiniMax H3 Ref2VA, H3 FL2VA, Wan 2.2, Custom ComfyUI), runtime profiles, timed motion prompting, wind physics, H3 reference-role bindings, best-of-N and Profile Sweep.
-- **Avatar Vault** — persistent local avatar definitions with structured identity/body/hair/wardrobe reference roles and stable-persona characteristics.
+- **Studio** — renderer lanes (MiniMax H3 Ref2VA, H3 FL2VA, Wan 2.2, Custom ComfyUI), runtime profiles, timed motion prompting, wind physics, H3 reference-role bindings, best-of-N and Profile Sweep. Adult content classes also expose an opt-in prompt builder with preloaded roles, environments, actions, toys/props, moves and positions; it remains gated by the existing verified-adult consent policy.
+- **Avatar Vault + Profile Designer** — persistent identity/body/hair/wardrobe/anatomy roles, source-image pools, an explicit 18–100 apparent-age anchor, appearance manifests (body type, freckles/moles, scars, tattoos and anatomy details), a provenance-checked local anatomy-guide library, and a 21-shot front/rear/side/top/bottom/detail coverage checklist. Each generated or imported candidate is accepted explicitly and saved as an iteration.
 - **Motion Library** — movement-only video assets with categories (walk_confident, turn_and_smile, …). Motion references transfer choreography, never identity.
 - **Scene Library** — local scene references with location/lighting/time-of-day/camera metadata.
 - **History / Runs** — every queued run retains engine, profile, model, workflow, seed, canvas, frames, steps, CFG, GPU, peak VRAM, elapsed time, cleanup events, outputs and the exact error.
 - **Settings** — ComfyUI URL/folders/service control, workflow files, H3 license gate, GPU auto-clean threshold/interval, preferred output directory. Persisted under `~/.avatar_v2/`.
 
 All libraries, runs, and settings live under `~/.avatar_v2/`. Nothing is uploaded anywhere.
+
+The Profile Designer can always build exact slot prompts and import/accept candidate images. **Run Next Missing** queues one reviewable iteration; **Run Profile Build** queues every currently missing, unlocked view while skipping accepted coverage. Per-slot **Generate** buttons remain available. All three use MiniMax H3 FL2VA with the selected source bound as the exact first frame. The selected apparent age is injected into both profile turns and later Studio renders as a stable face/skin/body-maturity anchor. H3 performs one slow transition to the requested angle, holds the target view, and Avatar V2 extracts the final frame as a PNG candidate. Body regions absent from the source still have to be inferred, so generated views remain candidates that require visual acceptance.
+
+The optional **Hybrid guided Ref2VA** route keeps identity slots on FL2VA and uses selected guide-only anatomy images for body/anatomy slots. It never treats guides as avatar identity: compiled H3 roles restrict them to clinical topology and explicitly reject transfer of face, age, ethnicity, skin, body identity, marks, tattoos, hair, or clothing. Guide records remain local file references and require provenance, adult-subject confirmation, usage-rights confirmation, and consent/model-release confirmation for real-person photos. Guided Ref2VA forces the INT8 low-memory profile, 352×608 canvas, match-sized references, and reduced steps, but remains experimental—not promised to fit—on an 8 GB GPU.
+
+The separate **Identity + body refs · Ref2VA** route connects the selected primary source as the facial identity anchor and up to eight saved Body / proportions or ready component images, prioritizing the reference matching the requested body angle. Identity coverage remains on FL2VA unless a ready face-shape or skin option is selected; those identity slots use Ref2VA while retaining the primary source as the identity anchor. Body and anatomy coverage uses Ref2VA with visible bound-versus-available reference counts in each affected slot. This route also forces the INT8 low-memory profile, 352×608 canvas, match-sized references, and reduced steps, and remains experimental on an 8 GB GPU.
+
+For simpler setup, **Quick Profile Builder** accepts one local reference-cache folder, inventories still images, GIFs, videos, and audio, and conservatively maps descriptive filenames such as `face_front`, `body_rear`, or `pelvis_front`. Still images can become identity/body candidates; GIF and video remain motion examples; audio remains voice/timing input. Unclear filenames are listed for review instead of being silently assigned. The detailed per-angle fields, anatomy guides, prompts, and renderer controls remain available under Advanced panels.
+
+The local **Appearance Component Catalog** groups two to eight authorized examples into reusable selectors for face shape, body type, height, proportions, torso, buttocks, pelvis, hands, feet, or skin. Each option records provenance, adult/rights confirmation, and real-person consent or release. It becomes selectable only after its configured minimum example count is met. Face-shape and skin examples can condition identity Ref2VA slots; the remaining selected component examples condition body/anatomy slots for the named morphology only. The primary source remains the facial identity anchor. This is reference conditioning, not model training or dataset ingestion.
 
 ## Runtime profiles
 
@@ -106,7 +116,7 @@ The Settings screen can start/stop a locally managed ComfyUI (only the process A
 ### Bundled workflows
 
 - `workflows/animatediff_sd15_api.json` and `workflows/animatediff_sdxl_api.json` — validated AnimateDiff T2V graphs (AnimateDiff-Evolved + VideoHelperSuite) selectable in the Custom lane.
-- Built-in dynamic workflow builders for **MiniMax H3 Ref2VA**, **MiniMax H3 FL2VA** and **Wan 2.2 first/last-frame-to-video**, constructed from the live ComfyUI schemas (ComfyUI 0.33 core nodes). When you configure your own exported API-format workflow in Settings, that file wins.
+- Built-in dynamic workflow builders for **MiniMax H3 Ref2VA**, **MiniMax H3 FL2VA**, and **Wan 2.2 first/last-frame-to-video**, constructed from live ComfyUI schemas. Profile Designer candidates use H3 FL2VA and automatic final-frame extraction. When you configure your own exported API-format workflow in Settings, that file wins.
 
 See `workflows/README.md` for the placeholder contract.
 

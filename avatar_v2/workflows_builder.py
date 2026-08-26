@@ -225,7 +225,7 @@ def build_h3_common(
 
 def build_h3_ref2va_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
     task_inputs: dict[str, Any] = {
-        "ref_image_size": "match",
+        "ref_image_size": _value(mapping, "H3_REF_IMAGE_SIZE", "max"),
     }
     slots = {
         "images": [f"H3_PICTURE_{i}" for i in range(1, 10)],

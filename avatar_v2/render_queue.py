@@ -308,6 +308,22 @@ class RenderQueue:
                 archived.append(output)
         return archived
 
+    def _extract_candidate_frame(self, item: QueuedRender) -> None:
+        """Turn a stabilized H3 designer clip into an accept/reject still candidate."""
+        video = next(
+            (
+                Path(output)
+                for output in item.outputs
+                if Path(output).suffix.lower() in {".mp4", ".mov", ".webm", ".mkv"}
+            ),
+            None,
+        )
+        if video is None or not video.is_file():
+            raise RuntimeError("H3 Avatar Designer completed without a readable video output")
+        target = video.with_name(f"{video.stem}_candidate.png")
+        frame = self._extract_last_frame(str(video), target)
+        item.outputs.append(str(frame))
+
     def _execute(self, item: QueuedRender) -> None:
         job = copy.deepcopy(item.job)
         if item.chain_from_previous:
@@ -343,6 +359,8 @@ class RenderQueue:
         item.outputs = self._resolve_outputs(item, result["outputs"])
         if item.archive_dir:
             item.outputs = self._archive_outputs(item)
+        if item.runtime.get("extract_candidate_frame"):
+            self._extract_candidate_frame(item)
 
     def _worker(self) -> None:
         while not self._stop.is_set():

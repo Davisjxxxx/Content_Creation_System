@@ -213,7 +213,9 @@ class GPUMemoryManager:
         """Clean local Python garbage and, when needed, ask ComfyUI to free VRAM."""
         gc.collect()
         before = query_gpu_memory()
-        should_clean = self.enabled and (force or any(item.usage >= self.threshold for item in before))
+        # Explicit/manual and memory-sensitive-profile cleanup must work even when
+        # threshold-based automatic cleanup is disabled in Settings.
+        should_clean = force or (self.enabled and any(item.usage >= self.threshold for item in before))
         requested = False
         error = ""
 
@@ -227,13 +229,32 @@ class GPUMemoryManager:
         after = before
         if requested:
             deadline = time.monotonic() + max(wait_s, 0.0)
+            before_total = sum(item.used_mb for item in before)
+            previous_total = before_total
+            saw_drop = False
+            stable_samples = 0
             while time.monotonic() < deadline:
                 time.sleep(0.5)
                 current = query_gpu_memory()
                 if current:
                     after = current
-                    if all(item.usage < self.threshold for item in current):
+                    current_total = sum(item.used_mb for item in current)
+                    if current_total <= before_total - 64:
+                        saw_drop = True
+                    if saw_drop and abs(current_total - previous_total) <= 16:
+                        stable_samples += 1
+                    else:
+                        stable_samples = 0
+                    previous_total = current_total
+                    if force and saw_drop and stable_samples >= 1:
                         break
+                    if not force and all(item.usage < self.threshold for item in current):
+                        break
+
+        released_mb = max(
+            sum(item.used_mb for item in before) - sum(item.used_mb for item in after),
+            0,
+        )
 
         return {
             "reason": reason,
@@ -244,6 +265,8 @@ class GPUMemoryManager:
             "error": error,
             "before": [item.public() for item in before],
             "after": [item.public() for item in after],
+            "released_mb": released_mb,
+            "effective": released_mb >= 64,
         }
 
     def emergency_terminate(self, approved_pids: Iterable[int]) -> dict[str, Any]:

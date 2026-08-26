@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
+import shutil
 import signal
 import subprocess
 import time
@@ -13,10 +15,13 @@ from typing import Any
 import httpx
 
 from .composer import build_job
+from .avatar_designer import build_designer_prompt, coverage_report, designer_spec, slot_by_id
 from .h3_runtime import H3_FPS, preset_by_id, presets_payload, valid_frame_count
-from .library import LibraryStore
-from .models import AvatarManifest, ProviderConfig, ShotSpec
+from .library import AnatomyGuide, AvatarProfile, LibraryStore
+from .models import AvatarManifest, ProviderConfig, RenderJob, ShotSpec
 from .policy import evaluate_policy
+from .prompt_presets import adult_prompt_presets_payload
+from .reference_cache import scan_reference_cache
 from .providers import ComfyUIProvider
 from .render_queue import QueuedRender, RenderQueue
 from .runtime_profiles import payload as runtime_profiles_payload
@@ -67,7 +72,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "gpu_threshold": 0.85,
     "gpu_check_interval_s": 5,
     "preferred_output_dir": "",
+    "adult_prompt_custom": {},
 }
+
+MAX_DESIGNER_BODY_REFS = 8  # H3 accepts nine pictures; reserve one for primary identity.
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -89,6 +97,67 @@ def _clean_paths(items: list[str] | None) -> list[str]:
 def _run_id(prefix: str = "render") -> str:
     now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     return f"{prefix}-{now}"
+
+
+def _reference_bindings(job: RenderJob, resolved: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Summarize reference wiring without returning local file paths."""
+
+    asset_map = job.asset_map
+    image_paths: list[str | None] = [
+        job.shot.references.init_image or (job.avatar.identity_refs[0] if job.avatar.identity_refs else None),
+        *job.avatar.identity_refs,
+    ]
+    if job.shot.content_class != "general":
+        image_paths.extend(guide.path for guide in job.avatar.anatomy_guides)
+    image_paths.extend(job.avatar.body_refs)
+    image_paths.extend(job.avatar.hair_refs)
+    image_paths.extend(job.avatar.wardrobe_refs)
+    image_paths.append(job.shot.references.scene_image)
+    image_paths.extend(job.shot.references.extra_images)
+    unique_image_sources = len(dict.fromkeys(str(path) for path in image_paths if path))
+    bound_h3_pictures = int(asset_map.get("H3_PICTURE_COUNT") or 0)
+    summary: dict[str, Any] = {
+        "source_counts": {
+            "identity": len(job.avatar.identity_refs),
+            "body": len(job.avatar.body_refs),
+            "hair": len(job.avatar.hair_refs),
+            "wardrobe": len(job.avatar.wardrobe_refs),
+            "anatomy_guides": len(job.avatar.anatomy_guides),
+            "extra_images": len(job.shot.references.extra_images),
+            "videos": int(bool(job.shot.references.motion_video)) + len(job.shot.references.extra_videos),
+            "audios": int(bool(job.shot.references.audio)) + len(job.shot.references.extra_audios),
+        },
+        "primary_identity_bound": bool(asset_map.get("INIT_IMAGE")),
+        "h3_pictures": bound_h3_pictures,
+        "h3_picture_sources": unique_image_sources if job.selected_engine == "h3_ref2va" else 0,
+        "h3_pictures_omitted": (
+            max(unique_image_sources - bound_h3_pictures, 0)
+            if job.selected_engine == "h3_ref2va"
+            else 0
+        ),
+        "h3_videos": int(asset_map.get("H3_VIDEO_COUNT") or 0),
+        "h3_audios": int(asset_map.get("H3_AUDIO_COUNT") or 0),
+        "reference_fidelity": str(asset_map.get("H3_REF_IMAGE_SIZE") or "max"),
+    }
+    if resolved is not None:
+        nodes = list(resolved.values())
+        task = next(
+            (node for node in nodes if node.get("class_type") in {"MiniMaxH3ReferenceToVideo", "MiniMaxH3ImageToVideo"}),
+            None,
+        )
+        inputs = (task or {}).get("inputs", {})
+        summary["resolved"] = {
+            "load_images": sum(node.get("class_type") == "LoadImage" for node in nodes),
+            "load_videos": sum(node.get("class_type") == "LoadVideo" for node in nodes),
+            "load_audios": sum(node.get("class_type") == "LoadAudio" for node in nodes),
+            "task": (task or {}).get("class_type"),
+            "picture_links": len(inputs.get("ref_images") or []),
+            "video_links": len(inputs.get("ref_videos") or []),
+            "audio_links": len(inputs.get("ref_audios") or []),
+            "first_frame_bound": bool(inputs.get("first_frame")),
+            "last_frame_bound": bool(inputs.get("last_frame")),
+        }
+    return summary
 
 
 class DesktopAPI:
@@ -116,17 +185,20 @@ class DesktopAPI:
         return settings
 
     def get_state(self) -> dict[str, Any]:
+        settings = self._settings()
         return {
             "app": "Avatar V2",
             "version": "0.3.0",
             "platform": platform.platform(),
-            "settings": self._settings(),
+            "settings": settings,
             "app_home": str(APP_HOME),
             "runs_dir": str(RUNS_DIR),
             "history_dir": str(HISTORY_DIR),
             "library_dir": str(LIBRARY_DIR),
             "h3_presets": presets_payload(),
             "runtime_profiles": runtime_profiles_payload(),
+            "adult_prompt_presets": adult_prompt_presets_payload(settings.get("adult_prompt_custom")),
+            "avatar_designer": designer_spec(),
             "h3_license_notice": (
                 "Local MiniMax H3 open-weight execution stays disabled until you explicitly confirm "
                 "that your use is permitted by the current H3 license or a separate written MiniMax license."
@@ -154,6 +226,43 @@ class DesktopAPI:
         )
         return {"ok": True, "settings": merged}
 
+    def save_adult_prompt_option(self, category: str, label: str, prompt: str) -> dict[str, Any]:
+        category = str(category or "").strip()
+        label = str(label or "").strip()
+        prompt = str(prompt or "").strip()
+        valid_categories = set(adult_prompt_presets_payload()["categories"])
+        if category not in valid_categories:
+            return {"ok": False, "error": "Unknown adult prompt category."}
+        if not label or not prompt:
+            return {"ok": False, "error": "A label and prompt text are required."}
+        if len(label) > 80 or len(prompt) > 600:
+            return {"ok": False, "error": "Custom labels are limited to 80 characters and prompts to 600 characters."}
+
+        slug = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "option"
+        settings = {**DEFAULT_SETTINGS, **_read_json(CONFIG_PATH, {})}
+        customs = settings.get("adult_prompt_custom")
+        if not isinstance(customs, dict):
+            customs = {}
+        category_options = customs.get(category)
+        if not isinstance(category_options, list):
+            category_options = []
+        used_ids = {
+            str(item.get("id"))
+            for item in adult_prompt_presets_payload(customs)["categories"][category]
+            if isinstance(item, dict)
+        }
+        option_id = f"custom_{slug}"
+        suffix = 2
+        while option_id in used_ids:
+            option_id = f"custom_{slug}_{suffix}"
+            suffix += 1
+        item = {"id": option_id, "label": label, "prompt": prompt}
+        category_options.append(item)
+        customs = {**customs, category: category_options}
+        settings["adult_prompt_custom"] = customs
+        _write_json(CONFIG_PATH, settings)
+        return {"ok": True, "item": {**item, "custom": True}, "presets": adult_prompt_presets_payload(customs)}
+
     def choose_files(self, kind: str, multiple: bool = True) -> list[str]:
         if self._self_window is None:
             return []
@@ -180,6 +289,12 @@ class DesktopAPI:
 
         result = self._self_window.create_file_dialog(webview.FOLDER_DIALOG)
         return str(Path(result[0])) if result else ""
+
+    def avatar_designer_scan_cache(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return {"ok": True, **scan_reference_cache(str(payload.get("cache_dir") or ""))}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     def _archive_dir(self) -> Path | None:
         preferred = str(self._settings().get("preferred_output_dir") or "").strip()
@@ -246,18 +361,20 @@ class DesktopAPI:
             {
                 "avatar_id": avatar_payload.get("avatar_id") or "desktop-avatar",
                 "display_name": avatar_payload.get("display_name") or "Desktop Avatar",
+                "apparent_age_years": avatar_payload.get("apparent_age_years"),
                 "subjects": [
                     {
                         "id": avatar_payload.get("avatar_id") or "desktop-avatar",
-                        "kind": avatar_payload.get("subject_kind", "synthetic"),
-                        "age_verified_18_plus": bool(avatar_payload.get("age_verified_18_plus", True)),
-                        "consent_confirmed": bool(avatar_payload.get("consent_confirmed", True)),
+                        "kind": avatar_payload.get("subject_kind", "unknown"),
+                        "age_verified_18_plus": bool(avatar_payload.get("age_verified_18_plus", False)),
+                        "consent_confirmed": bool(avatar_payload.get("consent_confirmed", False)),
                     }
                 ],
                 "identity_refs": _clean_paths(avatar_payload.get("identity_refs")),
                 "body_refs": _clean_paths(avatar_payload.get("body_refs")),
                 "hair_refs": _clean_paths(avatar_payload.get("hair_refs")),
                 "wardrobe_refs": _clean_paths(avatar_payload.get("wardrobe_refs")),
+                "anatomy_guides": avatar_payload.get("anatomy_guides") or [],
                 "persistent_features": avatar_payload.get("persistent_features") or [],
             }
         )
@@ -265,6 +382,9 @@ class DesktopAPI:
         shot_payload = payload.get("shot", {})
         references = shot_payload.get("references", {})
         engine = shot_payload.get("engine_preference", "h3_ref2va")
+        primary_reference = references.get("init_image") or (avatar.identity_refs[0] if avatar.identity_refs else None)
+        if engine == "h3_ref2va" and payload.get("reference_mode") == "exact_primary" and primary_reference:
+            engine = "h3_fl2va"
         preset = preset_by_id(shot_payload.get("h3_preset") or self._settings()["default_h3_preset"])
         if str(engine).startswith("h3_"):
             width, height, fps = preset.width, preset.height, H3_FPS
@@ -445,7 +565,13 @@ class DesktopAPI:
             _write_json(run_dir / "runtime.json", runtime)
             resolved_path = run_dir / "resolved_workflow.json"
             _write_json(resolved_path, resolved)
-            return {"ok": True, "engine": job.selected_engine, "runtime": runtime, "resolved_workflow": str(resolved_path)}
+            return {
+                "ok": True,
+                "engine": job.selected_engine,
+                "runtime": runtime,
+                "resolved_workflow": str(resolved_path),
+                "reference_bindings": _reference_bindings(job, resolved),
+            }
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -476,7 +602,13 @@ class DesktopAPI:
                 label=str(payload.get("label") or shot.shot_id),
             )
             item_id = self.queue.add(item)
-            return {"ok": True, "queue_id": item_id, "runtime": runtime, "engine": job.selected_engine}
+            return {
+                "ok": True,
+                "queue_id": item_id,
+                "runtime": runtime,
+                "engine": job.selected_engine,
+                "reference_bindings": _reference_bindings(job),
+            }
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -554,6 +686,352 @@ class DesktopAPI:
             return {"ok": False, "error": f"avatar '{avatar_id}' not found"}
         return {"ok": True, "avatar": payload}
 
+    def anatomy_guides_list(self) -> dict[str, Any]:
+        return {"ok": True, "guides": self.library.anatomy_guides()}
+
+    def anatomy_guides_save(self, guide: dict[str, Any]) -> dict[str, Any]:
+        try:
+            saved = self.library.put_anatomy_guide(guide)
+            return {"ok": True, "guide": saved}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def anatomy_guides_delete(self, guide_id: str) -> dict[str, Any]:
+        return {"ok": self.library.delete_anatomy_guide(guide_id)}
+
+    def appearance_components_list(self) -> dict[str, Any]:
+        return {"ok": True, "components": self.library.appearance_components()}
+
+    def appearance_components_save(self, component: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return {"ok": True, "component": self.library.put_appearance_component(component)}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def appearance_components_delete(self, option_id: str) -> dict[str, Any]:
+        return {"ok": self.library.delete_appearance_component(option_id)}
+
+    def _selected_designer_guides(self, profile: AvatarProfile, slot: Any | None = None) -> list[AnatomyGuide]:
+        guides = [
+            AnatomyGuide.model_validate(entry)
+            for entry in self.library.selected_anatomy_guides(profile.anatomy_guide_ids)
+        ]
+        if slot is None:
+            return guides
+        if slot.group == "body":
+            return [guide for guide in guides if guide.region == "full_body"]
+        if slot.group != "anatomy":
+            return []
+        if slot.role.startswith("pelvis"):
+            return [guide for guide in guides if guide.region.startswith("pelvis")]
+        if slot.role.startswith("torso"):
+            return [guide for guide in guides if guide.region in {slot.role, "full_body"}]
+        return [guide for guide in guides if guide.region == slot.role]
+
+    @staticmethod
+    def _designer_body_refs(
+        profile: AvatarProfile,
+        slot: Any | None = None,
+        component_paths: list[str] | None = None,
+    ) -> list[str]:
+        refs: list[str] = []
+        prioritized = []
+        include_profile_body = slot is None or slot.group != "identity"
+        if include_profile_body and slot is not None and slot.group == "body" and profile.body_refs.get(slot.role):
+            prioritized.append(profile.body_refs[slot.role])
+        prioritized.extend(component_paths or [])
+        if include_profile_body:
+            prioritized.extend(profile.body_refs.values())
+        for value in prioritized:
+            path = str(value or "").strip()
+            if path and path not in refs:
+                refs.append(path)
+        return refs[:MAX_DESIGNER_BODY_REFS]
+
+    def avatar_designer_coverage(self, avatar: dict[str, Any]) -> dict[str, Any]:
+        try:
+            profile = AvatarProfile.model_validate(avatar)
+            return {"ok": True, "coverage": coverage_report(profile)}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def avatar_designer_prompt(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            profile = AvatarProfile.model_validate(payload.get("avatar") or {})
+            slot = slot_by_id(str(payload.get("slot_id") or ""))
+            requested_mode = str(payload.get("render_mode") or "fl2va")
+            all_components = self.library.selected_appearance_components(profile.component_option_ids) if profile.component_option_ids else []
+            components = [
+                component
+                for component in all_components
+                if (
+                    slot.group == "identity"
+                    and component["category"] in {"face_shape", "skin"}
+                )
+                or (
+                    slot.group != "identity"
+                    and component["category"] != "face_shape"
+                )
+            ]
+            component_paths = [path for component in components for path in component.get("paths") or []]
+            component_labels = [f"{component['label']} ({component['category'].replace('_', ' ')})" for component in components]
+            saved_body_ref_count = len({str(value).strip() for value in profile.body_refs.values() if str(value).strip()})
+            body_refs = self._designer_body_refs(profile, slot, component_paths) if requested_mode == "body_ref2va" else []
+            if requested_mode == "body_ref2va" and not (saved_body_ref_count or all_components):
+                return {"ok": False, "error": "Add at least one saved body / proportions reference or ready appearance component before using Ref2VA."}
+            selected_guides = self._selected_designer_guides(profile) if requested_mode == "guided_ref2va" else []
+            if requested_mode == "guided_ref2va" and not selected_guides:
+                return {"ok": False, "error": "Select at least one validated anatomy guide before using guided Ref2VA."}
+            guides = self._selected_designer_guides(profile, slot) if selected_guides else []
+            guided = bool(guides)
+            body_referenced = bool(body_refs)
+            if (slot.adult_only or guided or body_referenced) and not (
+                profile.subject_kind != "unknown"
+                and profile.age_verified_18_plus
+                and profile.consent_confirmed
+            ):
+                return {
+                    "ok": False,
+                    "error": "Adult anatomy slots require a synthetic or consenting-adult profile with verified 18+ age and confirmed consent.",
+                }
+            prompt = build_designer_prompt(
+                slot.id,
+                profile.appearance_manifest,
+                profile.apparent_age_years,
+                "guided_ref2va" if guided else "body_ref2va" if body_referenced else "fl2va",
+                [f"{guide.label} ({guide.region.replace('_', ' ')})" for guide in guides],
+                component_labels,
+            )
+            return {
+                "ok": True,
+                "slot": slot.id,
+                "prompt": prompt,
+                "engine": "h3_ref2va" if guided or body_referenced else "h3_fl2va",
+                "guide_count": len(guides),
+                "body_ref_count": len(body_refs) if body_referenced else 0,
+                "saved_body_ref_count": saved_body_ref_count if requested_mode == "body_ref2va" else 0,
+                "component_count": len(components) if body_referenced else 0,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def avatar_designer_renderer_status(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        try:
+            provider = ComfyUIProvider(self._provider_config(payload))
+            caps = provider.capabilities()
+            settings = {**self._settings(), **payload.get("settings", {})}
+            h3_models = caps.get("h3_models") or {}
+            diffusion_models = [str(item).lower() for item in h3_models.get("diffusion_models") or []]
+            common_model_ready = all(h3_models.get(kind) for kind in ("text_encoders", "vae"))
+            fl2va_model_ready = common_model_ready and any("fl2va" in item for item in diffusion_models)
+            ref2va_model_ready = common_model_ready and any("ref2va" in item for item in diffusion_models)
+            authorized = bool(settings.get("local_h3_authorized"))
+            ffmpeg_ready = bool(shutil.which("ffmpeg"))
+            base_ready = bool(caps.get("h3_available") and authorized and ffmpeg_ready)
+            ready = bool(base_ready and fl2va_model_ready)
+            guided_ready = bool(base_ready and fl2va_model_ready and ref2va_model_ready)
+            missing: list[str] = []
+            if not caps.get("h3_available"):
+                missing.append("H3 ComfyUI nodes")
+            if not fl2va_model_ready:
+                missing.append("H3 FL2VA model, encoder, or VAE")
+            if not authorized:
+                missing.append("H3 local license authorization")
+            if not ffmpeg_ready:
+                missing.append("ffmpeg candidate-frame extraction")
+            return {
+                "ok": True,
+                "ready": ready,
+                "guided_ready": guided_ready,
+                "engine": "h3_fl2va",
+                "h3_available": bool(caps.get("h3_available")),
+                "h3_models": h3_models,
+                "authorized": authorized,
+                "ffmpeg_ready": ffmpeg_ready,
+                "fl2va_model_ready": fl2va_model_ready,
+                "ref2va_model_ready": ref2va_model_ready,
+                "missing": missing,
+                "message": (
+                    "MiniMax H3 FL2VA profile generation and final-frame extraction are ready."
+                    if ready
+                    else "H3 profile generation needs: " + ", ".join(missing)
+                ),
+            }
+        except Exception as exc:
+            return {"ok": False, "ready": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def queue_avatar_designer(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            profile = AvatarProfile.model_validate(payload.get("avatar") or {})
+            slot = slot_by_id(str(payload.get("slot_id") or ""))
+            requested_mode = str(payload.get("render_mode") or "fl2va")
+            all_components = self.library.selected_appearance_components(profile.component_option_ids) if profile.component_option_ids else []
+            components = [
+                component
+                for component in all_components
+                if (
+                    slot.group == "identity"
+                    and component["category"] in {"face_shape", "skin"}
+                )
+                or (
+                    slot.group != "identity"
+                    and component["category"] != "face_shape"
+                )
+            ]
+            component_paths = [path for component in components for path in component.get("paths") or []]
+            component_labels = [f"{component['label']} ({component['category'].replace('_', ' ')})" for component in components]
+            saved_body_ref_count = len({str(value).strip() for value in profile.body_refs.values() if str(value).strip()})
+            body_refs = self._designer_body_refs(profile, slot, component_paths) if requested_mode == "body_ref2va" else []
+            if requested_mode == "body_ref2va" and not (saved_body_ref_count or all_components):
+                return {"ok": False, "error": "Add at least one saved body / proportions reference or ready appearance component before using Ref2VA."}
+            selected_guides = self._selected_designer_guides(profile) if requested_mode == "guided_ref2va" else []
+            if requested_mode == "guided_ref2va" and not selected_guides:
+                return {"ok": False, "error": "Select at least one validated anatomy guide before using guided Ref2VA."}
+            guides = self._selected_designer_guides(profile, slot) if selected_guides else []
+            guided = bool(guides)
+            body_referenced = bool(body_refs)
+            if (slot.adult_only or guided or body_referenced) and not (
+                profile.subject_kind != "unknown"
+                and profile.age_verified_18_plus
+                and profile.consent_confirmed
+            ):
+                return {
+                    "ok": False,
+                    "error": "Adult anatomy slots require a synthetic or consenting-adult profile with verified 18+ age and confirmed consent.",
+                }
+            source = str(payload.get("source_image") or "").strip()
+            if not source:
+                source = next((path for path in [*profile.source_refs, *profile.ordered_identity] if path), "")
+            if not source or not Path(source).expanduser().is_file():
+                return {"ok": False, "error": "Select an existing primary source image before generating a candidate."}
+            missing_guides = [guide.label for guide in guides if not Path(guide.path).expanduser().is_file()]
+            if missing_guides:
+                return {
+                    "ok": False,
+                    "error": "Selected anatomy guide files are missing: " + ", ".join(missing_guides),
+                }
+            missing_body_refs = [path for path in body_refs if not Path(path).expanduser().is_file()]
+            if missing_body_refs:
+                return {
+                    "ok": False,
+                    "error": "Saved body reference files are missing: " + ", ".join(Path(path).name for path in missing_body_refs),
+                }
+
+            status = self.avatar_designer_renderer_status(payload)
+            ref2va = guided or body_referenced
+            route_ready = status.get("guided_ready") if ref2va else status.get("ready")
+            if not route_ready:
+                if ref2va:
+                    return {
+                        "ok": False,
+                        "error": "Guided profile generation requires both H3 FL2VA and Ref2VA models, authorization, and ffmpeg. Ref2VA remains experimental on 8 GB GPUs.",
+                    }
+                return {"ok": False, "error": status.get("message") or status.get("error") or "MiniMax H3 is not ready."}
+
+            prompt = build_designer_prompt(
+                slot.id,
+                profile.appearance_manifest,
+                profile.apparent_age_years,
+                "guided_ref2va" if guided else "body_ref2va" if body_referenced else "fl2va",
+                [f"{guide.label} ({guide.region.replace('_', ' ')})" for guide in guides],
+                component_labels,
+            )
+            appearance_features = [
+                f"{key.replace('_', ' ')}: {value}"
+                for key, value in profile.appearance_manifest.items()
+                if str(value).strip()
+            ]
+            requested_preset = str(payload.get("h3_preset") or self._settings().get("default_h3_preset") or "vertical_4070")
+            render_payload = {
+                "runtime_profile": "low_memory" if ref2va else str(payload.get("runtime_profile") or "low_memory_quality"),
+                "h3_preset": "vertical_fast" if ref2va else requested_preset,
+                "reference_mode": "multi_match" if ref2va else "exact_primary",
+                "settings": payload.get("settings") or {},
+                "advanced": {"H3_REF_IMAGE_SIZE": "match"} if ref2va else {},
+                "avatar": {
+                    "avatar_id": profile.avatar_id,
+                    "display_name": profile.display_name,
+                    "apparent_age_years": profile.apparent_age_years,
+                    "subject_kind": profile.subject_kind,
+                    "age_verified_18_plus": profile.age_verified_18_plus,
+                    "consent_confirmed": profile.consent_confirmed,
+                    "identity_refs": [source],
+                    "body_refs": body_refs if body_referenced else [],
+                    "anatomy_guides": [
+                        {
+                            "guide_id": guide.guide_id,
+                            "label": guide.label,
+                            "path": guide.path,
+                            "region": guide.region,
+                        }
+                        for guide in guides
+                    ],
+                    "persistent_features": [*profile.persistent_features, *appearance_features],
+                },
+                "shot": {
+                    "shot_id": f"designer-{slot.id}",
+                    "content_class": "adult_nudity" if slot.adult_only or guided else "general",
+                    "user_prompt": prompt,
+                    "duration_s": 4.0,
+                    "seed": int(payload.get("seed") or 41001),
+                    "engine_preference": "h3_ref2va" if ref2va else "h3_fl2va",
+                    "h3_preset": "vertical_fast" if ref2va else requested_preset,
+                    "camera": {"framing": slot.framing, "movement": "one slow continuous transition, then locked final hold", "lens_equivalent_mm": 70},
+                    "environment": "neutral gray reference studio with flat even lighting",
+                    "references": {} if ref2va else {"init_image": source},
+                },
+            }
+            avatar, shot = self._models_from_payload(render_payload)
+            decision = evaluate_policy(avatar, shot)
+            if not decision.allowed:
+                return {"ok": False, "error": decision.reason}
+            job, runtime, workflow = self._resolve_runtime(render_payload, avatar, shot)
+            expected_engine = "h3_ref2va" if ref2va else "h3_fl2va"
+            if job.selected_engine != expected_engine:
+                return {"ok": False, "error": f"Avatar Designer requires {expected_engine}, but runtime resolved {job.selected_engine}."}
+            if not runtime.get("local_h3_allowed", True):
+                return {"ok": False, "error": "Local H3 is not authorized in Settings."}
+            if not workflow:
+                return {"ok": False, "error": f"No {expected_engine} workflow is available."}
+            runtime = {
+                **runtime,
+                "extract_candidate_frame": True,
+                "designer_slot": slot.id,
+                "designer_render_mode": "guided_ref2va" if guided else "body_ref2va" if body_referenced else "fl2va",
+                "guide_count": len(guides),
+                "body_ref_count": len(body_refs) if body_referenced else 0,
+                "saved_body_ref_count": saved_body_ref_count if requested_mode == "body_ref2va" else 0,
+                "component_count": len(components) if body_referenced else 0,
+            }
+            job.asset_map["OUTPUT_PREFIX"] = f"avatar_designer_h3_{profile.avatar_id}_{slot.role}"
+            item = QueuedRender(
+                job=job,
+                workflow=workflow,
+                provider_config=self._provider_config(render_payload),
+                profile=str(runtime.get("profile") or "low_memory_quality"),
+                runtime=runtime,
+                output_dir=payload.get("output_dir"),
+                archive_dir=str(self._archive_dir()) if self._archive_dir() else None,
+                label=f"Avatar Designer H3 · {profile.display_name} · {slot.label}",
+            )
+            queue_id = self.queue.add(item)
+            return {
+                "ok": True,
+                "queue_id": queue_id,
+                "slot": slot.id,
+                "prompt": prompt,
+                "engine": job.selected_engine,
+                "guide_count": len(guides),
+                "body_ref_count": len(body_refs) if body_referenced else 0,
+                "saved_body_ref_count": saved_body_ref_count if requested_mode == "body_ref2va" else 0,
+                "component_count": len(components) if body_referenced else 0,
+                "runtime": runtime,
+                "reference_bindings": _reference_bindings(job),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
     def motions_list(self) -> dict[str, Any]:
         return {"ok": True, "motions": self.library.motions()}
 
@@ -601,6 +1079,16 @@ class DesktopAPI:
     def gpu_free(self) -> dict[str, Any]:
         try:
             provider = ComfyUIProvider(self._provider_config({}))
+            queue_status = provider.queue_status()
+            if queue_status["busy"]:
+                return {
+                    "ok": False,
+                    "error": (
+                        "GPU memory can only be freed while ComfyUI is idle. "
+                        f"Wait for {queue_status['running']} running and {queue_status['pending']} pending render(s), "
+                        "or cancel them first."
+                    ),
+                }
             event = self.queue.memory_manager.maybe_cleanup(
                 provider, reason="manual-gpu-free", force=True, unload_models=True
             )

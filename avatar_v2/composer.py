@@ -17,11 +17,51 @@ DEFAULT_NEGATIVE = (
 
 def _time_plan(shot: ShotSpec) -> str:
     if not shot.action_beats:
+        if shot.content_class == "adult_sexual":
+            onset = min(max(shot.duration_s * 0.20, 0.5), 1.5)
+            settle = max(shot.duration_s * 0.82, onset + 0.5)
+            return (
+                f"[0.000-{onset:.3f}] Hold the opening pose long enough to establish exact anatomy and contact geometry. "
+                f"[{onset:.3f}-{settle:.3f}] Perform the requested movement as one slow, continuous cycle with small range, "
+                "stable pelvic orientation, and physically consistent contact. "
+                f"[{settle:.3f}-{shot.duration_s:.3f}] Decelerate smoothly and settle without changing anatomy or prop placement."
+            )
+        if shot.content_class == "adult_nudity":
+            return (
+                "Begin from the referenced pose, then use one slow continuous movement with stable body proportions, "
+                "natural joint articulation, and consistent visible anatomy before settling."
+            )
         return "Maintain continuous natural human motion with realistic inertia and micro-adjustments."
     return " ".join(
         f"[{beat.start_s:0.3f}-{beat.end_s:0.3f}] {beat.description.strip()}"
         for beat in shot.action_beats
     )
+
+
+def _adult_anatomy_direction(shot: ShotSpec) -> list[str]:
+    if shot.content_class == "general":
+        return []
+
+    sections = [
+        "Adult anatomy fidelity is a top visual priority. Preserve one continuous anatomically correct body with stable "
+        "skeletal proportions, joint locations, breasts, abdomen, pelvis, hips, gluteal cleft, perineum, upper thighs, "
+        "and exactly one consistently placed set of external genital structures across every frame.",
+        "Maintain continuous skin surfaces and anatomical topology through turns and occlusion. Body regions retain their "
+        "location and orientation relative to the pelvis; soft tissue deforms locally with gravity and inertia, then "
+        "recovers smoothly without changing identity or structure.",
+    ]
+    if shot.content_class == "adult_sexual":
+        sections.extend(
+            [
+                "Contact mechanics must remain physically coherent. Any body-to-body or prop-to-body contact follows one "
+                "stable path with consistent angle, depth, scale, occlusion, and surrounding soft-tissue response; contact "
+                "points remain attached to the same anatomical locations throughout the movement.",
+                "Pelvic translation and rotation lead the action as one stable skeletal unit while hips articulate at their "
+                "joints and knees, feet, hands, or furniture carry believable load. Prefer slower speed, smaller range, and a "
+                "steadier camera whenever greater motion would reduce genital, pelvic, limb, or contact fidelity.",
+            ]
+        )
+    return sections
 
 
 def _physical_direction(avatar: AvatarManifest, shot: ShotSpec) -> list[str]:
@@ -36,6 +76,12 @@ def _physical_direction(avatar: AvatarManifest, shot: ShotSpec) -> list[str]:
         sections.append(f"Wardrobe continuity: {shot.wardrobe}.")
     if shot.environment:
         sections.append(f"Environment continuity: {shot.environment}.")
+    if avatar.apparent_age_years is not None:
+        sections.append(
+            f"Apparent-age anchor: the subject remains visibly {avatar.apparent_age_years} years old in every frame. "
+            "Preserve age-consistent facial structure, skin texture, soft-tissue distribution, posture, and body maturity; "
+            "do not make the subject look younger or older."
+        )
     if shot.wind.speed_mps > 0:
         sections.append(
             "Wind physics: "
@@ -46,6 +92,7 @@ def _physical_direction(avatar: AvatarManifest, shot: ShotSpec) -> list[str]:
         )
     if avatar.persistent_features:
         sections.append("Persistent identity anchors: " + "; ".join(avatar.persistent_features) + ".")
+    sections.extend(_adult_anatomy_direction(shot))
     sections.append(
         "Use live-action photorealism with natural skin microtexture, physically plausible body mechanics, "
         "natural blinking, breathing and posture corrections, coherent shadows/reflections, and realistic motion blur."
@@ -73,6 +120,14 @@ def _h3_reference_sets(
 
     image_candidates: list[tuple[str | None, str]] = [(primary, "primary identity anchor")]
     image_candidates += [(p, "additional identity anchor") for p in avatar.identity_refs]
+    if shot.content_class != "general":
+        image_candidates += [
+            (
+                guide.path,
+                f"guide-only adult anatomy topology for {guide.region.replace('_', ' ')}; never transfer identity, skin markings, age, ethnicity, or body identity",
+            )
+            for guide in avatar.anatomy_guides
+        ]
     image_candidates += [(p, "body and proportion reference") for p in avatar.body_refs]
     image_candidates += [(p, "hair identity and material reference") for p in avatar.hair_refs]
     image_candidates += [(p, "wardrobe reference") for p in avatar.wardrobe_refs]
@@ -104,9 +159,12 @@ def _soundscape(shot: ShotSpec, has_audio_ref: bool = False) -> str:
     return ". ".join(sounds) + "."
 
 
-def _base_timeline(avatar: AvatarManifest, shot: ShotSpec) -> str:
+def _base_timeline(avatar: AvatarManifest, shot: ShotSpec, opening_anchor: str = "") -> str:
     direction = " ".join(_physical_direction(avatar, shot))
-    return f"[Shot 1] {shot.user_prompt.strip()} {direction} Keep one coherent shot unless the user explicitly requests a cut."
+    return (
+        f"[Shot 1] {opening_anchor}{shot.user_prompt.strip()} {direction} "
+        "Keep one coherent shot unless the user explicitly requests a cut."
+    )
 
 
 def _h3_fl2va_prompt(avatar: AvatarManifest, shot: ShotSpec) -> str:
@@ -115,15 +173,26 @@ def _h3_fl2va_prompt(avatar: AvatarManifest, shot: ShotSpec) -> str:
     alignment = ""
     if refs.init_image and refs.last_frame:
         alignment = (
-            "How the reference pictures align with the target video — <Picture 1> aligns with 0.00 seconds; "
-            f"<Picture 2> aligns with {duration:.2f} seconds."
+            "How the reference pictures align with the target video — <Picture 1> (from [Shot 1]) aligns with "
+            f"the 0.00-second mark; <Picture 2> (from [Shot 1]) aligns with the {duration:.2f}-second mark."
         )
     elif refs.init_image:
-        alignment = "For the target video, at 0.00 seconds, <Picture 1> is the fully referenced opening frame."
+        alignment = (
+            "For the target video, at 0.00 seconds into the target video, "
+            "<Picture 1> (from [Shot 1]) is fully referenced."
+        )
     elif refs.last_frame:
         alignment = (
             "How the reference pictures align with the target video — "
             f"<Picture 1> aligns with {duration:.2f} seconds as the final frame."
+        )
+
+    opening_anchor = ""
+    if refs.init_image:
+        opening_anchor = (
+            "Begin with the exact composition, visible anatomy, pose, identity, lighting, and spatial relationships in "
+            "<Picture 1>. Develop movement continuously from that frame. Reveal anatomy outside the opening crop gradually "
+            "with stable proportions and structure, avoiding abrupt pose, scale, or body-topology changes. "
         )
 
     parts = []
@@ -131,7 +200,7 @@ def _h3_fl2va_prompt(avatar: AvatarManifest, shot: ShotSpec) -> str:
         parts.append(alignment)
     parts.extend(
         [
-            f"integrated_multimodal_description: {_base_timeline(avatar, shot)}",
+            f"integrated_multimodal_description: {_base_timeline(avatar, shot, opening_anchor)}",
             f"overall_soundscape: {_soundscape(shot)}",
             "non_diegetic_music: N/A unless explicitly requested by the user.",
         ]
@@ -143,20 +212,44 @@ def _h3_ref2va_prompt(avatar: AvatarManifest, shot: ShotSpec) -> str:
     images, videos, audios = _h3_reference_sets(avatar, shot)
 
     subject_lines: list[str] = []
-    identity_pictures = [i for i, (_, role) in enumerate(images, start=1) if "identity" in role]
-    body_pictures = [i for i, (_, role) in enumerate(images, start=1) if "body" in role or "proportion" in role]
-    hair_pictures = [i for i, (_, role) in enumerate(images, start=1) if "hair" in role]
+    guide_pictures = [i for i, (_, role) in enumerate(images, start=1) if "guide-only adult anatomy" in role]
+    identity_pictures = [
+        i for i, (_, role) in enumerate(images, start=1)
+        if "guide-only adult anatomy" not in role and "identity" in role
+    ]
+    body_pictures = [
+        i for i, (_, role) in enumerate(images, start=1)
+        if "guide-only adult anatomy" not in role and ("body" in role or "proportion" in role)
+    ]
+    hair_pictures = [
+        i for i, (_, role) in enumerate(images, start=1)
+        if "guide-only adult anatomy" not in role and "hair" in role
+    ]
     wardrobe_pictures = [i for i, (_, role) in enumerate(images, start=1) if "wardrobe" in role]
     scene_pictures = [i for i, (_, role) in enumerate(images, start=1) if "environment" in role]
 
     identity_sources = ", ".join(f"<Picture {i}>" for i in identity_pictures) or "the supplied identity references"
+    subject = avatar.subjects[0]
+    subject_label = (
+        "synthetic adult person"
+        if subject.kind == "synthetic"
+        else "consenting, age-verified adult person"
+        if subject.kind == "consenting_adult" and subject.age_verified_18_plus
+        else "target person"
+    )
     subject_lines.append(
-        f"<Subject 1> is the target synthetic adult person. Preserve appearance and identity from {identity_sources}; "
+        f"<Subject 1> is the target {subject_label}. Preserve appearance and identity from {identity_sources}; "
         "do not inherit facial identity, body identity, clothing identity, or demographic traits from motion-reference videos."
     )
     if body_pictures:
         subject_lines.append(
             "<Subject 1> uses " + ", ".join(f"<Picture {i}>" for i in body_pictures) + " for body proportions and pose-scale consistency."
+        )
+    if guide_pictures:
+        subject_lines.append(
+            "Use " + ", ".join(f"<Picture {i}>" for i in guide_pictures) +
+            " only as clinical topology and landmark guides. They are not depictions of <Subject 1>. Never copy their "
+            "face, identity, age, ethnicity, skin tone, body shape, proportions, hair, marks, scars, tattoos, or clothing."
         )
     if hair_pictures:
         subject_lines.append(
@@ -189,7 +282,9 @@ def _h3_ref2va_prompt(avatar: AvatarManifest, shot: ShotSpec) -> str:
     if scene_pictures:
         retention.append("<Subject 2> (entire video): fully_preserved - retain the referenced environment, layout, lighting logic, and spatial continuity.")
     for i, (_, role) in enumerate(images, start=1):
-        relation = "fully_preserved" if any(token in role for token in ("identity", "body", "hair", "wardrobe", "environment")) else "weak_reference"
+        relation = "weak_reference" if "guide-only adult anatomy" in role else (
+            "fully_preserved" if any(token in role for token in ("identity", "body", "hair", "wardrobe", "environment")) else "weak_reference"
+        )
         retention.append(f"<Picture {i}>: {relation} - use only for its assigned role: {role}.")
     for i, (_, role) in enumerate(videos, start=1):
         retention.append(f"<Video {i}>: attribute_transfer - transfer {role} to <Subject 1> without transferring source identity.")

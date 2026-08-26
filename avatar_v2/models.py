@@ -24,14 +24,23 @@ class SubjectSpec(BaseModel):
     consent_confirmed: bool = False
 
 
+class AnatomyGuideRef(BaseModel):
+    guide_id: str
+    label: str
+    path: str
+    region: str
+
+
 class AvatarManifest(BaseModel):
     avatar_id: str
     display_name: str
+    apparent_age_years: int | None = Field(default=None, ge=18, le=100)
     subjects: list[SubjectSpec] = Field(default_factory=list)
     identity_refs: list[str] = Field(default_factory=list)
     body_refs: list[str] = Field(default_factory=list)
     hair_refs: list[str] = Field(default_factory=list)
     wardrobe_refs: list[str] = Field(default_factory=list)
+    anatomy_guides: list[AnatomyGuideRef] = Field(default_factory=list, max_length=8)
     persistent_features: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")

@@ -6,12 +6,14 @@ from avatar_v2.policy import evaluate_policy
 from avatar_v2.providers.comfyui import replace_placeholders
 from avatar_v2.router import choose_engine
 from avatar_v2.runtime_profiles import resolve_profile
+from avatar_v2.workflows_builder import build_h3_ref2va_workflow
 
 
 def synthetic_avatar():
     return AvatarManifest.model_validate({
         "avatar_id": "ava",
         "display_name": "Ava",
+        "apparent_age_years": 29,
         "subjects": [{
             "id": "ava",
             "kind": "synthetic",
@@ -27,6 +29,18 @@ def synthetic_avatar():
 def test_general_job_allowed():
     shot = ShotSpec.model_validate({"shot_id": "s1", "user_prompt": "walk toward camera"})
     assert evaluate_policy(synthetic_avatar(), shot).allowed
+
+
+def test_prompt_includes_stable_apparent_age_anchor():
+    shot = ShotSpec.model_validate({
+        "shot_id": "age-anchor",
+        "user_prompt": "turn toward camera",
+        "engine_preference": "h3_fl2va",
+        "references": {"init_image": "front.png"},
+    })
+    prompt = build_job(synthetic_avatar(), shot).prompt
+    assert "subject remains visibly 29 years old in every frame" in prompt
+    assert "do not make the subject look younger or older" in prompt
 
 
 def test_adult_job_requires_verified_consent():
@@ -88,6 +102,50 @@ def test_h3_prompt_uses_official_ref2va_section_order_and_roles():
     assert job.asset_map["H3_VIDEO_1"] == "walk.mp4"
 
 
+def test_h3_ref2va_keeps_anatomy_guides_separate_from_identity():
+    avatar_data = synthetic_avatar().model_dump()
+    avatar_data["anatomy_guides"] = [
+        {
+            "guide_id": "pelvis-guide-01",
+            "label": "Clinical pelvis front",
+            "path": "guide.png",
+            "region": "pelvis_front",
+        }
+    ]
+    avatar = AvatarManifest.model_validate(avatar_data)
+    shot = ShotSpec.model_validate({
+        "shot_id": "guided",
+        "content_class": "adult_nudity",
+        "user_prompt": "neutral clinical profile view",
+        "engine_preference": "h3_ref2va",
+    })
+    job = build_job(avatar, shot)
+    assert job.asset_map["H3_PICTURE_1"] == "front.png"
+    assert job.asset_map["H3_PICTURE_3"] == "guide.png"
+    assert "Preserve appearance and identity from <Picture 1>, <Picture 2>;" in job.prompt
+    assert "Preserve appearance and identity from <Picture 1>, <Picture 2>, <Picture 3>" not in job.prompt
+    assert "only as clinical topology and landmark guides" in job.prompt
+    assert "Never copy their face, identity, age, ethnicity" in job.prompt
+    assert "<Picture 3>: weak_reference" in job.prompt
+
+
+def test_h3_primary_reference_is_bound_at_best_fidelity():
+    shot = ShotSpec.model_validate({
+        "shot_id": "primary-ref",
+        "user_prompt": "hold identity",
+        "engine_preference": "h3_ref2va",
+        "references": {"init_image": "front.png"},
+    })
+    job = build_job(synthetic_avatar(), shot)
+    graph = build_h3_ref2va_workflow(job.asset_map)
+    image_nodes = {node_id: node for node_id, node in graph.items() if node["class_type"] == "LoadImage"}
+    task = next(node for node in graph.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert len(image_nodes) == 3
+    assert task["inputs"]["ref_images"][0][0] in image_nodes
+    assert image_nodes[task["inputs"]["ref_images"][0][0]]["inputs"]["image"] == "front.png"
+    assert task["inputs"]["ref_image_size"] == "max"
+
+
 def test_fl2va_prompt_uses_three_core_fields():
     shot = ShotSpec.model_validate({
         "shot_id": "s1",
@@ -99,7 +157,37 @@ def test_fl2va_prompt_uses_three_core_fields():
     assert "integrated_multimodal_description:" in job.prompt
     assert "overall_soundscape:" in job.prompt
     assert "non_diegetic_music:" in job.prompt
-    assert "<Picture 1> aligns with 0.00 seconds" in job.prompt
+    assert "<Picture 1> (from [Shot 1]) aligns with the 0.00-second mark" in job.prompt
+
+
+def test_adult_sexual_prompt_preprograms_anatomy_and_motion_fidelity():
+    shot = ShotSpec.model_validate({
+        "shot_id": "adult-motion",
+        "content_class": "adult_sexual",
+        "user_prompt": "perform a moving adult scene",
+        "duration_s": 6,
+        "engine_preference": "h3_fl2va",
+        "references": {"init_image": "start.png"},
+    })
+    prompt = build_job(synthetic_avatar(), shot).prompt
+    assert "external genital structures across every frame" in prompt
+    assert "Contact mechanics must remain physically coherent" in prompt
+    assert "stable pelvic orientation" in prompt
+    assert "Prefer slower speed, smaller range" in prompt
+    assert "Reveal anatomy outside the opening crop gradually" in prompt
+
+
+def test_general_prompt_does_not_add_adult_anatomy_language():
+    shot = ShotSpec.model_validate({
+        "shot_id": "general-motion",
+        "content_class": "general",
+        "user_prompt": "walk through the room",
+        "engine_preference": "h3_fl2va",
+        "references": {"init_image": "start.png"},
+    })
+    prompt = build_job(synthetic_avatar(), shot).prompt
+    assert "external genital structures" not in prompt
+    assert "Contact mechanics must remain physically coherent" not in prompt
 
 
 def test_composer_builds_temporal_prompt():

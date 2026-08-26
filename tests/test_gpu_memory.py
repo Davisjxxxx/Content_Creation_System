@@ -51,6 +51,79 @@ def test_memory_manager_does_not_cleanup_below_threshold(monkeypatch):
     assert provider.calls == 0
 
 
+def test_manual_forced_cleanup_works_when_auto_cleanup_is_disabled(monkeypatch):
+    snapshots = [GPUSnapshot(index=0, name="RTX 4070", used_mb=4000, total_mb=12000)]
+    monkeypatch.setattr(gpu_memory, "query_gpu_memory", lambda: snapshots)
+
+    class Provider:
+        calls = 0
+
+        def free_memory(self, **kwargs):
+            self.calls += 1
+
+    provider = Provider()
+    result = GPUMemoryManager(threshold=0.85, enabled=False).maybe_cleanup(
+        provider, reason="manual-gpu-free", force=True, wait_s=0
+    )
+    assert result["enabled"] is False
+    assert result["forced"] is True
+    assert result["cleanup_requested"] is True
+    assert provider.calls == 1
+
+
+def test_memory_sensitive_profiles_force_cleanup_below_threshold(monkeypatch):
+    from avatar_v2.render_queue import MEMORY_SENSITIVE_PROFILES
+
+    snapshots = [GPUSnapshot(index=0, name="RTX 4070", used_mb=900, total_mb=8188)]
+    monkeypatch.setattr(gpu_memory, "query_gpu_memory", lambda: snapshots)
+
+    class Provider:
+        def __init__(self):
+            self.calls = 0
+
+        def free_memory(self, *, unload_models=True, free_memory=True):
+            assert unload_models is True
+            assert free_memory is True
+            self.calls += 1
+
+    assert MEMORY_SENSITIVE_PROFILES == {"int8_12gb", "low_memory", "low_memory_quality"}
+    for profile in sorted(MEMORY_SENSITIVE_PROFILES):
+        provider = Provider()
+        result = GPUMemoryManager(threshold=0.85, enabled=True).maybe_cleanup(
+            provider,
+            reason=f"pre-render:{profile}",
+            force=True,
+            wait_s=0,
+        )
+        assert result["forced"] is True
+        assert result["cleanup_requested"] is True
+        assert provider.calls == 1
+
+
+def test_forced_cleanup_waits_for_actual_memory_drop(monkeypatch):
+    sequence = iter([
+        [GPUSnapshot(index=0, name="RTX 4070", used_mb=6900, total_mb=8188)],
+        [GPUSnapshot(index=0, name="RTX 4070", used_mb=6900, total_mb=8188)],
+        [GPUSnapshot(index=0, name="RTX 4070", used_mb=980, total_mb=8188)],
+        [GPUSnapshot(index=0, name="RTX 4070", used_mb=980, total_mb=8188)],
+    ])
+    monkeypatch.setattr(gpu_memory, "query_gpu_memory", lambda: next(sequence))
+    clock = iter([0.0, 10.0, 20.0, 30.0])
+    monkeypatch.setattr(gpu_memory.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(gpu_memory.time, "sleep", lambda _: None)
+
+    class Provider:
+        def free_memory(self, **kwargs):
+            pass
+
+    result = GPUMemoryManager(enabled=True).maybe_cleanup(
+        Provider(), reason="manual", force=True, wait_s=60
+    )
+    assert result["after"][0]["used_mb"] == 980
+    assert result["released_mb"] == 5920
+    assert result["effective"] is True
+
+
 def test_emergency_terminate_requires_explicit_pid(monkeypatch):
     monkeypatch.setattr(
         gpu_memory,

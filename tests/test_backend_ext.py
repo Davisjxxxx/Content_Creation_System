@@ -79,12 +79,13 @@ def test_profile_to_avatar_payload(tmp_path: Path):
         "display_name": "Ava",
         "identity_refs": {"front": "/b.png", "profile_left": "/c.png"},
         "body_refs": {"full_front": "/body.png"},
+        "anatomy_refs": {"pelvis_front": "/pelvis.png"},
         "hair_refs": {"loose": "/hair.png"},
         "wardrobe_refs": {"jacket": "/jacket.png"},
     })
     payload = store.profile_to_avatar_payload("ava-01")
     assert payload["identity_refs"] == ["/b.png", "/c.png"]
-    assert payload["body_refs"] == ["/body.png"]
+    assert payload["body_refs"] == ["/body.png", "/pelvis.png"]
     assert payload["hair_refs"] == ["/hair.png"]
     assert payload["wardrobe_refs"] == ["/jacket.png"]
 

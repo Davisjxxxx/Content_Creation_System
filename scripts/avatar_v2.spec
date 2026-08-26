@@ -10,7 +10,11 @@ a = Analysis(
     [os.path.join(SPECPATH, "desktop_entry.py")],
     pathex=[os.path.dirname(SPECPATH)],
     binaries=[],
-    datas=[(os.path.join(os.path.dirname(SPECPATH), "avatar_v2", "ui", "index.html"), "avatar_v2/ui")],
+    datas=[
+        (os.path.join(os.path.dirname(SPECPATH), "avatar_v2", "ui", "index.html"), "avatar_v2/ui"),
+        (os.path.join(os.path.dirname(SPECPATH), "workflows", "animatediff_sd15_api.json"), "workflows"),
+        (os.path.join(os.path.dirname(SPECPATH), "workflows", "animatediff_sdxl_api.json"), "workflows"),
+    ],
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
