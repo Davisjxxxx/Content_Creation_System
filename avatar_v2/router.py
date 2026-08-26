@@ -8,12 +8,18 @@ def choose_engine(shot: ShotSpec) -> str:
         return shot.engine_preference
 
     refs = shot.references
-    if refs.motion_video:
-        return "wan22"
-    if refs.last_frame:
-        return "ltx25"
-    if refs.scene_image and refs.audio:
-        return "seedance"
-    if shot.camera.movement not in {"static", "locked", "none"}:
-        return "ltx25"
-    return "wan22"
+    has_omni_refs = any(
+        [
+            refs.motion_video,
+            refs.scene_image,
+            refs.audio,
+            refs.extra_images,
+            refs.extra_videos,
+            refs.extra_audios,
+        ]
+    )
+    if has_omni_refs:
+        return "h3_ref2va"
+    if refs.init_image or refs.last_frame:
+        return "h3_fl2va"
+    return "h3_fl2va"

@@ -5,7 +5,16 @@ from pydantic import BaseModel, Field, model_validator
 
 ContentClass = Literal["general", "adult_nudity", "adult_sexual"]
 SubjectKind = Literal["synthetic", "consenting_adult", "unknown"]
-EngineName = Literal["auto", "wan22", "ltx25", "seedance", "custom"]
+EngineName = Literal[
+    "auto",
+    "h3_ref2va",
+    "h3_fl2va",
+    "wan22",
+    "ltx25",
+    "seedance",
+    "custom",
+    "upscale",
+]
 
 
 class SubjectSpec(BaseModel):
@@ -15,22 +24,30 @@ class SubjectSpec(BaseModel):
     consent_confirmed: bool = False
 
 
+class AnatomyGuideRef(BaseModel):
+    guide_id: str
+    label: str
+    path: str
+    region: str
+
+
 class AvatarManifest(BaseModel):
     avatar_id: str
     display_name: str
+    sex: Literal["", "female", "male"] = ""
+    apparent_age_years: int | None = Field(default=None, ge=18)
     subjects: list[SubjectSpec] = Field(default_factory=list)
     identity_refs: list[str] = Field(default_factory=list)
     body_refs: list[str] = Field(default_factory=list)
     hair_refs: list[str] = Field(default_factory=list)
     wardrobe_refs: list[str] = Field(default_factory=list)
+    anatomy_guides: list[AnatomyGuideRef] = Field(default_factory=list, max_length=8)
     persistent_features: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def require_subject_and_identity(self) -> "AvatarManifest":
+    def require_subject(self) -> "AvatarManifest":
         if not self.subjects:
             raise ValueError("avatar manifest requires at least one subject")
-        if not self.identity_refs:
-            raise ValueError("avatar manifest requires at least one identity reference")
         return self
 
 
@@ -65,6 +82,9 @@ class ReferenceSpec(BaseModel):
     motion_video: str | None = None
     scene_image: str | None = None
     audio: str | None = None
+    extra_images: list[str] = Field(default_factory=list, max_length=9)
+    extra_videos: list[str] = Field(default_factory=list, max_length=3)
+    extra_audios: list[str] = Field(default_factory=list, max_length=3)
 
 
 class ShotSpec(BaseModel):

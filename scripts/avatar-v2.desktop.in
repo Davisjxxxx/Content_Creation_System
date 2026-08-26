@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Avatar V2
+GenericName=Reference-driven synthetic human studio
+Comment=Local-first H3 / Wan / ComfyUI desktop studio
+Exec=__APP_DIR__/scripts/launch_avatar_v2.sh
+Icon=avatar-v2
+Terminal=false
+Categories=Graphics;AudioVideo;Video;
+StartupNotify=true
+StartupWMClass=Avatar V2

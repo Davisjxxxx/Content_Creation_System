@@ -4,25 +4,39 @@ build-backend = "hatchling.build"
 
 [project]
 name = "avatar-v2-cli"
-version = "0.2.0"
-description = "Reference-driven synthetic-human video orchestration CLI"
+version = "0.3.0"
+description = "Reference-driven synthetic-human video orchestration CLI and desktop app"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "httpx>=0.27,<1",
+  "Pillow>=10.4,<12",
   "pydantic>=2.8,<3",
   "PyYAML>=6.0,<7",
   "typer>=0.12,<1",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9"]
+desktop = [
+  "pywebview>=5.3,<6",
+]
+dev = [
+  "pytest>=8,<9",
+  "pyinstaller>=6.10,<7",
+]
 
 [project.scripts]
 avatar-v2 = "avatar_v2.cli:app"
+avatar-v2-desktop = "avatar_v2.desktop:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["avatar_v2"]
+
+[tool.hatch.build]
+include = [
+  "avatar_v2/**/*.py",
+  "avatar_v2/ui/**/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

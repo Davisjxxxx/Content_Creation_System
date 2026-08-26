@@ -1,0 +1,53 @@
+CUDA ERROR 999 FIX - Desktop Quick Reference
+============================================
+
+USER-PROVIDED TROUBLESHOOTING REFERENCE.
+Avatar V2 does not execute these privileged driver/group commands automatically.
+Verify the commands against the target Linux distribution, CUDA version, and NVIDIA driver before use.
+
+PROBLEM: nvidia-smi works but PyTorch gives "CUDA unknown error" or error code 999
+
+QUICK DIAGNOSIS:
+1. Test: python3 -c "import ctypes; lib = ctypes.CDLL('libcudart.so'); device_count = ctypes.c_int(); result = lib.cudaGetDeviceCount(ctypes.byref(device_count)); print(f'CUDA: {\"SUCCESS\" if result == 0 else \"FAILED\"} - error {result}')"
+2. Check groups: groups | grep nvidia
+3. If not in nvidia group, follow fix below
+
+THE FIX (works 99% of the time):
+================================
+
+Step 1 - Create/Join NVIDIA Group:
+sudo groupadd nvidia
+sudo usermod -a -G nvidia $USER
+
+Step 2 - Verify:
+cat /etc/group | grep nvidia
+(should show: nvidia:x:1001:your_username)
+
+Step 3 - REBOOT (required!):
+sudo reboot
+
+Step 4 - Test After Reboot:
+python3 -c "import ctypes; lib = ctypes.CDLL('/usr/local/cuda-12.1/lib64/libcudart.so'); device_count = ctypes.c_int(); result = lib.cudaGetDeviceCount(ctypes.byref(device_count)); print(f'CUDA: {\"SUCCESS\" if result == 0 else \"FAILED\"}')"
+
+EMERGENCY ONE-LINER:
+sudo groupadd nvidia 2>/dev/null; sudo usermod -a -G nvidia $USER; sudo reboot
+
+WHY THIS HAPPENS:
+- Ubuntu doesn't auto-add users to nvidia group during driver install
+- CUDA runtime requires nvidia group membership for GPU access
+- Group membership only applies after logout/reboot
+
+IF STILL BROKEN:
+1. Reinstall CUDA toolkit: 
+   cd /tmp
+   wget https://developer.download.nvidia.com/compute/cuda/12.1.0/local_installers/cuda_12.1.0_530.30.02_linux.run
+   sudo sh cuda_12.1.0_530.30.02_linux.run --toolkit --silent --override
+   echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.1/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+   sudo reboot
+
+2. Nuclear option - reinstall nvidia drivers:
+   sudo apt purge nvidia-*
+   sudo ubuntu-drivers autoinstall
+   sudo reboot
+
+SAVE THIS FILE TO DESKTOP FOR FUTURE REFERENCE!

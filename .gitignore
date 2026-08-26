@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .env
 build/
+dist/
 runs/
 assets/private/
 *.mp4
@@ -11,3 +12,12 @@ assets/private/
 *.webm
 *.wav
 *.flac
+*.mp3
+*.m4a
+*.safetensors
+*.ckpt
+*.gguf
+*.pt
+*.pth
+renders/
+logs/

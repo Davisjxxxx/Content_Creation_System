@@ -1,0 +1,72 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "${CHECKPOINT}"
+    }
+  },
+  "2": {
+    "class_type": "ADE_AnimateDiffLoaderWithContext",
+    "inputs": {
+      "model": ["1", 0],
+      "model_name": "${MOTION_MODEL}",
+      "beta_schedule": "${BETA_SCHEDULE}"
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "${PROMPT}",
+      "clip": ["1", 1]
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "${NEGATIVE_PROMPT}",
+      "clip": ["1", 1]
+    }
+  },
+  "5": {
+    "class_type": "ADE_EmptyLatentImageLarge",
+    "inputs": {
+      "width": "${WIDTH}",
+      "height": "${HEIGHT}",
+      "batch_size": "${FRAMES}"
+    }
+  },
+  "6": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["2", 0],
+      "seed": "${SEED}",
+      "steps": "${STEPS}",
+      "cfg": "${CFG}",
+      "sampler_name": "${SAMPLER_NAME}",
+      "scheduler": "${SCHEDULER}",
+      "positive": ["3", 0],
+      "negative": ["4", 0],
+      "latent_image": ["5", 0],
+      "denoise": 1.0
+    }
+  },
+  "7": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["6", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "8": {
+    "class_type": "VHS_VideoCombine",
+    "inputs": {
+      "images": ["7", 0],
+      "frame_rate": "${FPS}",
+      "loop_count": 0,
+      "filename_prefix": "${OUTPUT_PREFIX}",
+      "format": "video/h264-mp4",
+      "pingpong": false,
+      "save_output": true
+    }
+  }
+}
