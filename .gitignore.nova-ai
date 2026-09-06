@@ -1,0 +1,15 @@
+# Merge these patterns into the repository root .gitignore during local reconciliation.
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+voice_data/
+voice_clones/
+private_training_data/
+provider_tokens/
+*.pem
+*.key
+*.p12
+__pycache__/
+.pytest_cache/

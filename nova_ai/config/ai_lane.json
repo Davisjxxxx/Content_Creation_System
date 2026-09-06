@@ -1,0 +1,36 @@
+{
+  "lane_id": "AI-01",
+  "name": "AI Frontier",
+  "proof_lane": true,
+  "linkedin_integration": "OUT_OF_SCOPE_V1",
+  "blog_integration": "FUTURE_ADAPTER",
+  "distribution": ["YOUTUBE", "YOUTUBE_SHORTS", "TIKTOK", "FACEBOOK_REELS"],
+  "sublanes": [
+    "AI_NEWS_RELEASES",
+    "LLMS_MODELS",
+    "AGENTS_AGENTIC_SYSTEMS",
+    "AUTOMATION_WORKFLOWS",
+    "AI_CODING",
+    "LOCAL_OPEN_SOURCE_AI",
+    "AI_BUSINESS_STARTUPS",
+    "AI_CONSULTING",
+    "ENTERPRISE_AI",
+    "AI_TOOLS",
+    "AI_RESEARCH",
+    "ROBOTICS_EMBODIED_AI",
+    "AI_INFRASTRUCTURE",
+    "AI_SAFETY_GOVERNANCE",
+    "CREATOR_AI",
+    "AI_LEARNING_EDUCATION",
+    "BUILDERS_LAB",
+    "AI_EDGE"
+  ],
+  "source_policy": {
+    "tier_1": ["official vendor releases", "peer reviewed papers", "arXiv originals", "government/regulatory sources", "original repositories/documentation"],
+    "tier_2": ["reputable specialist publications", "recognized research institutions", "technical analysis with source links"],
+    "tier_3": ["creators", "Reddit", "social media", "community newsletters"],
+    "tier_4": ["anonymous viral claims", "unsourced reposts", "content farms"]
+  },
+  "editorial_modes": ["NOVA_DISCOVERY", "NOVA_DEEP_DIVE", "NOVA_EDGE", "BUILDERS_LAB"],
+  "human_gates": ["STORY_SELECTION", "BUDGET_OVERRIDE", "FINAL_APPROVAL", "PUBLISH"]
+}

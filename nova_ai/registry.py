@@ -1,0 +1,28 @@
+from __future__ import annotations
+
+from .agent_contract import AgentSpec
+from .models import AgentRole
+
+
+AGENT_SPECS: dict[AgentRole, AgentSpec] = {
+    AgentRole.SOURCE_SCOUT: AgentSpec(role=AgentRole.SOURCE_SCOUT, purpose="Discover high-signal AI stories from configured sources without deciding truth.", prompt_path="prompts/01_source_scout.md", required_inputs=("source_registry", "lookback_window"), required_output_keys=("candidates",), soft_budget_usd=0.25),
+    AgentRole.CREATOR_WATCH: AgentSpec(role=AgentRole.CREATOR_WATCH, purpose="Detect topics influential AI creators are discussing; creators are sensors, not authorities.", prompt_path="prompts/02_creator_watch.md", required_inputs=("creator_registry", "lookback_window"), required_output_keys=("signals",), soft_budget_usd=0.25),
+    AgentRole.TREND_ANALYST: AgentSpec(role=AgentRole.TREND_ANALYST, purpose="Measure velocity, novelty, saturation, platform fit, and audience curiosity.", prompt_path="prompts/03_trend_analyst.md", required_inputs=("candidate", "discovery_signals"), required_output_keys=("scores", "rationale"), soft_budget_usd=0.30),
+    AgentRole.EDGE_SCOUT: AgentSpec(role=AgentRole.EDGE_SCOUT, purpose="Find plausible emerging, minority, unconventional, or under-researched AI claims without endorsing them.", prompt_path="prompts/04_edge_scout.md", required_inputs=("candidate",), required_output_keys=("edge_claims", "sources"), soft_budget_usd=0.50),
+    AgentRole.PRIMARY_RESEARCHER: AgentSpec(role=AgentRole.PRIMARY_RESEARCHER, purpose="Build a primary-source-first research dossier and explicitly separate facts from interpretation.", prompt_path="prompts/05_primary_researcher.md", required_inputs=("candidate",), required_output_keys=("dossier", "sources", "open_questions"), soft_budget_usd=1.50, hard_budget_usd=4.00),
+    AgentRole.CLAIM_EXTRACTOR: AgentSpec(role=AgentRole.CLAIM_EXTRACTOR, purpose="Convert the dossier into atomic, source-mapped claims.", prompt_path="prompts/06_claim_extractor.md", required_inputs=("dossier",), required_output_keys=("claims",), soft_budget_usd=0.50),
+    AgentRole.EVIDENCE_ANALYST: AgentSpec(role=AgentRole.EVIDENCE_ANALYST, purpose="Assign evidence maturity, confidence, replication status, and allowed wording to each claim.", prompt_path="prompts/07_evidence_analyst.md", required_inputs=("claims", "sources"), required_output_keys=("evaluated_claims",), soft_budget_usd=1.00, hard_budget_usd=3.00),
+    AgentRole.EDGE_ADVERSARY: AgentSpec(role=AgentRole.EDGE_ADVERSARY, purpose="Attack edge claims, search for omitted mundane explanations, and test falsifiability.", prompt_path="prompts/08_edge_adversary.md", required_inputs=("evaluated_claims",), required_output_keys=("challenges", "surviving_claims"), soft_budget_usd=1.00),
+    AgentRole.RED_TEAM: AgentSpec(role=AgentRole.RED_TEAM, purpose="Try to falsify the overall story, identify hype, causal errors, stale news, and citation laundering.", prompt_path="prompts/09_red_team.md", required_inputs=("dossier", "evaluated_claims"), required_output_keys=("blocking_issues", "nonblocking_issues", "verdict"), soft_budget_usd=1.00),
+    AgentRole.STORY_ANALYST: AgentSpec(role=AgentRole.STORY_ANALYST, purpose="Evaluate whether the verified material can become an original, compelling, visual story.", prompt_path="prompts/10_story_analyst.md", required_inputs=("candidate", "evaluated_claims", "red_team"), required_output_keys=("story_score", "angles", "recommended_format"), soft_budget_usd=0.50),
+    AgentRole.JASON_FIT: AgentSpec(role=AgentRole.JASON_FIT, purpose="Estimate creator-interest fit from explicit preference data; never infer sensitive traits.", prompt_path="prompts/11_jason_fit.md", required_inputs=("candidate", "creator_profile"), required_output_keys=("fit_score", "reasons"), soft_budget_usd=0.25),
+    AgentRole.CERTIFIER: AgentSpec(role=AgentRole.CERTIFIER, purpose="Issue fail-closed editorial certification using evidence, red-team findings, and disclosure requirements.", prompt_path="prompts/12_certifier.md", required_inputs=("evaluated_claims", "red_team", "story_analysis"), required_output_keys=("decision", "rationale", "qualifications"), soft_budget_usd=1.50, hard_budget_usd=4.00),
+    AgentRole.NARRATIVE_ARCHITECT: AgentSpec(role=AgentRole.NARRATIVE_ARCHITECT, purpose="Turn a selected certified story into an evidence-safe narrative plan.", prompt_path="prompts/13_narrative_architect.md", required_inputs=("certified_story", "creator_profile"), required_output_keys=("narrative", "claim_map"), soft_budget_usd=0.75),
+    AgentRole.SCRIPT_WRITER: AgentSpec(role=AgentRole.SCRIPT_WRITER, purpose="Write the master script in the configured creator voice without exceeding certified claims.", prompt_path="prompts/14_script_writer.md", required_inputs=("narrative", "claim_map", "creator_profile"), required_output_keys=("script", "citations", "short_form_hooks"), soft_budget_usd=1.00),
+    AgentRole.VISUAL_DIRECTOR: AgentSpec(role=AgentRole.VISUAL_DIRECTOR, purpose="Create a shot-by-shot visual plan prioritizing real evidence before synthetic media.", prompt_path="prompts/15_visual_director.md", required_inputs=("script", "citations"), required_output_keys=("shot_list", "asset_requirements"), soft_budget_usd=0.75),
+    AgentRole.FINAL_QA: AgentSpec(role=AgentRole.FINAL_QA, purpose="Perform final factual, visual, copyright, disclosure, and platform-readiness review before human approval.", prompt_path="prompts/16_final_qa.md", required_inputs=("script", "render_manifest", "certification"), required_output_keys=("pass", "blocking_issues", "warnings"), soft_budget_usd=1.00),
+}
+
+
+def get_agent_spec(role: AgentRole) -> AgentSpec:
+    return AGENT_SPECS[role]
