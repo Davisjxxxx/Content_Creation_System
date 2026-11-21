@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import base64
+import io
 import os
 import platform
 import re
@@ -13,15 +15,17 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from PIL import Image, ImageOps
 
+from .candidate_qa import compare_candidate_to_reference
 from .composer import build_job
 from .avatar_designer import build_designer_prompt, coverage_report, designer_spec, slot_by_id
 from .h3_runtime import H3_FPS, preset_by_id, presets_payload, valid_frame_count
-from .library import AnatomyGuide, AvatarProfile, LibraryStore
+from .library import AnatomyGuide, AvatarCandidateRecord, AvatarProfile, LibraryStore
 from .models import AvatarManifest, ProviderConfig, RenderJob, ShotSpec
 from .policy import evaluate_policy
 from .prompt_presets import adult_prompt_presets_payload
-from .reference_cache import scan_reference_cache
+from .reference_cache import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, scan_reference_cache
 from .providers import ComfyUIProvider
 from .render_queue import QueuedRender, RenderQueue
 from .runtime_profiles import payload as runtime_profiles_payload
@@ -74,7 +78,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "preferred_output_dir": "",
     "adult_prompt_custom": {},
     "vision_classifier_url": "http://127.0.0.1:11434",
-    "vision_classifier_model": "qwen3-vl:2b-instruct",
+    "vision_classifier_model": "qwen3-vl:8b-instruct",
 }
 
 MAX_DESIGNER_BODY_REFS = 8  # H3 accepts nine pictures; reserve one for primary identity.
@@ -170,7 +174,11 @@ class DesktopAPI:
         HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         (APP_HOME / "logs").mkdir(parents=True, exist_ok=True)
         self.library = LibraryStore(LIBRARY_DIR)
-        self.queue = RenderQueue(QUEUE_DIR, history_dir=HISTORY_DIR)
+        self.queue = RenderQueue(
+            QUEUE_DIR,
+            history_dir=HISTORY_DIR,
+            candidate_qa_runner=self._candidate_qa,
+        )
         settings = self._settings()
         self.queue.memory_manager.update_settings(
             enabled=bool(settings.get("gpu_autoclean", True)),
@@ -271,7 +279,10 @@ class DesktopAPI:
         import webview
 
         filters = {
-            "image": ("Images (*.png;*.jpg;*.jpeg;*.webp;*.bmp)",),
+            "image": (
+                "Images (*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff;*.PNG;*.JPG;*.JPEG;*.WEBP;*.BMP;*.TIF;*.TIFF)",
+                "All files (*.*)",
+            ),
             "video": ("Video (*.mp4;*.mov;*.webm;*.mkv)",),
             "audio": ("Audio (*.wav;*.mp3;*.flac;*.m4a;*.ogg)",),
             "workflow": ("ComfyUI API JSON (*.json)",),
@@ -306,13 +317,22 @@ class DesktopAPI:
                     "error": "Wait for the render queue to finish before local AI image analysis so the 8 GB GPU is not shared with H3.",
                 }
             settings = self._settings() if hasattr(self, "library") else DEFAULT_SETTINGS
+            image_paths = payload.get("image_paths")
+            if image_paths is not None and not isinstance(image_paths, list):
+                return {"ok": False, "error": "image_paths must be a list of local image files"}
             return {
                 "ok": True,
                 **scan_reference_cache(
                     str(payload.get("cache_dir") or ""),
+                    selected_files=image_paths,
                     use_visual=True,
                     vision_base_url=str(settings.get("vision_classifier_url") or "http://127.0.0.1:11434"),
-                    vision_model=str(settings.get("vision_classifier_model") or "qwen3-vl:2b-instruct"),
+                    vision_model=str(
+                        payload.get("vision_model")
+                        or settings.get("vision_classifier_model")
+                        or "qwen3-vl:8b-instruct"
+                    ),
+                    single_subject_confirmed=bool(payload.get("single_subject_confirmed", False)),
                 ),
             }
         except Exception as exc:
@@ -533,7 +553,8 @@ class DesktopAPI:
             job = job.model_copy(update={
                 "shot": shot.model_copy(update={"fps": WAN_FPS, "width": wan_width, "height": wan_height})
             })
-        job.asset_map.setdefault("OUTPUT_PREFIX", f"avatar_v2_{shot.shot_id[:24]}")
+        avatar_slug = re.sub(r"[^a-z0-9]+", "_", avatar.display_name.lower()).strip("_") or "avatar"
+        job.asset_map.setdefault("OUTPUT_PREFIX", f"{avatar_slug}_{shot.shot_id[:32]}")
         workflow = self._workflow_for(payload, job.selected_engine)
         if not workflow and job.selected_engine in {"h3_ref2va", "h3_fl2va", "wan22", "upscale"}:
             if job.selected_engine == "wan22":
@@ -675,17 +696,140 @@ class DesktopAPI:
 
     def open_path(self, path: str) -> dict[str, Any]:
         try:
-            target = str(Path(path).expanduser())
+            target_path = Path(path).expanduser().resolve()
+            if not target_path.exists():
+                return {"ok": False, "error": f"File or folder no longer exists: {target_path}"}
+            target = str(target_path)
             system = platform.system()
             if system == "Windows":
                 os.startfile(target)  # type: ignore[attr-defined]
             elif system == "Darwin":
-                subprocess.Popen(["open", target])
+                result = subprocess.run(
+                    ["open", target], capture_output=True, text=True, timeout=10, check=False
+                )
+                if result.returncode:
+                    detail = (result.stderr or result.stdout or "open failed").strip()
+                    return {"ok": False, "error": detail}
             else:
-                subprocess.Popen(["xdg-open", target])
+                if target_path.suffix.lower() in VIDEO_EXTENSIONS and self._launch_linux_video(target):
+                    return {"ok": True}
+                result = subprocess.run(
+                    ["xdg-open", target], capture_output=True, text=True, timeout=10, check=False
+                )
+                if result.returncode:
+                    detail = (result.stderr or result.stdout or "xdg-open failed").strip()
+                    return {"ok": False, "error": detail}
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    @staticmethod
+    def _launch_linux_video(target: str) -> bool:
+        """Open videos without routing them through broken desktop GL players."""
+        players = (
+            ("ffplay", ("-autoexit", "-seek_interval", "1")),
+            ("mpv", ("--force-window=yes",)),
+            ("vlc", ("--started-from-file",)),
+        )
+        for command, options in players:
+            executable = shutil.which(command)
+            if not executable:
+                continue
+            try:
+                subprocess.Popen(
+                    [executable, *options, target],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return True
+            except OSError:
+                continue
+        return False
+
+    def reference_thumbnail(self, path: str) -> dict[str, Any]:
+        """Return a small local-only preview for the reference gallery."""
+        try:
+            source = Path(path).expanduser().resolve()
+            if not source.is_file() or source.suffix.lower() not in IMAGE_EXTENSIONS:
+                return {"ok": False, "error": "Reference must be a supported local image file."}
+            with Image.open(source) as opened:
+                preview = ImageOps.exif_transpose(opened).convert("RGB")
+                preview.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                buffer = io.BytesIO()
+                preview.save(buffer, format="JPEG", quality=78, optimize=True)
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            return {"ok": True, "data_url": f"data:image/jpeg;base64,{encoded}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _candidate_qa(self, item: QueuedRender) -> dict[str, Any]:
+        """Compare a finished designer still after H3 has been unloaded."""
+        source = Path(str(item.runtime.get("candidate_qa_reference") or "")).expanduser()
+        candidate = next(
+            (
+                Path(output)
+                for output in reversed(item.outputs)
+                if Path(output).name.endswith("_candidate.png")
+            ),
+            None,
+        )
+        if candidate is None:
+            raise ValueError("designer render has no extracted candidate still")
+        settings = self._settings()
+        try:
+            result = compare_candidate_to_reference(
+                source,
+                candidate,
+                slot_id=str(item.runtime.get("candidate_qa_slot") or "unknown"),
+                slot_group=str(item.runtime.get("candidate_qa_group") or "body"),
+                base_url=str(settings.get("vision_classifier_url") or DEFAULT_SETTINGS["vision_classifier_url"]),
+                model=str(
+                    item.runtime.get("candidate_qa_model")
+                    or settings.get("vision_classifier_model")
+                    or DEFAULT_SETTINGS["vision_classifier_model"]
+                ),
+            )
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "decision": "unavailable",
+                "same_subject": "uncertain",
+                "overall_score": None,
+                "scores": {},
+                "reasons": ["Local candidate comparison did not complete; manual review is required."],
+                "advisory": True,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        result.update(
+            {
+                "avatar_id": str(item.runtime.get("candidate_qa_avatar_id") or ""),
+                "slot_id": str(item.runtime.get("candidate_qa_slot") or ""),
+                "group": str(item.runtime.get("candidate_qa_group") or "body"),
+                "source_path": str(source.resolve()),
+                "candidate_path": str(candidate.resolve()),
+            }
+        )
+        avatar_id = result["avatar_id"]
+        if avatar_id and self.library.get_avatar(avatar_id):
+            self.library.record_candidate(
+                avatar_id,
+                {
+                    "path": result["candidate_path"],
+                    "source_path": result["source_path"],
+                    "slot_id": result["slot_id"],
+                    "group": result["group"],
+                    "status": "pending",
+                    "qa_decision": result["decision"],
+                    "scores": result["scores"],
+                    "reasons": result["reasons"],
+                },
+            )
+            result["manifest_recorded"] = True
+        else:
+            result["manifest_recorded"] = False
+        return result
 
     # ------------------------------------------------------------------
     # Avatar Vault / Motion Library / Scene Library
@@ -696,7 +840,86 @@ class DesktopAPI:
 
     def vault_save(self, avatar: dict[str, Any]) -> dict[str, Any]:
         try:
-            return {"ok": True, "avatar": self.library.put_avatar(avatar)}
+            saved = self.library.put_avatar(avatar)
+            return {
+                "ok": True,
+                "avatar": saved,
+                "manifest_path": str(self.library.manifest_path(saved["avatar_id"])),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def avatar_manifest_open(self, avatar_id: str) -> dict[str, Any]:
+        try:
+            path = self.library.manifest_path(avatar_id)
+            if not path.is_file():
+                return {"ok": False, "error": "Save the avatar once to create its structured manifest."}
+            return self.open_path(str(path))
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def avatar_candidate_decide(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Explicitly accept a face/body candidate into a profile or reject it."""
+        try:
+            avatar_id = str(payload.get("avatar_id") or "").strip()
+            slot = slot_by_id(str(payload.get("slot_id") or ""))
+            decision = str(payload.get("decision") or "").strip()
+            if decision not in {"accepted", "rejected"}:
+                return {"ok": False, "error": "decision must be accepted or rejected"}
+            candidate_path = Path(str(payload.get("path") or "")).expanduser().resolve()
+            if not candidate_path.is_file() or candidate_path.suffix.lower() not in IMAGE_EXTENSIONS:
+                return {"ok": False, "error": "candidate must be a readable local still image"}
+            entry = self.library.get_avatar(avatar_id)
+            if not entry:
+                return {"ok": False, "error": f"avatar '{avatar_id}' not found"}
+            profile = AvatarProfile.model_validate(entry)
+            if decision == "accepted" and slot.group == "anatomy":
+                return {
+                    "ok": False,
+                    "error": "Generated anatomy cannot be accepted as source evidence. Add a verified exact source image to that anatomy slot.",
+                }
+            candidates = []
+            matched = False
+            for item in profile.build_manifest.candidates:
+                if Path(item.path).expanduser() == candidate_path:
+                    candidates.append(item.model_copy(update={"status": decision}))
+                    matched = True
+                else:
+                    candidates.append(item)
+            if not matched:
+                source_path = str(payload.get("source_path") or candidate_path)
+                candidate = {
+                    "path": str(candidate_path),
+                    "source_path": source_path,
+                    "slot_id": slot.id,
+                    "group": slot.group,
+                    "status": decision,
+                    "qa_decision": str(payload.get("qa_decision") or "unavailable"),
+                }
+                candidates.append(AvatarCandidateRecord.model_validate(candidate))
+            updates: dict[str, Any] = {
+                "build_manifest": profile.build_manifest.model_copy(update={"candidates": candidates})
+            }
+            if decision == "accepted":
+                key = "identity_refs" if slot.group == "identity" else "body_refs"
+                refs = dict(getattr(profile, key))
+                refs[slot.role] = str(candidate_path)
+                updates[key] = refs
+            saved = self.library.put_avatar(profile.model_copy(update=updates).model_dump())
+            queue_id = str(payload.get("queue_id") or "").strip()
+            if re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", queue_id):
+                history_path = HISTORY_DIR / f"{queue_id}.json"
+                history = _read_json(history_path, {})
+                if isinstance(history, dict) and history:
+                    qa = dict(history.get("candidate_qa") or {})
+                    qa["profile_status"] = decision
+                    history["candidate_qa"] = qa
+                    _write_json(history_path, history)
+            return {
+                "ok": True,
+                "avatar": saved,
+                "manifest_path": str(self.library.manifest_path(avatar_id)),
+            }
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -934,6 +1157,15 @@ class DesktopAPI:
                 return {"ok": False, "error": "Profile coverage must be nude, clothed, or both."}
             validation_run = bool(payload.get("validation_run"))
             full_reference_pool = validation_run and bool(payload.get("full_reference_pool"))
+            if slot.group == "anatomy" and (validation_run or requested_mode == "fl2va"):
+                return {
+                    "ok": False,
+                    "error": (
+                        "Exact FL2VA anatomy regeneration is disabled because temporal pose conversion can invent or "
+                        "deform anatomy. Keep the verified source image as profile evidence, or explicitly choose an "
+                        "experimental guided/body-reference route."
+                    ),
+                }
             try:
                 cycle_index = max(0, int(payload.get("reference_cycle_index") or 0))
                 cycle_total = max(1, int(payload.get("reference_cycle_total") or 1))
@@ -961,7 +1193,11 @@ class DesktopAPI:
             full_component_paths = [path for component in all_components for path in component.get("paths") or []]
             component_labels = [f"{component['label']} ({component['category'].replace('_', ' ')})" for component in components]
             saved_body_ref_count = len({str(value).strip() for value in profile.body_refs.values() if str(value).strip()})
-            use_reference_pool = requested_mode == "body_ref2va" or full_reference_pool
+            # A validation run may cycle through many exact source images, but it
+            # must not silently change FL2VA into Ref2VA.  Ref2VA is an explicit,
+            # experimental route; exact-primary validation keeps the selected
+            # source as the FL2VA first frame.
+            use_reference_pool = requested_mode == "body_ref2va"
             body_refs = self._designer_body_refs(
                 profile,
                 slot,
@@ -972,7 +1208,7 @@ class DesktopAPI:
                 cycle_index=cycle_index,
                 cycle_total=cycle_total,
             ) if use_reference_pool else []
-            effective_mode = "body_ref2va" if full_reference_pool and body_refs else requested_mode
+            effective_mode = requested_mode
             if effective_mode == "body_ref2va" and not body_refs and (
                 full_reference_pool or not (saved_body_ref_count or all_components)
             ):
@@ -1098,6 +1334,16 @@ class DesktopAPI:
                 "full_reference_pool": full_reference_pool,
                 "reference_cycle_index": cycle_index if full_reference_pool else 0,
                 "reference_cycle_total": cycle_total if full_reference_pool else 0,
+                "candidate_qa": True,
+                "candidate_qa_reference": str(Path(source).expanduser().resolve()),
+                "candidate_qa_avatar_id": profile.avatar_id,
+                "candidate_qa_slot": slot.id,
+                "candidate_qa_group": slot.group,
+                "candidate_qa_model": str(
+                    payload.get("vision_model")
+                    or self._settings().get("vision_classifier_model")
+                    or DEFAULT_SETTINGS["vision_classifier_model"]
+                ),
             }
             output_kind = "validation" if validation_run else "designer"
             job.asset_map["OUTPUT_PREFIX"] = f"avatar_{output_kind}_h3_{profile.avatar_id}_{slot.role}"
@@ -1303,11 +1549,32 @@ class DesktopAPI:
 
     def history(self) -> dict[str, Any]:
         entries: list[dict[str, Any]] = []
-        for path in sorted(HISTORY_DIR.glob("*.json"), reverse=True):
+        for path in HISTORY_DIR.glob("*.json"):
             try:
-                entries.append(json.loads(path.read_text(encoding="utf-8")))
+                entry = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(entry, dict):
+                    continue
+                entry["history_modified_at"] = path.stat().st_mtime
+                entry["history_file"] = path.name
+                outputs = entry.get("outputs")
+                if isinstance(outputs, list):
+                    entry["output_exists"] = {
+                        output: Path(output).expanduser().is_file()
+                        for output in outputs
+                        if isinstance(output, str)
+                    }
+                entries.append(entry)
             except (json.JSONDecodeError, OSError):
                 continue
+        entries.sort(
+            key=lambda item: float(
+                item.get("history_modified_at")
+                or item.get("finished_at")
+                or item.get("started_at")
+                or 0
+            ),
+            reverse=True,
+        )
         return {"ok": True, "items": entries}
 
     def open_output_dir(self) -> dict[str, Any]:

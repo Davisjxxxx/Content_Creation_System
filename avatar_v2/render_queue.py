@@ -9,7 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from .errors import classify_exception
 from .gpu_memory import GPUMemoryManager
@@ -40,6 +40,7 @@ class QueuedRender:
     outputs: list[str] = field(default_factory=list)
     memory_events: list[dict[str, Any]] = field(default_factory=list)
     gpu_trace: dict[str, Any] = field(default_factory=dict)
+    candidate_qa: dict[str, Any] = field(default_factory=dict)
     queued_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -61,6 +62,7 @@ class QueuedRender:
             "outputs": self.outputs,
             "memory_events": self.memory_events,
             "gpu_trace": self.gpu_trace,
+            "candidate_qa": self.candidate_qa,
             "chain_from_previous": self.chain_from_previous,
             "queued_at": self.queued_at,
             "started_at": self.started_at,
@@ -88,12 +90,14 @@ class RenderQueue:
         work_dir: Path,
         memory_manager: GPUMemoryManager | None = None,
         history_dir: Path | None = None,
+        candidate_qa_runner: Callable[[QueuedRender], dict[str, Any]] | None = None,
     ):
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.history_dir = Path(history_dir) if history_dir else self.work_dir / "history"
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.memory_manager = memory_manager or GPUMemoryManager.from_environment()
+        self.candidate_qa_runner = candidate_qa_runner
         self._items: list[QueuedRender] = []
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -193,6 +197,7 @@ class RenderQueue:
             "outputs": item.outputs,
             "memory_events": item.memory_events,
             "gpu_trace": item.gpu_trace,
+            "candidate_qa": item.candidate_qa,
             "queued_at": item.queued_at,
             "started_at": item.started_at,
             "finished_at": item.finished_at,
@@ -225,6 +230,7 @@ class RenderQueue:
             outputs=list(data.get("outputs") or []),
             memory_events=list(data.get("memory_events") or []),
             gpu_trace=dict(data.get("gpu_trace") or {}),
+            candidate_qa=dict(data.get("candidate_qa") or {}),
             queued_at=float(data.get("queued_at") or time.time()),
             started_at=data.get("started_at"),
             finished_at=data.get("finished_at"),
@@ -362,6 +368,23 @@ class RenderQueue:
         if item.runtime.get("extract_candidate_frame"):
             self._extract_candidate_frame(item)
 
+    def _run_candidate_qa(self, item: QueuedRender) -> None:
+        if (
+            item.status != "done"
+            or not item.runtime.get("candidate_qa")
+            or self.candidate_qa_runner is None
+        ):
+            return
+        try:
+            item.candidate_qa = self.candidate_qa_runner(item)
+        except Exception as exc:
+            item.candidate_qa = {
+                "ok": False,
+                "decision": "unavailable",
+                "advisory": True,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
     def _worker(self) -> None:
         while not self._stop.is_set():
             item = self._next()
@@ -410,6 +433,8 @@ class RenderQueue:
                             "error": f"{type(exc).__name__}: {exc}",
                         }
                     )
+
+                self._run_candidate_qa(item)
 
                 with self._lock:
                     item.finished_at = time.time()
