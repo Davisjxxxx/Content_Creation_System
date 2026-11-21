@@ -137,6 +137,42 @@ See `workflows/README.md` for the placeholder contract.
 | Custom ComfyUI / AnimateDiff SDXL | READY — 512²×16f verified (80% peak VRAM) |
 | MiniMax H3 Ref2VA / FL2VA | PARTIALLY READY — native ComfyUI nodes present, workflows structurally validated; BLOCKED on weights + license gate |
 
+> **Status 2026-11-21:** the table above describes the earlier deployment. The ComfyUI install
+> at `/home/jd/AvatarForge` and its model weights are no longer on this machine, so every local
+> lane is unavailable until ComfyUI is reinstalled. See
+> [`docs/AVATAR_V2_CAPABILITY_AUDIT.md`](docs/AVATAR_V2_CAPABILITY_AUDIT.md).
+
+## Runway cloud provider (optional, explicit opt-in)
+
+The **Runway** renderer card sends jobs you explicitly choose to Runway's developer API:
+photoreal presenter stills (text-only or anchored by tagged identity references), consistent
+character variations, image-to-video (`gen4.5`, `gen4_turbo`, hosted `h3_max`), Act-Two
+performance transfer, lip-synced talking-presenter videos from a script or narration
+(`gwm1_avatars` with a custom avatar), and still upscaling.
+
+It is off by default and is never used as an automatic fallback. Jobs need the provider
+enabled, upload consent saved under **Advanced**, a configured API key (OS keyring, a user-only
+file, or `RUNWAYML_API_SECRET`; never `desktop.json`), and a per-job confirmation of the
+upload list and credit estimate. Per-job and per-batch credit caps apply. Cloud jobs are
+limited to general content and to avatars with declared synthetic or consented provenance.
+Setup, costs and the presenter workflow: [`docs/RUNWAY_PROVIDER.md`](docs/RUNWAY_PROVIDER.md).
+
+## Presenter production (BRAND Instructor)
+
+The **Presenter** view and the **Load BRAND Instructor** preset turn Avatar V2 into a repeatable
+pipeline for the fictional presenter `BRAND_INSTRUCTOR_PHOTOREAL_V1`:
+
+- master-identity candidates;
+- nine reviewable reference slots with hash-locked approval;
+- narration that is imported, generated or designed (no voice cloning) and approved before use;
+- talking-head and performance-transfer paths, where the performer's audio is never uploaded;
+- realism QA with a human-review production gate;
+- lessons that re-render only changed segments;
+- a cost ledger with daily and monthly budgets, and verified output hashes.
+
+Midjourney images are supported through manual import only, because there is no official API.
+Settings and the recommended first render: [`docs/BRAND_INSTRUCTOR.md`](docs/BRAND_INSTRUCTOR.md).
+
 ## Install for development (Linux)
 
 Prerequisites: Ubuntu desktop (X11 or Wayland), Python 3.11+, ComfyUI, `ffmpeg`/`ffprobe`, GTK3 + WebKit2GTK (for pywebview).

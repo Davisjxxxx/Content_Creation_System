@@ -109,6 +109,9 @@ class AvatarProfile(BaseModel):
     age_verified_18_plus: bool = False
     consent_confirmed: bool = False
     identity_refs: dict[str, str] = Field(default_factory=dict)
+    # SHA-256 of each explicitly accepted reference, keyed like identity_refs. The "front" entry
+    # is the approved master identity that cloud jobs are locked to.
+    reference_hashes: dict[str, str] = Field(default_factory=dict)
     body_refs: dict[str, str] = Field(default_factory=dict)
     hair_refs: dict[str, str] = Field(default_factory=dict)
     wardrobe_refs: dict[str, str] = Field(default_factory=dict)

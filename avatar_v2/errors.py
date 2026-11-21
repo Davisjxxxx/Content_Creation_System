@@ -28,6 +28,13 @@ def classify_exception(exc: BaseException) -> ClassifiedError:
     name = type(exc).__name__
     text = f"{name}: {exc}"
 
+    # Providers that already know what went wrong (for example the Runway cloud adapter)
+    # expose a category and user message; trust those over the pattern heuristics below.
+    provided_category = getattr(exc, "error_category", None)
+    if isinstance(provided_category, str) and provided_category:
+        provided_message = getattr(exc, "error_message", None)
+        return ClassifiedError(provided_category, str(provided_message or exc), text)
+
     if isinstance(exc, TimeoutError):
         return ClassifiedError("timeout", "The render exceeded its configured timeout.", text)
     if isinstance(exc, ConnectionError) or "connect" in name.lower():

@@ -11,13 +11,29 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from . import cloud_ledger
 from .errors import classify_exception
 from .gpu_memory import GPUMemoryManager
+from .integrity import hash_files
 from .models import ProviderConfig, RenderJob
-from .providers import ComfyUIProvider
+from .providers import ComfyUIProvider, RunwayProvider
 
 JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
 MEMORY_SENSITIVE_PROFILES = {"int8_12gb", "low_memory", "low_memory_quality"}
+
+
+def _uses_local_gpu(provider: Any) -> bool:
+    """Local renderers (ComfyUI) need VRAM management; cloud providers declare uses_local_gpu = False."""
+    return bool(getattr(provider, "uses_local_gpu", True))
+
+
+def _cloud_memory_event(reason: str) -> dict[str, Any]:
+    return {
+        "reason": reason,
+        "skipped": True,
+        "cleanup_requested": False,
+        "detail": "Cloud provider job: no local GPU work, so local VRAM cleanup is not applicable.",
+    }
 
 
 @dataclass
@@ -41,6 +57,8 @@ class QueuedRender:
     memory_events: list[dict[str, Any]] = field(default_factory=list)
     gpu_trace: dict[str, Any] = field(default_factory=dict)
     candidate_qa: dict[str, Any] = field(default_factory=dict)
+    cloud_receipt: dict[str, Any] = field(default_factory=dict)
+    output_hashes: dict[str, str] = field(default_factory=dict)
     queued_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -52,6 +70,11 @@ class QueuedRender:
             "job_id": self.job.job_id,
             "label": self.label or shot.shot_id,
             "engine": self.job.selected_engine,
+            "provider": self.provider_config.provider,
+            "cloud_receipt": self.cloud_receipt,
+            "cloud_estimate": self.runtime.get("estimate_credits") if self.provider_config.provider != "comfyui" else None,
+            "output_hashes": self.output_hashes,
+            "candidate_slot": self.runtime.get("candidate_slot"),
             "profile": self.profile,
             "seed": shot.seed,
             "status": self.status,
@@ -91,9 +114,11 @@ class RenderQueue:
         memory_manager: GPUMemoryManager | None = None,
         history_dir: Path | None = None,
         candidate_qa_runner: Callable[[QueuedRender], dict[str, Any]] | None = None,
+        ledger_path: Path | None = None,
     ):
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        self._ledger_path = Path(ledger_path) if ledger_path else self.work_dir.parent / "cloud_ledger.jsonl"
         self.history_dir = Path(history_dir) if history_dir else self.work_dir / "history"
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.memory_manager = memory_manager or GPUMemoryManager.from_environment()
@@ -198,6 +223,8 @@ class RenderQueue:
             "memory_events": item.memory_events,
             "gpu_trace": item.gpu_trace,
             "candidate_qa": item.candidate_qa,
+            "cloud_receipt": item.cloud_receipt,
+            "output_hashes": item.output_hashes,
             "queued_at": item.queued_at,
             "started_at": item.started_at,
             "finished_at": item.finished_at,
@@ -205,9 +232,20 @@ class RenderQueue:
 
     def _item_from_dict(self, data: dict[str, Any]) -> QueuedRender:
         status = data.get("status", "queued")
-        if status == "running":
+        provider = (data.get("provider_config") or {}).get("provider", "comfyui")
+        if status == "running" and provider != "comfyui" and data.get("prompt_id"):
+            # The cloud task was already created (and may be billing). Reconcile it by polling
+            # the existing task on the next run instead of failing it or creating a duplicate.
+            status = "queued"
+            receipt = dict(data.get("cloud_receipt") or {})
+            receipt["reconcile_after_restart"] = True
+            data["cloud_receipt"] = receipt
+        elif status == "running":
             status = "error"
-            data["error"] = data.get("error") or "Render was interrupted by an application restart."
+            interrupted = "Render was interrupted by an application restart."
+            if provider != "comfyui":
+                interrupted += " No cloud task had been created, so nothing was billed; queue it again to retry."
+            data["error"] = data.get("error") or interrupted
             data["error_category"] = data.get("error_category") or "render_failed"
             data["error_message"] = data.get("error_message") or data["error"]
             data["finished_at"] = data.get("finished_at") or time.time()
@@ -231,6 +269,8 @@ class RenderQueue:
             memory_events=list(data.get("memory_events") or []),
             gpu_trace=dict(data.get("gpu_trace") or {}),
             candidate_qa=dict(data.get("candidate_qa") or {}),
+            cloud_receipt=dict(data.get("cloud_receipt") or {}),
+            output_hashes=dict(data.get("output_hashes") or {}),
             queued_at=float(data.get("queued_at") or time.time()),
             started_at=data.get("started_at"),
             finished_at=data.get("finished_at"),
@@ -330,6 +370,55 @@ class RenderQueue:
         frame = self._extract_last_frame(str(video), target)
         item.outputs.append(str(frame))
 
+    def _record_cloud_task(self, item: QueuedRender, task_id: str, receipt: dict[str, Any]) -> None:
+        """Persist a cloud task id the moment it exists, so a crash or restart can reconcile it."""
+        with self._lock:
+            item.prompt_id = task_id
+            item.cloud_receipt = dict(receipt)
+            self._persist()
+        cloud_ledger.record(
+            getattr(self, "_ledger_path", None),
+            {
+                "task_id": task_id,
+                "queue_id": item.id,
+                "label": item.label,
+                "provider": item.provider_config.provider,
+                "model": receipt.get("model"),
+                "status": "CREATED",
+                "estimate_credits": (receipt.get("estimate") or {}).get("credits"),
+                "api_estimated_credits": receipt.get("api_estimated_credits"),
+            },
+        )
+
+    def _record_cloud_final(self, item: QueuedRender) -> None:
+        receipt = item.cloud_receipt or {}
+        task_id = str(receipt.get("task_id") or item.prompt_id or "")
+        if not task_id or item.provider_config.provider == "comfyui":
+            return
+        status = str(receipt.get("status") or "")
+        if status not in cloud_ledger.FINAL_STATUSES:
+            status = "SUCCEEDED" if item.status == "done" else "CANCELLED" if item.status == "cancelled" else "FAILED"
+        cloud_ledger.record(
+            getattr(self, "_ledger_path", None),
+            {
+                "task_id": task_id,
+                "queue_id": item.id,
+                "label": item.label,
+                "provider": item.provider_config.provider,
+                "model": receipt.get("model"),
+                "status": status,
+                "credits_charged": receipt.get("credits_charged"),
+                "failure_code": receipt.get("failure_code"),
+                "outputs": len(item.outputs),
+            },
+        )
+
+    def _make_provider(self, config: ProviderConfig) -> Any:
+        # Resolve the module-level provider names at call time so tests can substitute fakes.
+        if config.provider == "runway":
+            return RunwayProvider(config)
+        return ComfyUIProvider(config)
+
     def _execute(self, item: QueuedRender) -> None:
         job = copy.deepcopy(item.job)
         if item.chain_from_previous:
@@ -341,32 +430,43 @@ class RenderQueue:
             if job.selected_engine == "h3_ref2va" and "H3_PICTURE_1" in job.asset_map:
                 job.asset_map["H3_PICTURE_1"] = str(frame)
 
-        provider = ComfyUIProvider(item.provider_config)
+        provider = self._make_provider(item.provider_config)
         self._active_provider = provider
         self._active_id = item.id
 
-        force_preclean = item.profile in MEMORY_SENSITIVE_PROFILES
-        item.memory_events.append(
-            self.memory_manager.maybe_cleanup(
-                provider,
-                reason=f"pre-render:{item.profile}",
-                force=force_preclean,
-                unload_models=True,
+        if _uses_local_gpu(provider):
+            force_preclean = item.profile in MEMORY_SENSITIVE_PROFILES
+            item.memory_events.append(
+                self.memory_manager.maybe_cleanup(
+                    provider,
+                    reason=f"pre-render:{item.profile}",
+                    force=force_preclean,
+                    unload_models=True,
+                )
             )
-        )
 
-        self.memory_manager.start_trace(item.id)
-        try:
+            self.memory_manager.start_trace(item.id)
+            try:
+                result = provider.render(item.workflow, job)
+            finally:
+                item.gpu_trace = self.memory_manager.stop_trace()
+        else:
+            item.memory_events.append(_cloud_memory_event(f"pre-render:{item.profile}"))
+            if item.prompt_id:
+                job.asset_map["RUNWAY_RESUME_TASK_ID"] = item.prompt_id
+            if hasattr(provider, "on_task_created"):
+                provider.on_task_created = lambda task_id, receipt: self._record_cloud_task(item, task_id, receipt)
             result = provider.render(item.workflow, job)
-        finally:
-            item.gpu_trace = self.memory_manager.stop_trace()
 
         item.prompt_id = result["prompt_id"]
+        if result.get("cloud_receipt"):
+            item.cloud_receipt = {**item.cloud_receipt, **dict(result["cloud_receipt"])}
         item.outputs = self._resolve_outputs(item, result["outputs"])
         if item.archive_dir:
             item.outputs = self._archive_outputs(item)
         if item.runtime.get("extract_candidate_frame"):
             self._extract_candidate_frame(item)
+        item.output_hashes = hash_files(item.outputs)
 
     def _run_candidate_qa(self, item: QueuedRender) -> None:
         if (
@@ -406,6 +506,9 @@ class RenderQueue:
             except Exception as exc:  # surface exact renderer failures for tuning
                 classified = classify_exception(exc)
                 with self._lock:
+                    receipt = getattr(exc, "receipt", None)
+                    if isinstance(receipt, dict) and receipt:
+                        item.cloud_receipt = {**item.cloud_receipt, **dict(receipt)}
                     if item.status != "cancelled":
                         item.status = "error"
                         item.error = f"{type(exc).__name__}: {exc}"
@@ -414,18 +517,26 @@ class RenderQueue:
             finally:
                 provider = self._active_provider
                 try:
-                    force_postclean = item.status in {"error", "cancelled"} or item.profile in {
-                        "low_memory",
-                        "low_memory_quality",
-                    }
-                    item.memory_events.append(
-                        self.memory_manager.maybe_cleanup(
-                            provider,
-                            reason=f"post-render:{item.status}",
-                            force=force_postclean,
-                            unload_models=True,
-                        )
+                    is_cloud = (
+                        not _uses_local_gpu(provider)
+                        if provider is not None
+                        else item.provider_config.provider != "comfyui"
                     )
+                    if is_cloud:
+                        item.memory_events.append(_cloud_memory_event(f"post-render:{item.status}"))
+                    else:
+                        force_postclean = item.status in {"error", "cancelled"} or item.profile in {
+                            "low_memory",
+                            "low_memory_quality",
+                        }
+                        item.memory_events.append(
+                            self.memory_manager.maybe_cleanup(
+                                provider,
+                                reason=f"post-render:{item.status}",
+                                force=force_postclean,
+                                unload_models=True,
+                            )
+                        )
                 except Exception as exc:
                     item.memory_events.append(
                         {
@@ -435,6 +546,10 @@ class RenderQueue:
                     )
 
                 self._run_candidate_qa(item)
+                try:
+                    self._record_cloud_final(item)
+                except OSError as exc:
+                    item.memory_events.append({"reason": "cloud-ledger-write-failed", "error": f"{type(exc).__name__}: {exc}"})
 
                 with self._lock:
                     item.finished_at = time.time()

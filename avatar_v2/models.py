@@ -14,7 +14,9 @@ EngineName = Literal[
     "seedance",
     "custom",
     "upscale",
+    "runway",
 ]
+ProviderName = Literal["comfyui", "runway"]
 
 
 class SubjectSpec(BaseModel):
@@ -121,11 +123,14 @@ class ShotSpec(BaseModel):
 
 
 class ProviderConfig(BaseModel):
-    provider: Literal["comfyui"] = "comfyui"
+    # "comfyui" is the local default. "runway" is the explicit, opt-in cloud provider; it is
+    # never chosen by the auto router and is only queued after the user's consent gates pass.
+    provider: ProviderName = "comfyui"
     base_url: str = "http://127.0.0.1:8188"
     input_dir: str | None = None
     output_dir: str | None = None
     timeout_s: int = Field(default=900, ge=30)
+    poll_interval_s: float = Field(default=6.0, ge=0.5)
 
 
 class RenderJob(BaseModel):

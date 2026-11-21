@@ -202,6 +202,7 @@ details.gpudet{margin-top:6px}
     <button data-view="vault"><span class="dot"></span>Build Avatar</button>
     <button type="button" onclick="openBodyLibrary()"><span class="dot"></span>Body Library</button>
     <button data-view="history"><span class="dot"></span>Results</button>
+    <button data-view="presenter"><span class="dot"></span>Presenter</button>
     <button data-view="settings"><span class="dot"></span>Advanced</button>
   </div>
   <details class="secondary-nav"><summary>Motion and scene libraries</summary><div class="nav">
@@ -227,7 +228,83 @@ details.gpudet{margin-top:6px}
     <div class="engine" data-engine="h3_fl2va" onclick="setEngine('h3_fl2va')"><div class="tag">FIRST / LAST</div><div class="name">MiniMax H3 · FL2VA</div><div class="desc">Start/end frame generation</div></div>
     <div class="engine" data-engine="wan22" onclick="setEngine('wan22')"><div class="tag">LOCAL FALLBACK</div><div class="name">Wan 2.2</div><div class="desc">Specialist LoRA and local lane</div></div>
     <div class="engine" data-engine="custom" onclick="setEngine('custom')"><div class="tag">WORKFLOW</div><div class="name">Custom ComfyUI</div><div class="desc">Bring your own API graph</div></div>
+    <div class="engine" data-engine="runway" onclick="setEngine('runway')"><div class="tag">CLOUD · OPT-IN</div><div class="name">Runway</div><div class="desc">Photoreal stills, image-to-video, lip-synced presenter</div></div>
   </div></section>
+
+  <section class="section" id="runwaySection" style="display:none"><div class="head"><h3>Runway cloud job</h3><span>Explicit opt-in · you confirm every upload and its cost</span></div>
+    <div class="card" style="padding:14px">
+      <div class="grid6">
+        <div class="field"><label for="rwTask">Task</label><select id="rwTask" onchange="rwTaskChanged()">
+          <option value="still">Presenter still (text or reference → image)</option>
+          <option value="variations">Consistent variations (same identity)</option>
+          <option value="image_to_video">Animate approved still (image → video)</option>
+          <option value="avatar_video">Talking presenter (lip-synced script)</option>
+          <option value="performance">Performance transfer (Act-Two)</option>
+          <option value="upscale">Upscale approved still</option>
+          <option value="narration">Narration voiceover (text-to-speech)</option>
+        </select></div>
+        <div class="field"><label for="rwModel">Model</label><select id="rwModel" onchange="rwModelChanged()"></select></div>
+        <div class="field" id="rwRatioField"><label for="rwRatio">Output size</label><select id="rwRatio"></select></div>
+        <div class="field" id="rwDurationField"><label for="rwDuration">Duration s</label><input id="rwDuration" type="number" min="2" max="15" value="5"></div>
+        <div class="field" id="rwCountField"><label for="rwCount">Outputs</label><select id="rwCount"></select></div>
+        <div class="field" id="rwResolutionField"><label for="rwResolution">Resolution</label><select id="rwResolution"></select></div>
+      </div>
+      <div class="grid3" id="rwH3Row" style="margin-top:9px;display:none">
+        <div class="field"><label for="rwExpansion">Prompt expansion (H3 Max)</label><select id="rwExpansion"><option value="disabled">Disabled · prompt as written, repeatable seed</option><option value="balanced">Balanced rewrite</option><option value="quality">Quality rewrite (slower)</option></select></div>
+      </div>
+      <div id="rwVariationsRow" style="margin-top:9px;display:none"><div class="tiny" style="margin-bottom:6px">Each variation reuses the same identity references, wardrobe/scene references and seed.</div><div id="rwVariations" class="row" style="flex-wrap:wrap;gap:10px"></div></div>
+      <div id="rwAvatarRow" style="margin-top:9px;display:none">
+        <div class="grid3">
+          <div class="field"><label for="rwAvatar">Runway presenter avatar</label><div class="setting-row"><select id="rwAvatar"></select><button class="mini" onclick="rwAvatarsRefresh()">Refresh</button></div></div>
+          <div class="field"><label for="rwVoice">Voice override (optional)</label><select id="rwVoice"></select></div>
+          <div class="field"><label for="rwSpeech">Speech source</label><select id="rwSpeech"><option value="text">Script · Runway text-to-speech</option><option value="audio">Narration file · Audio / voice slot</option></select></div>
+        </div>
+        <div class="field" style="margin-top:9px"><label for="rwScript">Script (up to 5000 characters per video; split longer lessons)</label><textarea id="rwScript" rows="5" oninput="rwScriptCount()" placeholder="Welcome back. In this lesson we will…"></textarea><div class="tiny" id="rwScriptCount">0 / 5000</div></div>
+        <details style="margin-top:9px"><summary class="tiny">Create a Runway avatar from the primary identity still</summary>
+          <div class="grid3" style="margin-top:8px">
+            <div class="field"><label for="rwNewName">Avatar name</label><input id="rwNewName" maxlength="50" placeholder="Presenter name"></div>
+            <div class="field"><label for="rwNewVoice">Voice</label><select id="rwNewVoice"></select></div>
+            <div class="field"><label for="rwNewProcessing">Image processing</label><select id="rwNewProcessing"><option value="optimize">Optimize (Runway default)</option><option value="none">None · use the still exactly as-is</option></select></div>
+          </div>
+          <div class="field" style="margin-top:8px"><label for="rwNewPersonality">Personality (required by Runway; used in live conversations)</label><textarea id="rwNewPersonality" rows="3"></textarea></div>
+          <div class="row" style="margin-top:8px"><button class="btn" onclick="rwAvatarCreate()">Upload still and create avatar</button></div>
+        </details>
+      </div>
+      <div class="grid3" id="rwPerformanceRow" style="margin-top:9px;display:none">
+        <div class="field"><label for="rwBody">Body control</label><select id="rwBody"><option value="true">Face and body gestures</option><option value="false">Face only</option></select></div>
+        <div class="field"><label for="rwIntensity">Expression intensity (1-5)</label><input id="rwIntensity" type="number" min="1" max="5" value="3"></div>
+        <div class="tiny" style="align-self:end">Uses the primary identity still as the character and the Motion video slot as the 3-30 s performance.</div>
+      </div>
+      <div class="grid3" id="rwStillRow" style="margin-top:9px">
+        <div class="field"><label for="rwSlot">Reference slot (output becomes a pending candidate)</label><select id="rwSlot"></select></div>
+        <div class="field"><label for="rwCandidates">Candidates (seeds counted up from Seed)</label><select id="rwCandidates"><option selected>1</option><option>2</option><option>4</option></select></div>
+        <div class="tiny" style="align-self:end">For a new master identity: no identity reference, slot "Straight-on portrait", 4 candidates. Approve one in Presenter → Review.</div>
+      </div>
+      <div class="grid3" id="rwAudioRow" style="margin-top:9px;display:none">
+        <div class="field"><label for="rwOutputAudio">Output audio</label><select id="rwOutputAudio"><option value="">Keep provider audio</option><option value="mute">Mute</option><option value="voiceover">Replace with approved voiceover</option></select></div>
+        <div class="field"><label for="rwVoiceover">Approved narration</label><div class="setting-row"><select id="rwVoiceover"></select><button class="mini" onclick="prRefreshVoiceovers()">Refresh</button></div></div>
+        <div class="tiny" style="align-self:end">Narration and voiceovers come from Presenter → Voice &amp; narration and must be approved first.</div>
+      </div>
+      <div id="rwTtsRow" style="margin-top:9px;display:none">
+        <div class="grid3">
+          <div class="field"><label for="rwTtsProfile">Voice profile</label><select id="rwTtsProfile"></select></div>
+          <div class="field"><label for="rwTtsVoice">Preset voice (or leave empty to use the profile)</label><input id="rwTtsVoice" list="prVoiceSuggestions" placeholder="e.g. Leslie"></div>
+          <div class="field"><label for="rwTtsVoiceId">Designed voice id (optional)</label><input id="rwTtsVoiceId" placeholder="UUID from Voice design"></div>
+        </div>
+        <div class="field" style="margin-top:9px"><label for="rwTtsScript">Narration script ([pause] adds a pause with Eleven v4)</label><textarea id="rwTtsScript" rows="4"></textarea></div>
+      </div>
+      <div class="grid3" style="margin-top:9px">
+        <div class="field"><label for="rwProfileSelect">Saved provider profile</label><div class="setting-row"><select id="rwProfileSelect"></select><button class="mini" onclick="rwProfileApply()">Apply</button></div></div>
+        <div class="field"><label for="rwProfileName">Save current settings as</label><div class="setting-row"><input id="rwProfileName" maxlength="60" placeholder="e.g. Master stills 1080p"><button class="mini" onclick="rwProfileSave()">Save</button></div></div>
+        <div class="field"><label>&nbsp;</label><button class="btn" onclick="loadBrandPreset()">Load BRAND Instructor</button></div>
+      </div>
+      <div class="grid3" id="rwUpscaleRow" style="margin-top:9px;display:none">
+        <div class="field"><label for="rwScale">Scale</label><select id="rwScale"><option>2</option><option>4</option><option>8</option><option>16</option></select></div>
+        <div class="field"><label for="rwFlavor">Flavor</label><select id="rwFlavor"><option value="photo">Photo</option><option value="photo_denoiser">Photo denoiser</option><option value="sublime">Sublime (illustration)</option></select></div>
+      </div>
+      <div class="info" id="rwReceipt" style="margin-top:10px">Choose a task, then Estimate to see exactly what will be uploaded and what it costs.</div>
+      <div class="row" style="margin-top:10px"><button class="btn" onclick="rwEstimate()">Estimate</button><button class="btn primary" onclick="rwQueue()">Queue on Runway</button></div>
+    </div></section>
 
   <section class="section" id="profileSection"><div class="head"><h3>Runtime Profile</h3><span>Toggle setups and find what actually works</span></div><div class="profiles" id="profiles"></div></section>
 
@@ -566,6 +643,79 @@ details.gpudet{margin-top:6px}
 </div>
 
 <!-- ===================== SETTINGS ===================== -->
+<!-- ===================== PRESENTER ===================== -->
+<div id="view-presenter" class="view">
+  <div class="top"><div><div class="eyebrow">BRAND Instructor production</div><h2>Presenter</h2></div>
+    <div class="status"><button class="btn" onclick="loadBrandPreset()">Load BRAND Instructor</button><button class="mini" onclick="refreshPresenter()">Refresh</button></div></div>
+
+  <section class="section"><div class="head"><h3>Providers &amp; budget</h3><span>Availability and cloud spend</span></div>
+    <div class="card" style="padding:14px"><div id="prProviders" class="tiny">Checking…</div><div id="prSpend" class="tiny" style="margin-top:8px"></div></div></section>
+
+  <section class="section"><div class="head"><h3>Review &amp; approval queue</h3><span>Generated and imported candidates wait here; nothing is accepted automatically</span></div>
+    <div class="card" style="padding:14px"><div id="prReview" class="tiny">No pending candidates.</div></div></section>
+
+  <section class="section"><div class="head"><h3>Voice &amp; narration</h3><span>Voice identity stays separate from the face</span></div>
+    <div class="card" style="padding:14px">
+      <div class="grid3">
+        <div class="field"><label for="prVoiceProfile">Voice profile</label><select id="prVoiceProfile" onchange="prVoiceProfileChanged()"></select></div>
+        <div class="field"><label for="prVoicePreset">Runway preset voice</label><input id="prVoicePreset" list="prVoiceSuggestions" placeholder="e.g. Leslie"><datalist id="prVoiceSuggestions"></datalist></div>
+        <div class="field"><label for="prVoiceSpeed">Speed (0.7-1.2)</label><input id="prVoiceSpeed" type="number" min="0.7" max="1.2" step="0.05" value="0.95"></div>
+      </div>
+      <div class="field" style="margin-top:8px"><label for="prPronunciations">Pronunciations (one per line: WORD = spoken form)</label><textarea id="prPronunciations" rows="2" placeholder="SQL = sequel"></textarea></div>
+      <div class="row" style="margin-top:8px"><button class="mini" onclick="prVoiceProfileSave()">Save voice profile</button></div>
+      <details style="margin-top:10px"><summary class="tiny">Design a new synthetic voice from a description (no voice cloning)</summary>
+        <div class="field" style="margin-top:8px"><label for="prVoiceDesign">Voice description (20-1000 characters)</label><textarea id="prVoiceDesign" rows="2"></textarea></div>
+        <div class="row" style="margin-top:8px"><input id="prVoiceName" placeholder="Voice name" maxlength="100"><button class="mini" onclick="prVoicePreview()">Preview on Runway</button><button class="mini" onclick="prVoiceCreate()">Create voice on Runway</button></div>
+      </details>
+      <div class="head" style="margin-top:12px"><h3>Narration library</h3></div>
+      <div class="grid2"><div class="field"><label for="prVoAuth">Authorization for imported narration</label><input id="prVoAuth" placeholder="e.g. recorded by contracted voice actor, or my own voice"></div>
+        <div class="field"><label>&nbsp;</label><div class="row"><button class="mini" onclick="prVoiceoverImport()">Import narration files</button></div></div></div>
+      <div id="prVoiceovers" class="tiny" style="margin-top:8px"></div>
+      <div class="field" style="margin-top:10px"><label for="prScript">Script check (timing, pronunciation, segments)</label><textarea id="prScript" rows="4"></textarea></div>
+      <div class="row" style="margin-top:6px"><button class="mini" onclick="prScriptAnalyze()">Analyze script</button></div>
+      <div id="prScriptReport" class="tiny" style="margin-top:6px"></div>
+    </div></section>
+
+  <section class="section"><div class="head"><h3>Manual reference import</h3><span>Midjourney has no official API: export images yourself, then import them here</span></div>
+    <div class="card" style="padding:14px">
+      <div class="grid3">
+        <div class="field"><label for="prImportSource">Source</label><select id="prImportSource"></select></div>
+        <div class="field"><label for="prImportSlot">Register as pending candidate for</label><select id="prImportSlot"></select></div>
+        <div class="field"><label for="prImportJob">Job or URL reference (optional)</label><input id="prImportJob"></div>
+      </div>
+      <div class="field" style="margin-top:8px"><label for="prImportPrompt">Prompt used (optional)</label><input id="prImportPrompt"></div>
+      <div class="toggle" style="margin-top:8px"><input id="prImportAttest" type="checkbox"><div><div style="font-size:10px">I created these images (or am authorized to use them), and my plan's terms permit this use.</div></div></div>
+      <div class="row" style="margin-top:8px"><button class="btn" onclick="prImport()">Choose images and import</button></div>
+      <div id="prImportResult" class="tiny" style="margin-top:8px"></div>
+    </div></section>
+
+  <section class="section"><div class="head"><h3>Realism QA</h3><span>Automated measurements plus required human review; test a 20-30 s segment</span></div>
+    <div class="card" style="padding:14px">
+      <div class="row"><button class="btn" onclick="prQaRun()">Choose video and run QA</button><span class="tiny" id="prQaStatus" style="align-self:center"></span></div>
+      <div id="prQaReport" class="tiny" style="margin-top:8px"></div>
+      <div id="prQaReview" style="margin-top:8px;display:none">
+        <div id="prQaCriteria" class="grid3"></div>
+        <div class="row" style="margin-top:8px"><input id="prQaReviewer" placeholder="Reviewer name"><button class="mini" onclick="prQaSaveReview()">Save human review</button></div>
+      </div>
+      <div id="prQaList" class="tiny" style="margin-top:8px"></div>
+    </div></section>
+
+  <section class="section"><div class="head"><h3>Lessons</h3><span>Re-render only segments whose script, narration or avatar changed</span></div>
+    <div class="card" style="padding:14px">
+      <div class="grid3">
+        <div class="field"><label for="prLessonId">Lesson id</label><input id="prLessonId" placeholder="intro-course"></div>
+        <div class="field"><label for="prLessonTitle">Title</label><input id="prLessonTitle"></div>
+        <div class="field"><label for="prLessonAvatar">Runway avatar id</label><input id="prLessonAvatar" placeholder="UUID from Talking presenter"></div>
+      </div>
+      <div class="field" style="margin-top:8px"><label for="prLessonSegments">Segments (blank line between segments; each up to 5000 characters)</label><textarea id="prLessonSegments" rows="6"></textarea></div>
+      <div class="row" style="margin-top:8px"><button class="mini" onclick="prLessonSave()">Save lesson</button><button class="mini" onclick="prLessonPlan()">Show changed segments</button><button class="btn primary" onclick="prLessonQueue()">Queue changed segments</button></div>
+      <div id="prLessonPlan" class="tiny" style="margin-top:8px"></div>
+    </div></section>
+
+  <section class="section"><div class="head"><h3>Output integrity</h3><span>Verify the recorded SHA-256 hashes of a finished job</span></div>
+    <div class="card" style="padding:14px"><div class="row"><input id="prVerifyId" placeholder="Queue item id"><button class="mini" onclick="prVerify()">Verify hashes</button></div><div id="prVerifyResult" class="tiny" style="margin-top:6px"></div></div></section>
+</div>
+
 <div id="view-settings" class="view">
   <div class="top"><div><div class="eyebrow">Local renderer configuration</div><h2>Settings</h2></div><button class="btn primary" onclick="saveSettings()">Save</button></div>
   <div class="warning" id="licenseNotice">Local H3 license notice loading…</div>
@@ -606,6 +756,28 @@ details.gpudet{margin-top:6px}
       <div class="field"><label>Poll interval seconds</label><input id="sGpuInt" type="number" min="1" max="60" value="5"></div>
     </div>
     <div class="tiny" style="margin-top:8px">Forces a safe ComfyUI /free preflight for INT8 · 12 GB, Low Memory and Low Memory · Quality profiles. Never kills arbitrary processes.</div>
+  </div>
+
+  <div class="card settings-card"><div class="head"><h3>Runway cloud provider (optional)</h3><span id="rwKeyState">key: checking…</span></div>
+    <div class="toggle"><input id="sRwEnabled" type="checkbox"><div><div style="font-size:10px">Enable Runway for jobs I explicitly send to it.</div><div class="tiny" style="margin-top:4px">Off by default. Local rendering never falls back to Runway automatically.</div></div></div>
+    <div class="toggle" style="margin-top:8px"><input id="sRwConsent" type="checkbox"><div><div style="font-size:10px">I understand that Runway jobs upload the compiled prompt and the files listed in each job's receipt to Runway, a third-party cloud service, and that Runway bills credits to my account.</div><div class="tiny" style="margin-top:4px">Every job still shows its upload list and cost estimate and needs its own confirmation. Only identity, wardrobe, scene, first/last-frame, performance and narration files are ever sent.</div></div></div>
+    <div class="grid2" style="margin-top:9px">
+      <div class="field"><label for="sRwKey">API key (kept in the OS keyring or a user-only file, never in settings)</label><div class="setting-row"><input id="sRwKey" type="password" autocomplete="off" spellcheck="false" placeholder="Paste a Runway API key"><button class="mini" onclick="rwSaveKey()">Save key</button><button class="mini" onclick="rwClearKey()">Remove</button></div></div>
+      <div class="field"><label>Account</label><div class="setting-row"><button class="mini" onclick="rwCheck()">Check credit balance</button><span class="tiny" id="rwAccount"></span></div></div>
+    </div>
+    <div class="grid2" style="margin-top:9px">
+      <div class="field"><label for="sRwImageModel">Default still model</label><select id="sRwImageModel"></select></div>
+      <div class="field"><label for="sRwVideoModel">Default image-to-video model</label><select id="sRwVideoModel"></select></div>
+    </div>
+    <div class="grid2" style="margin-top:9px">
+      <div class="field"><label for="sRwCapJob">Max credits per job</label><input id="sRwCapJob" type="number" min="1" max="5000" value="150"></div>
+      <div class="field"><label for="sRwCapBatch">Max credits per variation batch</label><input id="sRwCapBatch" type="number" min="1" max="20000" value="400"></div>
+    </div>
+    <div class="grid2" style="margin-top:9px">
+      <div class="field"><label for="sRwCapDay">Daily credit budget</label><input id="sRwCapDay" type="number" min="1" max="100000" value="300"></div>
+      <div class="field"><label for="sRwCapMonth">Monthly credit budget</label><input id="sRwCapMonth" type="number" min="1" max="1000000" value="3000"></div>
+    </div>
+    <div class="tiny" style="margin-top:8px" id="rwPricingNote">1 credit = $0.01. Estimates use Runway's published prices; when a task is created, Runway's own estimate is checked against the cap and a task above it is cancelled before it runs.</div>
   </div>
 
   <div class="card settings-card"><div class="head"><h3>Output</h3></div>
@@ -652,12 +824,12 @@ function fmtBytes(mb){return mb>=1024?(mb/1024).toFixed(1)+' GB':Math.round(mb)+
 function fmtTime(ts){if(!ts)return'—';const d=new Date(ts*1000);return d.toLocaleString()}
 
 /* ---------- navigation ---------- */
-function view(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='view-'+v));document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));if(v==='vault')refreshVault();if(v==='motions')refreshMotions();if(v==='scenes')refreshScenes();if(v==='history')refreshHistory();if(v==='settings'){comfyStatus();fillBundled()}}
+function view(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='view-'+v));document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));if(v==='vault')refreshVault();if(v==='motions')refreshMotions();if(v==='scenes')refreshScenes();if(v==='history')refreshHistory();if(v==='presenter')refreshPresenter();if(v==='settings'){comfyStatus();fillBundled()}}
 function openBodyLibrary(){view('vault');const panel=$('bodyLibrary');panel.open=true;panel.scrollIntoView({behavior:'smooth',block:'start'})}
 document.querySelectorAll('.nav button[data-view]').forEach(b=>b.onclick=()=>view(b.dataset.view));
 
 /* ---------- studio ---------- */
-function setEngine(e){state.engine=e;document.querySelectorAll('.engine').forEach(x=>x.classList.toggle('active',x.dataset.engine===e));$('customPanel').style.display=e==='custom'?'block':'none';log(`Renderer: ${e}`)}
+function setEngine(e){state.engine=e;document.querySelectorAll('.engine').forEach(x=>x.classList.toggle('active',x.dataset.engine===e));$('customPanel').style.display=e==='custom'?'block':'none';$('runwaySection').style.display=e==='runway'?'block':'none';$('profileSection').style.display=e==='runway'?'none':'block';if(e==='runway')rwTaskChanged();log(`Renderer: ${e}`)}
 function setProfile(p){state.profile=p;document.querySelectorAll('.profile').forEach(x=>x.classList.toggle('active',x.dataset.profile===p));log(`Runtime profile: ${p}`)}
 function renderProfiles(){const root=$('profiles');root.innerHTML='';state.profiles.forEach(p=>{const d=document.createElement('div');d.className='profile'+(p.id===state.profile?' active':'');d.dataset.profile=p.id;d.onclick=()=>setProfile(p.id);d.innerHTML=`<b>${esc(p.label)}</b><p>${esc(p.description)}</p>`;root.appendChild(d)})}
 function shortPaths(v){if(Array.isArray(v))return v.length?v.map(base).join(' · '):'None selected';return v?base(v):'None selected'}
@@ -744,14 +916,14 @@ function payload(){
   return p;
 }
 
-function applyRuntime(rt){if(!rt)return;if(rt.width&&rt.height)$('rCanvas').textContent=`${rt.width}×${rt.height}`;log(rt.reason||'Runtime resolved')}
+function applyRuntime(rt){if(!rt)return;const canvas=$('rCanvas');if(canvas&&rt.width&&rt.height)canvas.textContent=`${rt.width}×${rt.height}`;log(rt.reason||'Runtime resolved')}
 
-async function compose(){log('Composing job…');const r=await window.pywebview.api.compose(payload());if(r.ok){applyRuntime(r.runtime);log(`Plan ready: ${r.job_id} · engine ${r.engine} · prompt ${(r.prompt||'').length} chars`)}else log(`ERROR: ${r.error}`)}
+async function compose(){if(state.engine==='runway')return rwEstimate();log('Composing job…');const r=await window.pywebview.api.compose(payload());if(r.ok){applyRuntime(r.runtime);log(`Plan ready: ${r.job_id} · engine ${r.engine} · prompt ${(r.prompt||'').length} chars`)}else log(`ERROR: ${r.error}`)}
 function bindingText(b){if(!b)return'no binding receipt';const resolved=b.resolved||{};const strict=resolved.first_frame_bound?' · strict first frame yes':'',omitted=b.h3_pictures_omitted?` · OMITTED ${b.h3_pictures_omitted} image ref${b.h3_pictures_omitted===1?'':'s'} (9-picture H3 limit)`:'';return `primary ${b.primary_identity_bound?'yes':'no'}${strict} · pictures ${b.h3_pictures} (${resolved.picture_links??'expected'})${omitted} · videos ${b.h3_videos} · audio ${b.h3_audios} · fidelity ${b.reference_fidelity}`}
-async function dryRun(){log('Resolving workflow…');const r=await window.pywebview.api.dry_run(payload());if(r.ok){applyRuntime(r.runtime);log(`References bound: ${bindingText(r.reference_bindings)}`);log(`Resolved ${r.engine}: ${r.resolved_workflow}`)}else log(`ERROR: ${r.error}`)}
-async function queueRender(){log('Queueing render…');const r=await window.pywebview.api.queue_render(payload());if(r.ok){applyRuntime(r.runtime);log(`References bound: ${bindingText(r.reference_bindings)}`);log(`Queued ${r.queue_id}`);refreshQueue()}else log(`ERROR: ${r.error}`)}
-async function queueBestOf(){const n=Number($('bestOfN').value);log(`Queueing best-of-${n}…`);const r=await window.pywebview.api.queue_best_of(payload(),n);(r.created||[]).forEach(x=>log(`Candidate ${x.index} queued: ${x.queue_id}`));(r.errors||[]).forEach(x=>log(`Candidate ${x.index} skipped: ${x.error}`));refreshQueue()}
-async function sweep(){log('Queueing profile sweep…');const r=await window.pywebview.api.queue_profile_sweep(payload(),['auto','int8_12gb','low_memory','low_memory_quality']);(r.created||[]).forEach(x=>log(`Sweep queued: ${x.profile} · ${x.queue_id}`));(r.errors||[]).forEach(x=>log(`Sweep skip ${x.profile}: ${x.error}`));refreshQueue();setTimeout(refreshSweep,800)}
+async function dryRun(){if(state.engine==='runway')return rwEstimate();log('Resolving workflow…');const r=await window.pywebview.api.dry_run(payload());if(r.ok){applyRuntime(r.runtime);log(`References bound: ${bindingText(r.reference_bindings)}`);log(`Resolved ${r.engine}: ${r.resolved_workflow}`)}else log(`ERROR: ${r.error}`)}
+async function queueRender(){if(state.engine==='runway')return rwQueue();log('Queueing render…');const r=await window.pywebview.api.queue_render(payload());if(r.ok){applyRuntime(r.runtime);log(`References bound: ${bindingText(r.reference_bindings)}`);log(`Queued ${r.queue_id}`);refreshQueue()}else log(`ERROR: ${r.error}`)}
+async function queueBestOf(){if(state.engine==='runway'){log('Best-of-N runs on local renderers. For Runway, use Consistent variations or change the seed.');return}const n=Number($('bestOfN').value);log(`Queueing best-of-${n}…`);const r=await window.pywebview.api.queue_best_of(payload(),n);(r.created||[]).forEach(x=>log(`Candidate ${x.index} queued: ${x.queue_id}`));(r.errors||[]).forEach(x=>log(`Candidate ${x.index} skipped: ${x.error}`));refreshQueue()}
+async function sweep(){if(state.engine==='runway'){log('Profile Sweep compares local GPU runtime profiles; it does not apply to Runway.');return}log('Queueing profile sweep…');const r=await window.pywebview.api.queue_profile_sweep(payload(),['auto','int8_12gb','low_memory','low_memory_quality']);(r.created||[]).forEach(x=>log(`Sweep queued: ${x.profile} · ${x.queue_id}`));(r.errors||[]).forEach(x=>log(`Sweep skip ${x.profile}: ${x.error}`));refreshQueue();setTimeout(refreshSweep,800)}
 async function cancelActive(){const items=(await window.pywebview.api.queue_state()).items||[];const running=items.find(i=>i.status==='running');const queued=items.find(i=>i.status==='queued');const target=running||queued;if(!target){log('Nothing active to cancel');return}const r=await window.pywebview.api.cancel_queue_item(target.id);log(r.ok?`Cancel requested for ${target.id}`:`Cancel failed: ${r}`);refreshQueue()}
 async function openOutput(){await window.pywebview.api.open_output_dir();}
 
@@ -787,7 +959,8 @@ async function refreshQueue(){try{const r=await window.pywebview.api.queue_state
   if(!items.length){root.innerHTML='<div class="tiny">Queue is empty.</div>'}
   items.forEach(q=>{const d=document.createElement('div');d.className='qitem';
     const qa=q.candidate_qa||{},qaText=qa.decision?` · candidate QA ${String(qa.decision).toUpperCase()}${Number.isFinite(Number(qa.overall_score))?' '+Math.round(Number(qa.overall_score)*100)+'%':''}`:'';
-    d.innerHTML=`<div class="qtop"><span class="qname">${esc(q.label)}</span><span class="qstatus ${q.status}">${q.status}</span></div><div class="qmeta">${esc(q.profile||'')} · seed ${q.seed} · ${Math.round(q.elapsed_s)}s${q.outputs&&q.outputs.length?' · '+q.outputs.length+' out':''}${esc(qaText)}</div>${qa.error?`<div class="qerr">Candidate QA unavailable: ${esc(qa.error)}</div>`:''}${q.error_message?`<div class="qerr">${esc(q.error_message)}</div>`:''}${q.error?`<div class="qerr mono">${esc(String(q.error).slice(0,180))}</div>`:''}`;
+    const cr=q.cloud_receipt||{},crEst=cr.estimate&&cr.estimate.credits,cloudText=q.provider==='runway'?` · Runway ${cr.credits_charged!=null?cr.credits_charged+' credits':(crEst!=null?'≈'+crEst+' credits est.':'')}${cr.status&&q.status==='running'?' · '+cr.status:''}`:'';
+    d.innerHTML=`<div class="qtop"><span class="qname">${esc(q.label)}</span><span class="qstatus ${q.status}">${q.status}</span></div><div class="qmeta">${esc(q.profile||'')} · seed ${q.seed} · ${Math.round(q.elapsed_s)}s${q.outputs&&q.outputs.length?' · '+q.outputs.length+' out':''}${esc(qaText)}${esc(cloudText)}</div>${qa.error?`<div class="qerr">Candidate QA unavailable: ${esc(qa.error)}</div>`:''}${q.error_message?`<div class="qerr">${esc(q.error_message)}</div>`:''}${q.error?`<div class="qerr mono">${esc(String(q.error).slice(0,180))}</div>`:''}`;
     const row=document.createElement('div');row.className='row';row.style.marginTop='7px';
     if(q.status==='queued'||q.status==='running'){const b=document.createElement('button');b.className='mini';b.textContent='Cancel';b.onclick=async()=>{await window.pywebview.api.cancel_queue_item(q.id);refreshQueue()};row.appendChild(b)}
     if(q.outputs&&q.outputs.length){q.outputs.forEach(o=>{const b=document.createElement('button');b.className='mini';b.textContent='Open';b.onclick=()=>openLocalPath(o);row.appendChild(b);
@@ -959,8 +1132,8 @@ function renderHistory(){const body=$('historyBody'),items=historyVisibleItems()
 async function refreshHistory(){const r=await window.pywebview.api.history();historyItems=r.items||[];renderHistory()}
 
 /* ---------- settings ---------- */
-async function saveSettings(){state.settings={comfyui_url:$('sUrl').value,comfyui_input:$('sInput').value,comfyui_output:$('sOutput').value,comfyui_dir:$('sDir').value,comfyui_python:$('sPython').value,workflow_h3_ref2va:$('sH3Ref').value,workflow_h3_fl2va:$('sH3Fl').value,workflow_wan22:$('sWan').value,workflow_custom:$('sCustom').value,workflow_ad_sd15:state.bundledWorkflows.ad_sd15,workflow_ad_sdxl:state.bundledWorkflows.ad_sdxl,timeout_s:Number($('sTimeout').value),local_h3_authorized:$('sAuth').checked,default_h3_preset:$('preset').value,default_runtime_profile:state.profile,gpu_autoclean:$('sGpuAuto').value==='true',gpu_threshold:Number($('sGpuThr').value),gpu_check_interval_s:Number($('sGpuInt').value),preferred_output_dir:$('sOutDir').value};
-  const r=await window.pywebview.api.save_settings(state.settings);log(r.ok?'Settings saved':'Settings save failed')}
+async function saveSettings(){state.settings={comfyui_url:$('sUrl').value,comfyui_input:$('sInput').value,comfyui_output:$('sOutput').value,comfyui_dir:$('sDir').value,comfyui_python:$('sPython').value,workflow_h3_ref2va:$('sH3Ref').value,workflow_h3_fl2va:$('sH3Fl').value,workflow_wan22:$('sWan').value,workflow_custom:$('sCustom').value,workflow_ad_sd15:state.bundledWorkflows.ad_sd15,workflow_ad_sdxl:state.bundledWorkflows.ad_sdxl,timeout_s:Number($('sTimeout').value),local_h3_authorized:$('sAuth').checked,default_h3_preset:$('preset').value,default_runtime_profile:state.profile,gpu_autoclean:$('sGpuAuto').value==='true',gpu_threshold:Number($('sGpuThr').value),gpu_check_interval_s:Number($('sGpuInt').value),preferred_output_dir:$('sOutDir').value,runway_enabled:$('sRwEnabled').checked,runway_upload_consent:$('sRwConsent').checked,runway_default_image_model:$('sRwImageModel').value,runway_default_video_model:$('sRwVideoModel').value,runway_max_credits_per_job:Number($('sRwCapJob').value),runway_max_credits_per_batch:Number($('sRwCapBatch').value),runway_daily_credit_cap:Number($('sRwCapDay').value),runway_monthly_credit_cap:Number($('sRwCapMonth').value)};
+  const r=await window.pywebview.api.save_settings(state.settings);if(r.ok&&r.settings)state.settings=r.settings;log(r.ok?'Settings saved':'Settings save failed')}
 async function folderInto(id){const p=await window.pywebview.api.choose_folder();if(p)$(id).value=p}
 async function fileInto(id,kind){const kinds={image:'image',video:'video',audio:'audio',workflow:'workflow',all:'all'};const p=await window.pywebview.api.choose_files(kinds[kind]||kind,false);if(p&&p.length)$(id).value=p[0]}
 async function comfyStatus(){const r=await window.pywebview.api.comfyui_status();const st=$('svcState');const btn=$('svcBtn');const top=$('comfyDot');const txt=$('comfyText');
@@ -972,6 +1145,183 @@ async function comfyStartStop(){const r=await window.pywebview.api.comfyui_statu
   if(r.state==='READY'||r.state==='STARTING'){const s=await window.pywebview.api.comfyui_stop();log(s.ok?'ComfyUI stop requested':'Stop: '+s.error)}else{const s=await window.pywebview.api.comfyui_start();log(s.ok?'ComfyUI start requested · pid '+s.pid:'Start: '+s.error)}
   setTimeout(comfyStatus,1500)}
 function fillBundled(){if(state.bundledWorkflows.ad_sd15)$('sAd15').value=state.bundledWorkflows.ad_sd15;if(state.bundledWorkflows.ad_sdxl)$('sAdSdxl').value=state.bundledWorkflows.ad_sdxl}
+
+/* ---------- runway (cloud, explicit opt-in) ---------- */
+state.runway={models:[],variations:[],voices:[],avatars:[],status:{}};
+const RW_TASK_ENDPOINT={still:'text_to_image',variations:'text_to_image',image_to_video:'image_to_video',avatar_video:'avatar_video',performance:'character_performance',upscale:'image_upscale'};
+function rwFill(id,items,value){const el=$(id);el.innerHTML=items.map(x=>`<option value="${esc(x.value)}">${esc(x.label)}</option>`).join('');if(value!==undefined&&value!==null&&items.some(x=>String(x.value)===String(value)))el.value=String(value)}
+function rwModel(){return state.runway.models.find(x=>x.id===$('rwModel').value)||null}
+function rwKeyText(k){return k&&k.configured?`key: configured (${k.source})`:'key: not configured'}
+function fmtBytesB(n){n=Number(n)||0;return n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?Math.round(n/1024)+' KB':n+' B'}
+function rwInit(rw){
+  state.runway.status=rw;state.runway.models=rw.models||[];state.runway.variations=rw.variations||[];state.runway.voices=rw.voices||[];
+  $('rwKeyState').textContent=rwKeyText(rw.key);
+  $('sRwEnabled').checked=!!state.settings.runway_enabled;$('sRwConsent').checked=!!state.settings.runway_upload_consent;
+  $('sRwCapJob').value=state.settings.runway_max_credits_per_job??150;$('sRwCapBatch').value=state.settings.runway_max_credits_per_batch??400;
+  $('sRwCapDay').value=state.settings.runway_daily_credit_cap??300;$('sRwCapMonth').value=state.settings.runway_monthly_credit_cap??3000;
+  rwFill('sRwImageModel',state.runway.models.filter(m=>m.task==='text_to_image').map(m=>({value:m.id,label:`${m.label} · ${m.pricing}`})),state.settings.runway_default_image_model);
+  rwFill('sRwVideoModel',state.runway.models.filter(m=>m.task==='image_to_video').map(m=>({value:m.id,label:`${m.label} · ${m.pricing}`})),state.settings.runway_default_video_model);
+  $('rwVariations').innerHTML=state.runway.variations.map((v,i)=>`<label class="tiny" style="display:flex;gap:6px;align-items:center"><input type="checkbox" value="${esc(v.id)}"${i<4?' checked':''}>${esc(v.label)}</label>`).join('');
+  const voices=state.runway.voices.map(v=>({value:v,label:v[0].toUpperCase()+v.slice(1)}));
+  rwFill('rwVoice',[{value:'',label:"Avatar's own voice"},...voices]);rwFill('rwNewVoice',voices);
+  if(!$('rwNewPersonality').value)$('rwNewPersonality').value=(rw.default_personality||'').replace('{name}',state.avatar.display_name||'the presenter');
+  if(rw.docs_verified)$('rwPricingNote').textContent+=` Runway API ${rw.api_version}; prices verified ${rw.docs_verified}.`;
+  rwFill('rwAvatar',[{value:'',label:'Refresh to load your Runway avatars'}]);rwTaskChanged();
+}
+function rwTaskChanged(){
+  const task=$('rwTask').value;const models=state.runway.models.filter(m=>m.task===RW_TASK_ENDPOINT[task]);
+  const preferred=RW_TASK_ENDPOINT[task]==='image_to_video'?state.settings.runway_default_video_model:RW_TASK_ENDPOINT[task]==='text_to_image'?state.settings.runway_default_image_model:undefined;
+  rwFill('rwModel',models.map(m=>({value:m.id,label:`${m.label} · ${m.pricing}`})),preferred);rwModelChanged();
+  $('rwVariationsRow').style.display=task==='variations'?'block':'none';$('rwAvatarRow').style.display=task==='avatar_video'?'block':'none';
+  $('rwPerformanceRow').style.display=task==='performance'?'grid':'none';$('rwUpscaleRow').style.display=task==='upscale'?'grid':'none';
+  $('rwStillRow').style.display=task==='still'?'grid':'none';$('rwAudioRow').style.display=['image_to_video','performance','avatar_video'].includes(task)?'grid':'none';$('rwTtsRow').style.display=task==='narration'?'block':'none';
+  if(task==='performance'&&!$('rwOutputAudio').value)$('rwOutputAudio').value='mute';
+  $('rwReceipt').className='info';$('rwReceipt').textContent='Estimate to see exactly what will be uploaded and what it costs.';
+}
+function rwModelChanged(){
+  const m=rwModel();if(!m)return;const ratios=m.ratios||[];
+  rwFill('rwRatio',ratios.map(r=>({value:r,label:r.replace(':','×')})));$('rwRatioField').style.display=ratios.length?'block':'none';
+  const d=m.duration_range;$('rwDurationField').style.display=d?'block':'none';
+  if(d){$('rwDuration').min=d[0];$('rwDuration').max=d[1];$('rwDuration').value=Math.min(Math.max(Number($('rwDuration').value)||m.default_duration||d[0],d[0]),d[1])}
+  const counts=m.output_counts||[1];$('rwCountField').style.display=counts.length>1?'block':'none';rwFill('rwCount',counts.map(c=>({value:c,label:String(c)})));
+  const res=m.resolutions||[];$('rwResolutionField').style.display=res.length?'block':'none';rwFill('rwResolution',res.map(r=>({value:r,label:r})));
+  $('rwH3Row').style.display=m.id==='h3_max'?'grid':'none';
+}
+function rwScriptCount(){$('rwScriptCount').textContent=`${$('rwScript').value.length} / 5000`}
+function rwPayload(){
+  const p=payload();p.shot.engine_preference='runway';const task=$('rwTask').value;const m=rwModel()||{};const r={task,model:m.id};
+  if((m.ratios||[]).length)r.ratio=$('rwRatio').value;if(m.duration_range)r.duration=Number($('rwDuration').value);
+  if((m.output_counts||[]).length>1)r.output_count=Number($('rwCount').value);if((m.resolutions||[]).length)r.resolution=$('rwResolution').value;
+  if(m.id==='h3_max')r.prompt_expansion=$('rwExpansion').value;
+  if(task==='variations')r.variations=[...document.querySelectorAll('#rwVariations input:checked')].map(x=>x.value);
+  if(task==='avatar_video'){r.avatar_id=$('rwAvatar').value;r.voice=$('rwVoice').value;r.speech=$('rwSpeech').value;r.script=$('rwScript').value}
+  if(task==='performance'){r.body_control=$('rwBody').value==='true';r.expression_intensity=Number($('rwIntensity').value)}
+  if(task==='upscale'){r.scale_factor=Number($('rwScale').value);r.flavor=$('rwFlavor').value}
+  if(task==='still'){if($('rwSlot').value)r.slot=$('rwSlot').value;const n=Number($('rwCandidates').value);if(n>1)r.candidates=n}
+  if(['image_to_video','performance','avatar_video'].includes(task)){if($('rwOutputAudio').value)r.output_audio=$('rwOutputAudio').value;if($('rwVoiceover').value)r.voiceover_id=$('rwVoiceover').value}
+  if(task==='narration'){r.script=$('rwTtsScript').value;r.voice_profile_id=$('rwTtsProfile').value;if($('rwTtsVoice').value.trim())r.tts_voice=$('rwTtsVoice').value.trim();if($('rwTtsVoiceId').value.trim())r.tts_voice_id=$('rwTtsVoiceId').value.trim()}
+  p.runway=r;return p;
+}
+function rwReceiptHtml(r){
+  const e=r.estimate;const lines=[`<b>${esc(r.model.label)}</b> · ${esc(e.basis)} · <b>${e.credits} credits</b> (≈ $${Number(e.usd).toFixed(2)})${e.upper_bound?' · upper bound':''} · cap ${r.cap}${r.within_cap?'':' · <b>over cap</b>'}`];
+  if((r.breakdown||[]).length)lines.push(r.breakdown.map(b=>`${esc(b.label)}: ${b.credits}`).join(' · '));
+  lines.push('Uploads to Runway: '+((r.uploads||[]).map(u=>`${esc(u.role)} — ${esc(u.file)} (${fmtBytesB(u.bytes)}, ${esc(u.transfer)})`).join('; ')||'none'));
+  if(r.prompt_receipt)lines.push(`Prompt ${r.prompt_receipt.chars}/${r.prompt_receipt.budget} characters${r.prompt_receipt.dropped_sections.length?' · trimmed to fit: '+esc(r.prompt_receipt.dropped_sections.join(', ')):''}`);
+  if(r.budget)lines.push(`Budget after this job: today ${r.budget.today_projected}/${r.budget.daily_cap} · month ${r.budget.month_projected}/${r.budget.monthly_cap} credits${r.budget.ok?'':' · <b>over budget</b>'}`);
+  if(r.identity&&r.identity.master_sha256)lines.push(`Identity lock: master ${esc(r.identity.master_sha256.slice(0,12))}… · primary ${esc((r.identity.primary_sha256||'none').slice(0,12))}`);
+  (r.warnings||[]).forEach(w=>lines.push('⚠ '+esc(w)));
+  if(r.gate)lines.push('<b>Not ready:</b> '+esc(r.gate));
+  if(r.prompt)lines.push(`<details><summary>Compiled prompt</summary><div class="mono" style="white-space:pre-wrap">${esc(r.prompt)}</div></details>`);
+  return lines.join('<br>');
+}
+async function rwEstimate(){
+  log('Estimating Runway job…');const r=await window.pywebview.api.runway_estimate(rwPayload());
+  if(!r.ok){$('rwReceipt').className='warning';$('rwReceipt').textContent=r.error;log('Runway: '+r.error);return null}
+  $('rwReceipt').className=r.within_cap&&!r.gate?'info':'warning';$('rwReceipt').innerHTML=rwReceiptHtml(r);
+  log(`Runway estimate: ${r.estimate.credits} credits (≈ $${Number(r.estimate.usd).toFixed(2)})`);return r;
+}
+async function rwQueue(){
+  const r=await rwEstimate();if(!r)return;
+  if(r.gate){log('Runway: '+r.gate);return}
+  if(!r.within_cap){log(`Runway: the estimate (${r.estimate.credits} credits) is above the cap (${r.cap}). Raise it under Advanced only if intended.`);return}
+  if(r.budget&&!r.budget.ok){log('Runway: '+r.budget.error);return}
+  const files=(r.uploads||[]).map(u=>`• ${u.role}: ${u.file} (${fmtBytesB(u.bytes)})`).join('\n')||'• none';
+  const ok=confirm(`Send this job to Runway?\n\nModel: ${r.model.label}\nEstimated cost: ${r.estimate.credits} credits (≈ $${Number(r.estimate.usd).toFixed(2)})${r.estimate.upper_bound?' (upper bound)':''}\n\nFiles uploaded to Runway:\n${files}\n\nThe compiled prompt is sent as well. Outputs are downloaded to this computer.`);
+  if(!ok){log('Runway job not sent.');return}
+  const p=rwPayload();p.confirm_cloud_upload=true;p.confirmed_estimate_credits=r.estimate.credits;
+  const q=await window.pywebview.api.queue_runway(p);
+  if(q.ok){(q.queued||[]).forEach(x=>log(`Runway job queued ${x.queue_id}${x.variation?' · '+x.variation:''}`));refreshQueue()}else log('Runway: '+q.error);
+}
+async function rwSaveKey(){const v=$('sRwKey').value;$('sRwKey').value='';if(!v.trim()){log('Paste a Runway API key first.');return}const r=await window.pywebview.api.runway_save_key(v);$('rwKeyState').textContent=rwKeyText(r.key);log(r.ok?`Runway key saved (${r.stored_in})`:'Runway key: '+r.error)}
+async function rwClearKey(){if(!confirm('Remove the stored Runway API key from this computer?'))return;const r=await window.pywebview.api.runway_clear_key();$('rwKeyState').textContent=rwKeyText(r.key);log(r.removed?'Runway key removed':'No stored Runway key to remove');if(r.note)log(r.note)}
+async function rwCheck(){$('rwAccount').textContent='checking…';const r=await window.pywebview.api.runway_check();$('rwAccount').textContent=r.ok?`${r.credit_balance} credits (≈ $${(Number(r.credit_balance)*0.01).toFixed(2)})`:r.error;log(r.ok?`Runway balance: ${r.credit_balance} credits`:'Runway: '+r.error)}
+async function rwAvatarsRefresh(){const r=await window.pywebview.api.runway_avatars_list();if(!r.ok){log('Runway avatars: '+r.error);return}state.runway.avatars=r.items||[];rwFill('rwAvatar',state.runway.avatars.length?state.runway.avatars.map(a=>({value:a.id,label:`${a.name} · ${a.status}${a.vault_avatar_id?' · from '+a.vault_avatar_id:''}`})):[{value:'',label:'No Runway avatars yet'}]);log(`Runway avatars loaded: ${state.runway.avatars.length}`)}
+async function rwAvatarCreate(){
+  const ref=(state.refs.identity_refs||[])[0];if(!ref){log('Set the approved presenter still as the primary identity first.');return}
+  const name=$('rwNewName').value.trim()||state.avatar.display_name||'Presenter';
+  if(!confirm(`Create the Runway avatar "${name}"?\n\nThis uploads ${base(ref)} to Runway.`))return;
+  const r=await window.pywebview.api.runway_avatar_create({avatar:{...state.avatar,identity_refs:state.refs.identity_refs},name,voice:$('rwNewVoice').value,personality:$('rwNewPersonality').value,image_processing:$('rwNewProcessing').value,confirm_cloud_upload:true});
+  if(r.ok){log(`Runway avatar created: ${r.avatar.name} (${r.avatar.status}); it can take a moment to become READY.`);rwAvatarsRefresh()}else log('Runway avatar: '+r.error);
+}
+
+/* ---------- presenter production ---------- */
+state.presenter={brand:{},slots:[],voiceProfiles:[],voiceovers:[],qaCriteria:[],qaReportPath:''};
+function prInit(p){
+  state.presenter.brand=p.brand||{};state.presenter.slots=(p.brand&&p.brand.reference_slots)||[];state.presenter.qaCriteria=p.qa_criteria||[];
+  $('prVoiceSuggestions').innerHTML=(p.tts_voice_suggestions||[]).map(v=>`<option value="${esc(v)}">`).join('');
+  rwFill('rwSlot',[{value:'',label:'None (not a reference slot)'},...state.presenter.slots.map(s=>({value:s.id,label:s.label}))]);
+  rwFill('prImportSource',Object.entries(p.import_sources||{}).map(([k,v])=>({value:k,label:v})),'midjourney');
+  rwFill('prImportSlot',[{value:'',label:'Import only (do not register)'},...state.presenter.slots.map(s=>({value:s.id,label:'BRAND · '+s.label}))]);
+  if(!$('prVoiceDesign').value&&p.brand&&p.brand.voice_profile)$('prVoiceDesign').value=p.brand.voice_profile.design_prompt||'';
+  prRefreshVoiceProfiles();prRefreshVoiceovers();rwProfilesRefresh();
+}
+async function refreshPresenter(){await Promise.all([prProviders(),prSpend(),prReview(),prRefreshVoiceProfiles(),prRefreshVoiceovers(),prQaList()])}
+async function prProviders(){const r=await window.pywebview.api.provider_status();if(!r.ok)return;$('prProviders').innerHTML=Object.values(r.providers).map(p=>`<div><span class="s-dot ${p.available?'live':'bad'}"></span> <b>${esc(p.label)}</b>: ${p.available?(p.mode?esc(p.mode):'available'):'unavailable'}${p.detail?' · '+esc(p.detail):''}</div>`).join('')}
+async function prSpend(){const r=await window.pywebview.api.runway_spend();if(!r.ok)return;const b=r.budget,s=r.summary;$('prSpend').textContent=`Runway credits · today ${b.today_charged} charged + ${b.today_reserved} reserved + ${b.pending_queued} queued, budget ${b.daily_cap} · month ${b.month_charged} charged + ${b.month_reserved} reserved, budget ${b.monthly_cap} · all-time ${s.all_time_charged} (≈ $${(s.all_time_charged*0.01).toFixed(2)})`}
+async function prReview(){const r=await window.pywebview.api.review_queue();const root=$('prReview');const items=r.items||[];if(!items.length){root.textContent='No pending candidates.';return}
+  root.innerHTML='';for(const c of items){const row=document.createElement('div');row.className='qitem';row.style.display='flex';row.style.gap='10px';
+    const img=document.createElement('img');img.style.width='72px';img.style.height='96px';img.style.objectFit='cover';img.alt=c.slot_label;
+    if(c.exists){window.pywebview.api.reference_thumbnail(c.path).then(t=>{if(t.ok)img.src=t.data_url})}
+    const info=document.createElement('div');info.innerHTML=`<b>${esc(c.display_name)}</b> · ${esc(c.slot_label)}<br>Local QA: ${esc(c.qa_decision)}${c.reasons&&c.reasons.length?' · '+esc(c.reasons[0]):''}<br><span class="mono">${esc(base(c.path))}</span>${c.exists?'':' · <b>file missing</b>'}`;
+    const buttons=document.createElement('div');buttons.className='row';
+    for(const decision of ['accepted','rejected']){const b=document.createElement('button');b.className='mini';b.textContent=decision==='accepted'?'Accept':'Reject';b.disabled=!c.exists&&decision==='accepted';
+      b.onclick=async()=>{if(decision==='accepted'&&c.slot_id==='identity_front'&&!confirm('Accept this image as the MASTER identity? Cloud jobs for this profile will be locked to it.'))return;const d=await window.pywebview.api.avatar_candidate_decide({avatar_id:c.avatar_id,slot_id:c.slot_id,decision,path:c.path});log(d.ok?`Candidate ${decision}: ${c.slot_label}`:'Review: '+d.error);prReview()};buttons.appendChild(b)}
+    info.appendChild(buttons);row.appendChild(img);row.appendChild(info);root.appendChild(row)}}
+async function prRefreshVoiceProfiles(){const r=await window.pywebview.api.voice_profiles_list();state.presenter.voiceProfiles=r.items||[];const opts=state.presenter.voiceProfiles.map(v=>({value:v.id,label:v.label}));
+  rwFill('prVoiceProfile',opts.length?opts:[{value:'',label:'Load BRAND Instructor to create the default profile'}]);rwFill('rwTtsProfile',[{value:'',label:'None'},...opts],opts.length?opts[0].value:'');prVoiceProfileChanged()}
+function prVoiceProfileChanged(){const p=state.presenter.voiceProfiles.find(v=>v.id===$('prVoiceProfile').value);if(!p)return;$('prVoicePreset').value=(p.voice&&p.voice.presetId)||'';$('prVoiceSpeed').value=p.speed??0.95;$('prPronunciations').value=Object.entries(p.pronunciations||{}).map(([k,v])=>`${k} = ${v}`).join('\n')}
+async function prVoiceProfileSave(){const p=state.presenter.voiceProfiles.find(v=>v.id===$('prVoiceProfile').value);if(!p){log('Load the BRAND Instructor first to create a voice profile.');return}
+  const pron={};$('prPronunciations').value.split('\n').forEach(line=>{const i=line.indexOf('=');if(i>0)pron[line.slice(0,i).trim()]=line.slice(i+1).trim()});
+  const voice=p.voice&&p.voice.type==='custom'&&!$('prVoicePreset').value.trim()?p.voice:{type:'runway-preset',presetId:$('prVoicePreset').value.trim()};
+  const r=await window.pywebview.api.voice_profile_save({...p,voice,speed:Number($('prVoiceSpeed').value),pronunciations:pron});log(r.ok?'Voice profile saved':'Voice profile: '+r.error);prRefreshVoiceProfiles()}
+async function prRefreshVoiceovers(){const r=await window.pywebview.api.voiceover_list();const items=r.items||[];state.presenter.voiceovers=items;
+  rwFill('rwVoiceover',[{value:'',label:'None'},...items.filter(v=>v.status==='approved').map(v=>({value:v.id,label:`${v.label}${v.duration_s?' · '+Number(v.duration_s).toFixed(1)+' s':''}`}))]);
+  const root=$('prVoiceovers');if(!items.length){root.textContent='No narration yet.';return}root.innerHTML='';
+  items.forEach(v=>{const d=document.createElement('div');d.className='row';d.style.alignItems='center';d.innerHTML=`<span><b>${esc(v.label)}</b> · ${esc(v.origin)} · ${v.duration_s?Number(v.duration_s).toFixed(1)+' s':'?'} · <b>${esc(v.status)}</b>${v.exists?'':' · file missing'}</span>`;
+    const play=document.createElement('button');play.className='mini';play.textContent='Play';play.onclick=()=>openLocalPath(v.path);d.appendChild(play);
+    if(v.status==='pending'){['approved','rejected'].forEach(dec=>{const b=document.createElement('button');b.className='mini';b.textContent=dec==='approved'?'Approve':'Reject';b.onclick=async()=>{const x=await window.pywebview.api.voiceover_decide({id:v.id,decision:dec});log(x.ok?`Narration ${dec}`:'Narration: '+x.error);prRefreshVoiceovers()};d.appendChild(b)})}
+    root.appendChild(d)})}
+async function prVoiceoverImport(){const files=await window.pywebview.api.choose_files('audio',true);if(!files||!files.length)return;const r=await window.pywebview.api.voiceover_import({paths:files,authorization:$('prVoAuth').value,voice_profile_id:$('prVoiceProfile').value});if(!r.ok&&r.error){log('Narration: '+r.error);return}(r.errors||[]).forEach(e=>log(`Narration ${e.file}: ${e.error}`));log(`Narration imported: ${(r.imported||[]).length} (pending approval)`);prRefreshVoiceovers()}
+async function prScriptAnalyze(){const r=await window.pywebview.api.script_analyze({script:$('prScript').value,voice_profile_id:$('prVoiceProfile').value});if(!r.ok){log('Script: '+r.error);return}const s=r.stats;$('prScriptReport').innerHTML=`${s.words} words · ${s.characters} characters · ≈ ${s.estimated_seconds[0]}-${s.estimated_seconds[1]} s · ${r.segments.length} segment(s) for ${esc(r.model)} (limit ${r.limit})${r.estimate?` · ≈ ${r.estimate.credits} credits`:''}<br>${(s.flags||[]).map(f=>'⚠ '+esc(f)).join('<br>')}`}
+async function prVoicePreview(){if(!confirm('Send this voice description to Runway for a short preview?'))return;const r=await window.pywebview.api.runway_voice_preview({prompt:$('prVoiceDesign').value,confirm_cloud_upload:true});if(r.ok){log(`Voice preview saved: ${base(r.path)}`);openLocalPath(r.path)}else log('Voice preview: '+r.error)}
+async function prVoiceCreate(){if(!confirm('Create this designed voice on Runway and attach it to the selected voice profile?'))return;const r=await window.pywebview.api.runway_voice_create({name:$('prVoiceName').value||'BRAND voice',prompt:$('prVoiceDesign').value,voice_profile_id:$('prVoiceProfile').value,confirm_cloud_upload:true});log(r.ok?`Designed voice created: ${r.voice.id}`:'Voice: '+r.error);prRefreshVoiceProfiles()}
+async function prImport(){const files=await window.pywebview.api.choose_files('image',true);if(!files||!files.length)return;
+  const r=await window.pywebview.api.reference_import({paths:files,source:$('prImportSource').value,attested:$('prImportAttest').checked,prompt:$('prImportPrompt').value,job_reference:$('prImportJob').value,avatar_id:$('prImportSlot').value?((state.presenter.brand||{}).profile_id||''):'',slot_id:$('prImportSlot').value});
+  if(!r.ok&&!r.imported){$('prImportResult').textContent=r.error;log('Import: '+r.error);return}
+  $('prImportResult').innerHTML=`Imported ${(r.imported||[]).length} · rejected ${(r.rejected||[]).length}${(r.registered_as_pending||[]).length?` · ${r.registered_as_pending.length} waiting in Review`:''}${r.error?'<br>⚠ '+esc(r.error):''}<br>${(r.rejected||[]).map(x=>`✗ ${esc(x.file)}: ${esc(x.reason)}`).join('<br>')}`;prReview()}
+async function prQaRun(){const files=await window.pywebview.api.choose_files('video',false);if(!files||!files.length)return;$('prQaStatus').textContent='Measuring…';
+  const r=await window.pywebview.api.qa_run({path:files[0],avatar_id:state.avatar.avatar_id});$('prQaStatus').textContent='';if(!r.ok){log('QA: '+r.error);$('prQaReport').textContent=r.error;return}
+  state.presenter.qaReportPath=r.report_path;prQaRender(r.report);prQaList()}
+function prQaRender(rep){const rows=Object.entries(rep.metrics).map(([k,m])=>`<tr><td>${esc(k.replace(/_/g,' '))}</td><td>${m.value===null||m.value===undefined?'—':esc(String(m.value))} ${esc(m.unit||'')}${m.lag_ms!==undefined?' · lag '+m.lag_ms+' ms':''}</td><td><b>${esc(m.status)}</b></td></tr>`).join('');
+  const g=rep.production_gate;$('prQaReport').innerHTML=`<b>${esc(base(rep.file))}</b> · ${Number(rep.probe.duration_s).toFixed(1)} s · ${rep.probe.width}×${rep.probe.height}<table style="width:100%;margin-top:6px">${rows}</table><div style="margin-top:6px">Production gate: <b>${g.ready?'READY':'NOT READY'}</b>${(g.reasons||[]).map(x=>'<br>• '+esc(x)).join('')}</div>`;
+  $('prQaReview').style.display='block';$('prQaCriteria').innerHTML=(rep.human_review.criteria||[]).map(c=>`<div class="field"><label>${esc(c.label)}</label><select data-criterion="${esc(c.id)}"><option value="">Rate…</option>${[5,4,3,2,1].map(n=>`<option value="${n}"${c.rating===n?' selected':''}>${n}</option>`).join('')}</select></div>`).join('')}
+async function prQaSaveReview(){const ratings={};document.querySelectorAll('#prQaCriteria select').forEach(s=>{if(s.value)ratings[s.dataset.criterion]=Number(s.value)});
+  const r=await window.pywebview.api.qa_review_save({report_path:state.presenter.qaReportPath,reviewer:$('prQaReviewer').value,ratings});if(!r.ok){log('QA review: '+r.error);return}prQaRender(r.report);log(`QA review saved · production gate ${r.report.production_gate.ready?'READY':'not ready'}`);prQaList()}
+async function prQaList(){const r=await window.pywebview.api.qa_reports_list();$('prQaList').innerHTML=(r.items||[]).slice(0,8).map(x=>`${esc(x.file)} · ${esc(x.measured_at||'')} · ${x.ready?'<b>READY</b>':'not ready'}${x.reviewed?' · reviewed':''}`).join('<br>')}
+function prLessonFromForm(){const segs=$('prLessonSegments').value.split(/\n\s*\n/).map(s=>s.trim()).filter(Boolean).map((s,i)=>({id:`s${i+1}`,title:`Segment ${i+1}`,mode:'script',script:s}));return{id:$('prLessonId').value.trim(),title:$('prLessonTitle').value.trim(),profile_id:(state.presenter.brand||{}).profile_id||'',runway_avatar_id:$('prLessonAvatar').value.trim(),segments:segs}}
+async function prLessonSave(){const r=await window.pywebview.api.lesson_save({lesson:prLessonFromForm()});log(r.ok?`Lesson saved: ${r.lesson.segments.length} segment(s)`:'Lesson: '+r.error);if(r.ok)prLessonPlan()}
+async function prLessonPlan(){const r=await window.pywebview.api.lesson_plan($('prLessonId').value.trim());if(!r.ok){$('prLessonPlan').textContent=r.error;return}$('prLessonPlan').innerHTML=r.rows.map(x=>`${esc(x.title)}: <b>${esc(x.state.replace(/_/g,' '))}</b>`).join('<br>')}
+async function prLessonQueue(){const id=$('prLessonId').value.trim();const basePayload=rwPayload();const dry=await window.pywebview.api.lesson_queue_changed({lesson_id:id,base:basePayload,dry_run:true});if(!dry.ok){log('Lesson: '+dry.error);return}if(!dry.to_render.length){log('Lesson: every segment is unchanged; nothing to render.');return}
+  if(!confirm(`Render ${dry.to_render.length} changed segment(s) on Runway for about ${dry.total_credits} credits? Unchanged segments: ${dry.unchanged.length}.`))return;
+  const r=await window.pywebview.api.lesson_queue_changed({lesson_id:id,base:basePayload,confirm_cloud_upload:true,confirmed_estimate_credits:dry.total_credits});log(r.ok?`Lesson segments queued: ${r.to_render.join(', ')}`:'Lesson: '+r.error);refreshQueue();prLessonPlan()}
+async function prVerify(){const r=await window.pywebview.api.verify_outputs($('prVerifyId').value.trim());$('prVerifyResult').innerHTML=r.results?`${r.ok?'<b>All outputs verified</b>':'<b>Integrity problem</b>'} · verified ${r.verified}${r.changed.length?' · changed: '+r.changed.map(x=>esc(base(x))).join(', '):''}${r.missing.length?' · missing: '+r.missing.map(x=>esc(base(x))).join(', '):''}`:esc(r.error||'')}
+async function rwProfilesRefresh(){const r=await window.pywebview.api.provider_profiles_list();state.runway.profiles=r.items||[];rwFill('rwProfileSelect',state.runway.profiles.length?state.runway.profiles.map(p=>({value:p.name,label:`${p.name} · ${p.model}`})):[{value:'',label:'No saved profiles'}])}
+async function rwProfileSave(){const p=rwPayload().runway;const r=await window.pywebview.api.provider_profile_save({...p,name:$('rwProfileName').value.trim()});log(r.ok?`Provider profile saved: ${r.profile.name}`:'Profile: '+r.error);rwProfilesRefresh()}
+function rwProfileApply(){const p=(state.runway.profiles||[]).find(x=>x.name===$('rwProfileSelect').value);if(!p)return;setEngine('runway');$('rwTask').value=p.task;rwTaskChanged();$('rwModel').value=p.model;rwModelChanged();if(p.ratio)$('rwRatio').value=p.ratio;if(p.duration)$('rwDuration').value=p.duration;if(p.resolution)$('rwResolution').value=p.resolution;if(p.output_count)$('rwCount').value=p.output_count;if(p.prompt_expansion)$('rwExpansion').value=p.prompt_expansion;if(p.candidates)$('rwCandidates').value=String(p.candidates);log(`Provider profile applied: ${p.name}`)}
+async function loadBrandPreset(){
+  if(!confirm('Load BRAND_INSTRUCTOR_PHOTOREAL_V1? The profile is created in your Avatar Vault if it is missing. Nothing is generated or uploaded.'))return;
+  const inst=await window.pywebview.api.brand_instructor_install();if(!inst.ok){log('BRAND: '+inst.error);return}
+  const r=await window.pywebview.api.brand_instructor_preset();if(!r.ok){log('BRAND: '+r.error);return}
+  const a=r.avatar;state.avatar={...state.avatar,avatar_id:a.avatar_id,display_name:a.display_name,sex:a.sex,apparent_age_years:a.apparent_age_years,subject_kind:a.subject_kind,age_verified_18_plus:a.age_verified_18_plus,consent_confirmed:a.consent_confirmed,persistent_features:a.persistent_features||[],anatomy_guides:[]};
+  state.refs.identity_refs=a.identity_refs||[];state.refs.body_refs=[];state.refs.hair_refs=a.hair_refs||[];state.refs.wardrobe_refs=a.wardrobe_refs||[];state.refs.init_image=(a.identity_refs||[])[0]||'';refreshRefs();
+  $('prompt').value=r.shot.user_prompt;$('content').value='general';syncAdultPromptAccess();$('seed').value=r.shot.seed;
+  const framing=$('framing');if(![...framing.options].some(o=>o.value===r.shot.camera.framing)){const o=document.createElement('option');o.value=o.textContent=r.shot.camera.framing;framing.appendChild(o)}framing.value=r.shot.camera.framing;
+  $('lens').value=r.shot.camera.lens_equivalent_mm;$('camera').value=r.shot.camera.movement;$('environment').value=r.shot.environment;$('wardrobe').value=r.shot.wardrobe;
+  setEngine('runway');$('rwTask').value='still';rwTaskChanged();$('rwModel').value='gen4_image';rwModelChanged();$('rwRatio').value='1080:1440';
+  const hasMaster=(a.identity_refs||[]).length>0;$('rwSlot').value=hasMaster?'identity_three_quarter_left':'identity_front';$('rwCandidates').value=hasMaster?'1':'4';
+  view('studio');prRefreshVoiceProfiles();
+  log(`BRAND Instructor loaded${inst.installed?' (profile created)':''}. ${hasMaster?'Master approved: generate the reference slots next.':'No master yet: Estimate, then queue 4 master candidates and approve one in Presenter → Review.'}`);
+}
 
 /* ---------- init ---------- */
 window.addEventListener('pywebviewready',async()=>{
@@ -990,6 +1340,7 @@ window.addEventListener('pywebviewready',async()=>{
     $('sTimeout').value=state.settings.timeout_s||1800;$('sAuth').checked=!!state.settings.local_h3_authorized;
     $('sGpuAuto').value=state.settings.gpu_autoclean===false?'false':'true';$('sGpuThr').value=state.settings.gpu_threshold??0.85;$('sGpuInt').value=state.settings.gpu_check_interval_s||5;
     $('sOutDir').value=state.settings.preferred_output_dir||'';$('designerVisionModel').value=state.settings.vision_classifier_model||'qwen3-vl:8b-instruct';
+    rwInit(s.runway||{});prInit(s.presenter||{});
     const cats=$('mCategory');(s.motion_categories||[]).forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;cats.appendChild(o)});
     ['vKind','vSex','vAdultAuth','vNude'].forEach(id=>$(id).addEventListener('change',renderDesigner));['vId','vName','vApparentAge'].forEach(id=>$(id).addEventListener('input',renderDesigner));$('designerRenderMode').addEventListener('change',designerRendererStatus);['gId','gLabel','gPath','gProvenance','gAdult','gRights','gConsent'].forEach(id=>{const event=$(id).tagName==='SELECT'?'change':'input';$(id).addEventListener(event,()=>$(id).classList.remove('invalid'))});
     await refreshAppearanceComponents();refreshQueue();refreshGpu();comfyStatus();doctor();
@@ -1010,7 +1361,7 @@ async function runUiTest(){
   const wait=ms=>new Promise(r=>setTimeout(r,ms));
   try{
     report.consolidation_check=designerPlanSelfTest();if(!report.consolidation_check.ok)uiErrors.push('consolidated validation planner self-test failed');
-    for(const v of ['studio','vault','motions','scenes','history','settings']){
+    for(const v of ['studio','vault','motions','scenes','history','presenter','settings']){
       view(v);await wait(600);
       const el=document.getElementById('view-'+v);
       report.view_checks[v]=el&&el.classList.contains('active');
@@ -1056,6 +1407,23 @@ async function runUiTest(){
     const originalRefs=JSON.parse(JSON.stringify(state.refs));setEngine('h3_ref2va');$('h3ReferenceMode').value='exact_primary';state.refs.identity_refs=['/tmp/avatar_v2_ui_test_primary.png'];state.refs.init_image=state.refs.identity_refs[0];
     const exact=await api.dry_run(payload());report.reference_checks={ok:exact.ok===true,engine:exact.engine,primary_bound:exact.reference_bindings&&exact.reference_bindings.primary_identity_bound,first_frame_bound:exact.reference_bindings&&exact.reference_bindings.resolved&&exact.reference_bindings.resolved.first_frame_bound};state.refs=originalRefs;refreshRefs();
     await probe('gpu_free_idle',()=>api.gpu_free());
+    // Runway panel: local estimates only. No network calls, no uploads, nothing queued.
+    await probe('runway_status',()=>api.runway_status());
+    setEngine('runway');await wait(200);
+    report.runway_checks={section_visible:$('runwaySection').style.display!=='none',profile_hidden:$('profileSection').style.display==='none',settings_models:$('sRwImageModel').options.length+$('sRwVideoModel').options.length,variations:$('rwVariations').querySelectorAll('input').length,voices:$('rwNewVoice').options.length};
+    for(const task of ['still','variations','image_to_video','avatar_video','performance','upscale']){$('rwTask').value=task;rwTaskChanged();report.runway_checks['models_'+task]=$('rwModel').options.length}
+    const rwOriginalAvatar=JSON.parse(JSON.stringify(state.avatar)),rwOriginalRefs=JSON.parse(JSON.stringify(state.refs));
+    state.avatar={...state.avatar,subject_kind:'unknown'};$('rwTask').value='still';rwTaskChanged();
+    const rwBlocked=await api.runway_estimate(rwPayload());report.runway_checks.unknown_provenance_blocked=rwBlocked.ok===false&&/provenance/i.test(rwBlocked.error||'');
+    state.avatar={...state.avatar,subject_kind:'synthetic',age_verified_18_plus:true,consent_confirmed:true,sex:'female',apparent_age_years:25};state.refs.identity_refs=[];
+    const rwText=await api.runway_estimate(rwPayload());report.runway_checks.text_only_estimate=rwText.ok?`${rwText.estimate.credits} credits · prompt ${rwText.prompt_receipt&&rwText.prompt_receipt.chars} chars · gate ${rwText.gate?'blocked':'ready'}`:'error '+rwText.error;
+    await rwEstimate();report.runway_checks.receipt_rendered=$('rwReceipt').innerHTML.length>40;
+    const rwLocal=await api.queue_render({...payload(),shot:{...payload().shot,engine_preference:'runway'}});report.runway_checks.local_queue_refused=rwLocal.ok===false;
+    state.avatar=rwOriginalAvatar;state.refs=rwOriginalRefs;refreshRefs();
+    // Presenter production view: read-only probes (nothing is installed, generated or uploaded).
+    for(const name of ['provider_status','brand_instructor_spec','review_queue','runway_spend','voiceover_list','voice_profiles_list','qa_reports_list','provider_profiles_list','lesson_list','reference_imports_list'])await probe(name,()=>api[name]());
+    report.presenter_checks={slots:$('rwSlot').options.length,import_sources:$('prImportSource').options.length,still_row_visible:(()=>{setEngine('runway');$('rwTask').value='still';rwTaskChanged();return $('rwStillRow').style.display!=='none'})(),tts_row_hidden_for_still:$('rwTtsRow').style.display==='none',tts_row_for_narration:(()=>{$('rwTask').value='narration';rwTaskChanged();return $('rwTtsRow').style.display!=='none'})(),audio_row_for_performance:(()=>{$('rwTask').value='performance';rwTaskChanged();return $('rwAudioRow').style.display!=='none'&&$('rwOutputAudio').value==='mute'})()};
+    $('rwTask').value='still';rwTaskChanged();
     setEngine(originalEngine);setProfile(originalProfile);
     await wait(400);
     report.js_errors=uiErrors.slice();
