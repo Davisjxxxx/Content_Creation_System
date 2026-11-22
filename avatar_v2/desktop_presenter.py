@@ -135,10 +135,109 @@ class PresenterMixin:
             "month_projected": round(month, 2),
             "pending_queued": round(pending, 2),
             "today_charged": round(summary["today_charged"], 2),
+            "today_unconfirmed": round(summary["today_unconfirmed"], 2),
             "today_reserved": round(summary["today_reserved"], 2),
             "month_charged": round(summary["month_charged"], 2),
+            "month_unconfirmed": round(summary["month_unconfirmed"], 2),
             "month_reserved": round(summary["month_reserved"], 2),
+            "unresolved": summary["unresolved"],
         }
+
+    def _unresolved_summary(self) -> dict[str, Any]:
+        items = cloud_ledger.unresolved(_desktop().CLOUD_LEDGER_PATH)
+        return {"count": len(items), "credits": round(sum(i["reserved_credits"] for i in items), 2)}
+
+    def runway_unresolved(self) -> dict[str, Any]:
+        """Cloud jobs whose charge is unknown; each counts at its estimate until resolved."""
+        items = [
+            {
+                "key": item["key"],
+                "task_id": item.get("task_id"),
+                "queue_id": item.get("queue_id"),
+                "label": item.get("label"),
+                "model": item.get("model"),
+                "status": item.get("status"),
+                "reserved_credits": item["reserved_credits"],
+                "created_ts": item.get("created_ts"),
+            }
+            for item in cloud_ledger.unresolved(_desktop().CLOUD_LEDGER_PATH)
+        ]
+        return {"ok": True, "items": items}
+
+    def runway_resolve_charge(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Settle an unknown charge after checking Runway usage. Never resubmits anything."""
+        key = str(payload.get("key") or "").strip()
+        states = cloud_ledger.task_states(_desktop().CLOUD_LEDGER_PATH)
+        state = states.get(key)
+        if not state or cloud_ledger.classify(state)[1] != "unconfirmed":
+            return {"ok": False, "error": "That entry is not an unresolved cloud charge."}
+        resolution = str(payload.get("resolution") or "")
+        if resolution == "not_billed":
+            charge, credits = "none", 0
+        elif resolution == "billed":
+            try:
+                credits = float(payload.get("credits"))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "Enter the credits Runway charged (from your Runway usage page)."}
+            if not 0 <= credits <= 100000:
+                return {"ok": False, "error": "Credits must be between 0 and 100000."}
+            charge = "actual"
+        else:
+            return {"ok": False, "error": "Resolution must be billed or not_billed."}
+        entry = {"status": "RESOLVED", "charge_status": charge, "credits_charged": credits,
+                 "resolution_note": str(payload.get("note") or "")[:300]}
+        entry["task_id" if state.get("task_id") else "request_key"] = key
+        cloud_ledger.record(_desktop().CLOUD_LEDGER_PATH, entry)
+        return {"ok": True, "key": key, "charge_status": charge, "credits_charged": credits}
+
+    def runway_reconcile_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Check a task id you found in the Runway dashboard; download its outputs if it succeeded."""
+        blocked = self._runway_gate(self._settings(), uploads=False)
+        if blocked:
+            return {"ok": False, "error": blocked}
+        key = str(payload.get("key") or "").strip()
+        task_id = str(payload.get("task_id") or "").strip()
+        if not runway_api._UUID_RE.match(task_id):
+            return {"ok": False, "error": "Paste the task id (a UUID) from your Runway dashboard."}
+        from .models import ProviderConfig
+
+        config = ProviderConfig(provider="runway", base_url=runway_api.RUNWAY_API_BASE,
+                                output_dir=str(_desktop().RUNS_DIR / "runway"))
+        try:
+            result = runway_api.RunwayProvider(config).reconcile_task(task_id)
+        except runway_api.RunwayError as exc:
+            return {"ok": False, "error": str(exc)}
+        if not result["terminal"]:
+            return {"ok": True, "terminal": False, "status": result["status"],
+                    "message": "The task is still running on Runway; check again later. Nothing was resubmitted."}
+        receipt = result["cloud_receipt"]
+        ledger = _desktop().CLOUD_LEDGER_PATH
+        states = cloud_ledger.task_states(ledger)
+        base = {"label": (states.get(key) or {}).get("label"), "queue_id": (states.get(key) or {}).get("queue_id"),
+                "model": (states.get(key) or {}).get("model"),
+                "estimate_credits": (states.get(key) or {}).get("estimate_credits")}
+        charge = receipt.get("charge_status") or "unknown"
+        cloud_ledger.record(ledger, {**base, "task_id": task_id, "status": result["status"], "charge_status": charge,
+                                     "credits_charged": receipt.get("credits_charged")})
+        if key and key != task_id and key in states:
+            # The uncertain request turned out to be this task: settle the request entry against it.
+            cloud_ledger.record(ledger, {"request_key": key, "status": "RESOLVED", "charge_status": "none",
+                                         "credits_charged": 0, "resolution_note": f"reconciled as task {task_id}"})
+        outputs = result["outputs"]
+        return {"ok": True, "terminal": True, "status": result["status"], "outputs": outputs,
+                "output_hashes": {path: sha256_file(path) for path in outputs}, "charge_status": charge,
+                "credits_charged": receipt.get("credits_charged")}
+
+    def _unresolved_guard(self, payload: dict[str, Any]) -> str | None:
+        """Unknown earlier charges require an explicit acknowledgement before any new paid job."""
+        unresolved = self._unresolved_summary()
+        if unresolved["count"] and payload.get("acknowledge_unresolved") is not True:
+            return (
+                f"{unresolved['count']} earlier Runway submission(s) have unknown charges ({unresolved['credits']:g} "
+                "credits reserved). Resolve them under Presenter → Providers & budget, or confirm that you are "
+                "deliberately submitting new work anyway."
+            )
+        return None
 
     def runway_spend(self) -> dict[str, Any]:
         settings = self._settings()
@@ -547,13 +646,17 @@ class PresenterMixin:
         history_dir = _desktop().HISTORY_DIR
         for row in rows:  # reconcile queued renders with their finished queue records
             render = (lesson.get("renders") or {}).get(row["segment_id"]) or {}
-            if row["state"] == "pending" and _SAFE_ID.match(str(render.get("queue_id") or "")):
+            if row["state"] in {"pending", "changed"} and _SAFE_ID.match(str(render.get("queue_id") or "")):
                 history = history_dir / f"{render['queue_id']}.json"
                 if history.is_file():
-                    status = json.loads(history.read_text(encoding="utf-8")).get("status")
-                    if status in {"error", "cancelled"}:
+                    record = json.loads(history.read_text(encoding="utf-8"))
+                    if record.get("error_category") in {"cloud_submission_uncertain", "cloud_persistence"}:
+                        # The earlier submission may have been billed: never re-queue it automatically.
+                        row["state"] = "unresolved"
+                    elif row["state"] == "pending" and record.get("status") in {"error", "cancelled"}:
                         row["state"] = "failed"
-        return {"ok": True, "rows": rows, "to_render": [r["segment_id"] for r in rows if r["state"] not in {"unchanged", "pending"}]}
+        blocked = {"unchanged", "pending", "unresolved"}
+        return {"ok": True, "rows": rows, "to_render": [r["segment_id"] for r in rows if r["state"] not in blocked]}
 
     def lesson_queue_changed(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Queue only segments whose inputs changed (or failed / lost their output). Use dry_run to estimate."""
@@ -607,6 +710,9 @@ class PresenterMixin:
         budget = self._budget_status(settings, total)
         if not budget["ok"]:
             return {"ok": False, "error": budget["error"]}
+        guard = self._unresolved_guard(payload)
+        if guard:
+            return {"ok": False, "error": guard}
         items = [self._runway_queue_item(build, payload, f"{lesson['title']} · {segment['title']}") for segment, build in builds]
         queue_ids = self.queue.add_many(items)
         store = self._lessons()

@@ -69,12 +69,20 @@ narration comes from authorized recordings, preset voices, or voices designed fr
 
 ## Reliability and accounting
 
-- **Restart reconciliation.** The task id is persisted the moment Runway accepts a task. If the app
-  restarts mid-job, the item is re-queued to **poll the existing task**, never to create a duplicate.
-  A job interrupted before task creation is marked failed with "nothing was billed".
-- **Cost ledger.** `~/.avatar_v2/cloud_ledger.jsonl` (append-only) records Runway's estimate at
-  creation and the credits actually charged at completion. **Presenter → Providers & budget** shows
-  today, month and all-time spend.
+- **Restart reconciliation.** The task id is persisted durably (atomic write plus fsync) the moment
+  Runway accepts a task. If the app restarts mid-job, the item is re-queued to **poll the existing
+  task**, never to create a duplicate.
+- **Uncertain submissions.** The intent to send is recorded durably before the create request leaves.
+  A lost response, a 5xx, a success without an id, or a crash after that point is recorded as
+  **uncertain**: never called unbilled, never resubmitted automatically, and its estimate is reserved
+  in the budget. Resolve it from Presenter → Providers & budget (Not billed, Billed, or reconcile from
+  a dashboard task id). Only a job stopped before sending is reported as unbilled. The full state
+  table is in [`RECOVERY_AND_ROLLBACK.md`](RECOVERY_AND_ROLLBACK.md).
+- **Cost ledger.** `~/.avatar_v2/cloud_ledger.jsonl` (append-only, fsynced) records Runway's estimate
+  at creation and the credits actually charged at completion. A charge counts as actual only when
+  Runway reports it; failed, cancelled, timed-out or cost-less tasks keep their estimate as
+  *unconfirmed* until resolved. **Presenter → Providers & budget** shows charged, unconfirmed and
+  reserved spend.
 - **Output integrity.** Every finished job (local or cloud) records the SHA-256 of each output.
   **Presenter → Output integrity** re-verifies them. Runway receipts also hash each raw download.
 - **Candidates, not acceptance.** Slot jobs, seeded master-candidate batches, and manual imports

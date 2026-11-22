@@ -21,6 +21,16 @@ Branch audited: `avatar-v2-h3-desktop` @ `0c54e46` plus its uncommitted working 
 
 ## 1. Machine findings (highest impact first)
 
+> **Recovery pass, 2026-11-22** (details in [`RECOVERY_AND_ROLLBACK.md`](RECOVERY_AND_ROLLBACK.md)):
+>
+> - Finding 3 is resolved: the legacy tree is back at `/home/jd/avatar_project_legacy`, and all 35
+>   symlinks resolve.
+> - Finding 2 is resolved for development: the new `.venv314` launches the GUI from source, and the
+>   3.12 `.venv` is kept as a rollback.
+> - Finding 7 is resolved: the package was rebuilt on Python 3.14. The previous package is preserved,
+>   but it no longer launches on the upgraded OS.
+> - Finding 1 is still deferred by decision; see [`STORAGE_RECOVERY_PLAN.md`](STORAGE_RECOVERY_PLAN.md).
+
 1. **The local ComfyUI renderer stack is gone — UNAVAILABLE / MISCONFIGURED.**
    `/home/jd/AvatarForge` (ComfyUI 0.33, its venv, and every H3 / Wan / Qwen
    text-encoder / VAE / LoRA / ESRGAN weight) no longer exists. A full-filesystem search

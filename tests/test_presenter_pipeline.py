@@ -210,12 +210,16 @@ def _queue(tmp_path, items=()):
 def test_restart_resumes_created_cloud_tasks_instead_of_failing_or_rebilling(tmp_path):
     queue = _queue(tmp_path)
     created = _runway_item(tmp_path, status="running", prompt_id=TASK_ID, cloud_receipt={"task_id": TASK_ID, "uploads": [{"file": "id.png"}]})
-    never_created = _runway_item(tmp_path, status="running")
+    never_sent = _runway_item(tmp_path, status="running", cloud_receipt={"submission": {"state": "preparing"}})
+    unknown = _runway_item(tmp_path, status="running")  # no durable marker: the request may have been sent
     restored = queue._item_from_dict(queue._item_to_dict(created))
     assert restored.status == "queued" and restored.prompt_id == TASK_ID
     assert restored.cloud_receipt["reconcile_after_restart"] is True
-    failed = queue._item_from_dict(queue._item_to_dict(never_created))
-    assert failed.status == "error" and "nothing was billed" in failed.error
+    failed = queue._item_from_dict(queue._item_to_dict(never_sent))
+    assert failed.status == "error" and "no generation was billed" in failed.error
+    uncertain = queue._item_from_dict(queue._item_to_dict(unknown))
+    assert uncertain.status == "error" and uncertain.error_category == "cloud_submission_uncertain"
+    assert uncertain.cloud_receipt["charge_status"] == "unknown" and "billed" not in uncertain.error
 
 
 def test_resumed_job_polls_the_existing_task_and_keeps_the_original_receipt(tmp_path, monkeypatch):
@@ -271,7 +275,7 @@ def test_task_creation_is_persisted_and_logged_before_polling(tmp_path):
     saved = json.loads((queue.work_dir / "items" / f"{item.id}.json").read_text())
     assert saved["prompt_id"] == TASK_ID
     item.status = "done"
-    item.cloud_receipt.update({"status": "SUCCEEDED", "credits_charged": 7})
+    item.cloud_receipt.update({"status": "SUCCEEDED", "credits_charged": 7, "charge_status": "actual"})
     queue._record_cloud_final(item)
     states = cloud_ledger.task_states(queue._ledger_path)
     assert states[TASK_ID]["status"] == "SUCCEEDED" and states[TASK_ID]["credits_charged"] == 7

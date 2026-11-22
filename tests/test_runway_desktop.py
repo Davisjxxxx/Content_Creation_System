@@ -537,11 +537,12 @@ def test_cloud_jobs_route_to_runway_and_skip_local_gpu_cleanup(tmp_path, monkeyp
     queue._execute(item)
     assert queue.memory_manager.calls == []
     assert item.memory_events[0]["skipped"] is True
-    assert item.cloud_receipt == {"credits_charged": 8}
+    assert item.cloud_receipt["credits_charged"] == 8
+    assert item.cloud_receipt["submission"] == {"state": "preparing"}  # durable pre-send marker
     public = item.public()
     assert public["provider"] == "runway" and public["cloud_receipt"]["credits_charged"] == 8
     restored = queue._item_from_dict(queue._item_to_dict(item))
-    assert restored.cloud_receipt == {"credits_charged": 8} and restored.provider_config.provider == "runway"
+    assert restored.cloud_receipt["credits_charged"] == 8 and restored.provider_config.provider == "runway"
 
 
 def test_local_comfyui_jobs_keep_forced_preclean(tmp_path, monkeypatch):

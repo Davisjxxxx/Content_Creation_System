@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -25,6 +26,25 @@ MEMORY_SENSITIVE_PROFILES = {"int8_12gb", "low_memory", "low_memory_quality"}
 def _uses_local_gpu(provider: Any) -> bool:
     """Local renderers (ComfyUI) need VRAM management; cloud providers declare uses_local_gpu = False."""
     return bool(getattr(provider, "uses_local_gpu", True))
+
+
+def write_durable(path: Path, text: str) -> None:
+    """Atomically replace ``path`` and fsync it, so a crash leaves either the old or the new record."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    with open(temporary, "w", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    try:
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError:
+        pass  # directory fsync is unsupported on some platforms
 
 
 def _cloud_memory_event(reason: str) -> dict[str, Any]:
@@ -233,6 +253,7 @@ class RenderQueue:
     def _item_from_dict(self, data: dict[str, Any]) -> QueuedRender:
         status = data.get("status", "queued")
         provider = (data.get("provider_config") or {}).get("provider", "comfyui")
+        submission = str(((data.get("cloud_receipt") or {}).get("submission") or {}).get("state") or "")
         if status == "running" and provider != "comfyui" and data.get("prompt_id"):
             # The cloud task was already created (and may be billing). Reconcile it by polling
             # the existing task on the next run instead of failing it or creating a duplicate.
@@ -240,11 +261,28 @@ class RenderQueue:
             receipt = dict(data.get("cloud_receipt") or {})
             receipt["reconcile_after_restart"] = True
             data["cloud_receipt"] = receipt
+        elif status == "running" and provider != "comfyui" and submission != "preparing":
+            # The app stopped while (or possibly after) sending the create request. Runway may have
+            # accepted and billed it, so never call it unbilled and never resubmit automatically.
+            status = "error"
+            receipt = dict(data.get("cloud_receipt") or {})
+            receipt.update({"status": "UNCERTAIN", "charge_status": "unknown", "credits_charged": None})
+            receipt.setdefault("submission", {})["state"] = "uncertain"
+            data["cloud_receipt"] = receipt
+            data["error"] = data.get("error") or "The app stopped while submitting this job to Runway."
+            data["error_category"] = "cloud_submission_uncertain"
+            data["error_message"] = (
+                "Runway may have accepted and billed this task before the app stopped. It was not resubmitted; check "
+                "your Runway usage, then resolve it under Presenter → Providers & budget."
+            )
+            data["finished_at"] = data.get("finished_at") or time.time()
         elif status == "running":
             status = "error"
             interrupted = "Render was interrupted by an application restart."
             if provider != "comfyui":
-                interrupted += " No cloud task had been created, so nothing was billed; queue it again to retry."
+                interrupted += (
+                    " No request had reached Runway's task API, so no generation was billed; queue it again to retry."
+                )
             data["error"] = data.get("error") or interrupted
             data["error_category"] = data.get("error_category") or "render_failed"
             data["error_message"] = data.get("error_message") or data["error"]
@@ -283,9 +321,19 @@ class RenderQueue:
         for path in sorted(items_dir.glob("*.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                self._items.append(self._item_from_dict(data))
+                was_running = data.get("status") == "running"
+                item = self._item_from_dict(data)
             except (json.JSONDecodeError, KeyError, OSError, ValueError):
                 continue
+            self._items.append(item)
+            if was_running and item.status == "error":
+                # Interrupted by a restart: record it once (an uncertain cloud submission keeps its
+                # estimate reserved in the ledger) and retire the stale file so it cannot reappear.
+                try:
+                    self._record_cloud_final(item)
+                    self._persist_history(item)
+                except OSError:
+                    pass
 
     def _drop_item_file(self, item: QueuedRender) -> None:
         path = self.work_dir / "items" / f"{item.id}.json"
@@ -370,47 +418,81 @@ class RenderQueue:
         frame = self._extract_last_frame(str(video), target)
         item.outputs.append(str(frame))
 
+    def _persist_item_durable(self, item: QueuedRender) -> None:
+        """Durably write one item's record. Raises on failure, so callers can stop safely."""
+        write_durable(self.work_dir / "items" / f"{item.id}.json", json.dumps(self._item_to_dict(item), indent=2))
+        try:
+            self._persist()  # the summary file is best-effort; the item file above is the durable record
+        except OSError:
+            pass
+
+    def _record_cloud_submission(self, item: QueuedRender, receipt: dict[str, Any]) -> None:
+        """Durably note that a create request is about to be sent (raises, aborting the send, on failure)."""
+        with self._lock:
+            item.cloud_receipt = {**item.cloud_receipt, **dict(receipt)}
+            self._persist_item_durable(item)
+
     def _record_cloud_task(self, item: QueuedRender, task_id: str, receipt: dict[str, Any]) -> None:
-        """Persist a cloud task id the moment it exists, so a crash or restart can reconcile it."""
+        """Durably persist a cloud task id the moment it exists (raises on failure; the provider then cancels)."""
         with self._lock:
             item.prompt_id = task_id
-            item.cloud_receipt = dict(receipt)
-            self._persist()
-        cloud_ledger.record(
-            getattr(self, "_ledger_path", None),
-            {
-                "task_id": task_id,
-                "queue_id": item.id,
-                "label": item.label,
-                "provider": item.provider_config.provider,
-                "model": receipt.get("model"),
-                "status": "CREATED",
-                "estimate_credits": (receipt.get("estimate") or {}).get("credits"),
-                "api_estimated_credits": receipt.get("api_estimated_credits"),
-            },
-        )
+            item.cloud_receipt = {**item.cloud_receipt, **dict(receipt)}
+            self._persist_item_durable(item)
+        try:
+            cloud_ledger.record(
+                getattr(self, "_ledger_path", None),
+                {
+                    "task_id": task_id,
+                    "queue_id": item.id,
+                    "label": item.label,
+                    "provider": item.provider_config.provider,
+                    "model": receipt.get("model"),
+                    "status": "CREATED",
+                    "estimate_credits": (receipt.get("estimate") or {}).get("credits"),
+                    "api_estimated_credits": receipt.get("api_estimated_credits"),
+                },
+            )
+        except OSError as exc:  # the task id itself is already durable in the item record
+            item.memory_events.append({"reason": "cloud-ledger-write-failed", "error": f"{type(exc).__name__}: {exc}"})
 
     def _record_cloud_final(self, item: QueuedRender) -> None:
+        if item.provider_config.provider == "comfyui":
+            return
         receipt = item.cloud_receipt or {}
         task_id = str(receipt.get("task_id") or item.prompt_id or "")
-        if not task_id or item.provider_config.provider == "comfyui":
+        submission = receipt.get("submission") or {}
+        estimate = (receipt.get("estimate") or {}).get("credits")
+        if estimate is None:
+            estimate = item.runtime.get("estimate_credits")
+        base = {
+            "queue_id": item.id,
+            "label": item.label,
+            "provider": item.provider_config.provider,
+            "model": receipt.get("model") or item.runtime.get("model"),
+            "estimate_credits": estimate,
+            "api_estimated_credits": receipt.get("api_estimated_credits"),
+            "failure_code": receipt.get("failure_code"),
+            "outputs": len(item.outputs),
+        }
+        if not task_id:
+            if submission.get("state") not in {"sending", "uncertain"}:
+                return  # nothing reached Runway's task API, so nothing could be billed
+            cloud_ledger.record(
+                getattr(self, "_ledger_path", None),
+                {**base, "request_key": submission.get("request_key") or f"req:{item.id}", "status": "UNCERTAIN",
+                 "charge_status": "unknown", "credits_charged": None},
+            )
             return
         status = str(receipt.get("status") or "")
         if status not in cloud_ledger.FINAL_STATUSES:
             status = "SUCCEEDED" if item.status == "done" else "CANCELLED" if item.status == "cancelled" else "FAILED"
+        charge = receipt.get("charge_status")
+        if charge not in {"actual", "none"}:
+            charge = "unknown"  # the estimate stays reserved until Runway's charge is known or resolved
         cloud_ledger.record(
             getattr(self, "_ledger_path", None),
-            {
-                "task_id": task_id,
-                "queue_id": item.id,
-                "label": item.label,
-                "provider": item.provider_config.provider,
-                "model": receipt.get("model"),
-                "status": status,
-                "credits_charged": receipt.get("credits_charged"),
-                "failure_code": receipt.get("failure_code"),
-                "outputs": len(item.outputs),
-            },
+            {**base, "task_id": task_id, "status": status, "charge_status": charge,
+             "credits_charged": receipt.get("credits_charged") if charge == "actual" else (0 if charge == "none" else None)},
         )
 
     def _make_provider(self, config: ProviderConfig) -> Any:
@@ -454,6 +536,13 @@ class RenderQueue:
             item.memory_events.append(_cloud_memory_event(f"pre-render:{item.profile}"))
             if item.prompt_id:
                 job.asset_map["RUNWAY_RESUME_TASK_ID"] = item.prompt_id
+            else:
+                # Durable marker: until the provider reports "sending", nothing can have been billed.
+                with self._lock:
+                    item.cloud_receipt = {**item.cloud_receipt, "submission": {"state": "preparing"}}
+                    self._persist_item_durable(item)
+            if hasattr(provider, "on_submission_started"):
+                provider.on_submission_started = lambda receipt: self._record_cloud_submission(item, receipt)
             if hasattr(provider, "on_task_created"):
                 provider.on_task_created = lambda task_id, receipt: self._record_cloud_task(item, task_id, receipt)
             result = provider.render(item.workflow, job)

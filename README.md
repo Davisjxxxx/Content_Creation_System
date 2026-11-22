@@ -187,6 +187,19 @@ pip install -e '.[desktop,dev]'
 avatar-v2-desktop
 ```
 
+The venv must use the same Python version as the system's GTK bindings (`gi`). On this machine,
+after the OS moved to Python 3.14, that is `.venv314`:
+
+```bash
+python3.14 -m venv --system-site-packages .venv314
+.venv314/bin/pip install -e '.[desktop,dev]'
+.venv314/bin/python -m pytest -q
+scripts/launch_avatar_v2.sh   # prefers dist/AvatarV2, then .venv314; AVATAR_V2_FROM_SOURCE=1 forces source
+```
+
+The older Python 3.12 `.venv` is kept as a rollback for the CLI and tests. Rollback paths are listed
+in [`docs/RECOVERY_AND_ROLLBACK.md`](docs/RECOVERY_AND_ROLLBACK.md).
+
 ## Linux desktop launcher
 
 ```bash

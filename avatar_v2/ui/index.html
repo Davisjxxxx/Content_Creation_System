@@ -649,7 +649,9 @@ details.gpudet{margin-top:6px}
     <div class="status"><button class="btn" onclick="loadBrandPreset()">Load BRAND Instructor</button><button class="mini" onclick="refreshPresenter()">Refresh</button></div></div>
 
   <section class="section"><div class="head"><h3>Providers &amp; budget</h3><span>Availability and cloud spend</span></div>
-    <div class="card" style="padding:14px"><div id="prProviders" class="tiny">Checking…</div><div id="prSpend" class="tiny" style="margin-top:8px"></div></div></section>
+    <div class="card" style="padding:14px"><div id="prProviders" class="tiny">Checking…</div><div id="prSpend" class="tiny" style="margin-top:8px"></div>
+      <div class="head" style="margin-top:12px"><h3>Unresolved cloud charges</h3><span>Unknown charges count at their estimate until you resolve them; nothing is resubmitted automatically</span></div>
+      <div id="prUnresolved" class="tiny">None.</div></div></section>
 
   <section class="section"><div class="head"><h3>Review &amp; approval queue</h3><span>Generated and imported candidates wait here; nothing is accepted automatically</span></div>
     <div class="card" style="padding:14px"><div id="prReview" class="tiny">No pending candidates.</div></div></section>
@@ -1208,6 +1210,7 @@ function rwReceiptHtml(r){
   lines.push('Uploads to Runway: '+((r.uploads||[]).map(u=>`${esc(u.role)} — ${esc(u.file)} (${fmtBytesB(u.bytes)}, ${esc(u.transfer)})`).join('; ')||'none'));
   if(r.prompt_receipt)lines.push(`Prompt ${r.prompt_receipt.chars}/${r.prompt_receipt.budget} characters${r.prompt_receipt.dropped_sections.length?' · trimmed to fit: '+esc(r.prompt_receipt.dropped_sections.join(', ')):''}`);
   if(r.budget)lines.push(`Budget after this job: today ${r.budget.today_projected}/${r.budget.daily_cap} · month ${r.budget.month_projected}/${r.budget.monthly_cap} credits${r.budget.ok?'':' · <b>over budget</b>'}`);
+  if(r.unresolved&&r.unresolved.count)lines.push(`⚠ ${r.unresolved.count} earlier submission(s) have unknown charges (${r.unresolved.credits} credits reserved). See Presenter → Unresolved cloud charges.`);
   if(r.identity&&r.identity.master_sha256)lines.push(`Identity lock: master ${esc(r.identity.master_sha256.slice(0,12))}… · primary ${esc((r.identity.primary_sha256||'none').slice(0,12))}`);
   (r.warnings||[]).forEach(w=>lines.push('⚠ '+esc(w)));
   if(r.gate)lines.push('<b>Not ready:</b> '+esc(r.gate));
@@ -1225,10 +1228,11 @@ async function rwQueue(){
   if(r.gate){log('Runway: '+r.gate);return}
   if(!r.within_cap){log(`Runway: the estimate (${r.estimate.credits} credits) is above the cap (${r.cap}). Raise it under Advanced only if intended.`);return}
   if(r.budget&&!r.budget.ok){log('Runway: '+r.budget.error);return}
+  const ackUnresolved=await rwAckUnresolved(r);if(!ackUnresolved){log('Runway job not sent: resolve the unknown earlier charges first.');return}
   const files=(r.uploads||[]).map(u=>`• ${u.role}: ${u.file} (${fmtBytesB(u.bytes)})`).join('\n')||'• none';
   const ok=confirm(`Send this job to Runway?\n\nModel: ${r.model.label}\nEstimated cost: ${r.estimate.credits} credits (≈ $${Number(r.estimate.usd).toFixed(2)})${r.estimate.upper_bound?' (upper bound)':''}\n\nFiles uploaded to Runway:\n${files}\n\nThe compiled prompt is sent as well. Outputs are downloaded to this computer.`);
   if(!ok){log('Runway job not sent.');return}
-  const p=rwPayload();p.confirm_cloud_upload=true;p.confirmed_estimate_credits=r.estimate.credits;
+  const p=rwPayload();p.confirm_cloud_upload=true;p.confirmed_estimate_credits=r.estimate.credits;if(r.unresolved&&r.unresolved.count)p.acknowledge_unresolved=true;
   const q=await window.pywebview.api.queue_runway(p);
   if(q.ok){(q.queued||[]).forEach(x=>log(`Runway job queued ${x.queue_id}${x.variation?' · '+x.variation:''}`));refreshQueue()}else log('Runway: '+q.error);
 }
@@ -1255,7 +1259,14 @@ function prInit(p){
   if(!$('prVoiceDesign').value&&p.brand&&p.brand.voice_profile)$('prVoiceDesign').value=p.brand.voice_profile.design_prompt||'';
   prRefreshVoiceProfiles();prRefreshVoiceovers();rwProfilesRefresh();
 }
-async function refreshPresenter(){await Promise.all([prProviders(),prSpend(),prReview(),prRefreshVoiceProfiles(),prRefreshVoiceovers(),prQaList()])}
+async function refreshPresenter(){await Promise.all([prProviders(),prSpend(),prUnresolved(),prReview(),prRefreshVoiceProfiles(),prRefreshVoiceovers(),prQaList()])}
+async function prUnresolved(){const r=await window.pywebview.api.runway_unresolved();const root=$('prUnresolved');const items=r.items||[];if(!items.length){root.textContent='None.';return}root.innerHTML='';
+  items.forEach(u=>{const d=document.createElement('div');d.className='row';d.style.alignItems='center';d.innerHTML=`<span><b>${esc(u.label||u.key)}</b> · ${esc(u.status)} · ${esc(u.model||'')} · ${u.reserved_credits} credits reserved${u.task_id?' · task '+esc(u.task_id.slice(0,8))+'…':' · no task id received'}</span>`;
+    const notBilled=document.createElement('button');notBilled.className='mini';notBilled.textContent='Not billed';notBilled.onclick=async()=>{if(!confirm('Confirm that your Runway usage shows no charge for this job?'))return;const x=await window.pywebview.api.runway_resolve_charge({key:u.key,resolution:'not_billed'});log(x.ok?'Charge resolved: not billed':'Resolve: '+x.error);prUnresolved();prSpend()};
+    const billed=document.createElement('button');billed.className='mini';billed.textContent='Billed…';billed.onclick=async()=>{const v=prompt('Credits Runway charged for this job (from your Runway usage page):');if(v===null)return;const x=await window.pywebview.api.runway_resolve_charge({key:u.key,resolution:'billed',credits:Number(v)});log(x.ok?`Charge resolved: ${x.credits_charged} credits`:'Resolve: '+x.error);prUnresolved();prSpend()};
+    const rec=document.createElement('button');rec.className='mini';rec.textContent='Reconcile with task id…';rec.onclick=async()=>{const t=prompt('Paste the task id from your Runway dashboard (nothing is resubmitted):',u.task_id||'');if(!t)return;const x=await window.pywebview.api.runway_reconcile_task({key:u.key,task_id:t.trim()});log(x.ok?(x.terminal?`Reconciled: ${x.status} · ${(x.outputs||[]).length} output(s) downloaded`:x.message):'Reconcile: '+x.error);prUnresolved();prSpend()};
+    d.appendChild(notBilled);d.appendChild(billed);d.appendChild(rec);root.appendChild(d)})}
+async function rwAckUnresolved(r){if(!r||!r.unresolved||!r.unresolved.count)return true;return confirm(`${r.unresolved.count} earlier Runway submission(s) have unknown charges (${r.unresolved.credits} credits reserved). Submitting new work could bill twice if one of them is the same job. Resolve them under Presenter first, or continue anyway?`)}
 async function prProviders(){const r=await window.pywebview.api.provider_status();if(!r.ok)return;$('prProviders').innerHTML=Object.values(r.providers).map(p=>`<div><span class="s-dot ${p.available?'live':'bad'}"></span> <b>${esc(p.label)}</b>: ${p.available?(p.mode?esc(p.mode):'available'):'unavailable'}${p.detail?' · '+esc(p.detail):''}</div>`).join('')}
 async function prSpend(){const r=await window.pywebview.api.runway_spend();if(!r.ok)return;const b=r.budget,s=r.summary;$('prSpend').textContent=`Runway credits · today ${b.today_charged} charged + ${b.today_reserved} reserved + ${b.pending_queued} queued, budget ${b.daily_cap} · month ${b.month_charged} charged + ${b.month_reserved} reserved, budget ${b.monthly_cap} · all-time ${s.all_time_charged} (≈ $${(s.all_time_charged*0.01).toFixed(2)})`}
 async function prReview(){const r=await window.pywebview.api.review_queue();const root=$('prReview');const items=r.items||[];if(!items.length){root.textContent='No pending candidates.';return}
@@ -1303,7 +1314,9 @@ async function prLessonSave(){const r=await window.pywebview.api.lesson_save({le
 async function prLessonPlan(){const r=await window.pywebview.api.lesson_plan($('prLessonId').value.trim());if(!r.ok){$('prLessonPlan').textContent=r.error;return}$('prLessonPlan').innerHTML=r.rows.map(x=>`${esc(x.title)}: <b>${esc(x.state.replace(/_/g,' '))}</b>`).join('<br>')}
 async function prLessonQueue(){const id=$('prLessonId').value.trim();const basePayload=rwPayload();const dry=await window.pywebview.api.lesson_queue_changed({lesson_id:id,base:basePayload,dry_run:true});if(!dry.ok){log('Lesson: '+dry.error);return}if(!dry.to_render.length){log('Lesson: every segment is unchanged; nothing to render.');return}
   if(!confirm(`Render ${dry.to_render.length} changed segment(s) on Runway for about ${dry.total_credits} credits? Unchanged segments: ${dry.unchanged.length}.`))return;
-  const r=await window.pywebview.api.lesson_queue_changed({lesson_id:id,base:basePayload,confirm_cloud_upload:true,confirmed_estimate_credits:dry.total_credits});log(r.ok?`Lesson segments queued: ${r.to_render.join(', ')}`:'Lesson: '+r.error);refreshQueue();prLessonPlan()}
+  const unresolved=await window.pywebview.api.runway_unresolved();const pendingCharges=(unresolved.items||[]).length;
+  if(pendingCharges&&!confirm(`${pendingCharges} earlier Runway submission(s) have unknown charges. Continue anyway?`))return;
+  const r=await window.pywebview.api.lesson_queue_changed({lesson_id:id,base:basePayload,confirm_cloud_upload:true,confirmed_estimate_credits:dry.total_credits,acknowledge_unresolved:pendingCharges>0});log(r.ok?`Lesson segments queued: ${r.to_render.join(', ')}`:'Lesson: '+r.error);refreshQueue();prLessonPlan()}
 async function prVerify(){const r=await window.pywebview.api.verify_outputs($('prVerifyId').value.trim());$('prVerifyResult').innerHTML=r.results?`${r.ok?'<b>All outputs verified</b>':'<b>Integrity problem</b>'} · verified ${r.verified}${r.changed.length?' · changed: '+r.changed.map(x=>esc(base(x))).join(', '):''}${r.missing.length?' · missing: '+r.missing.map(x=>esc(base(x))).join(', '):''}`:esc(r.error||'')}
 async function rwProfilesRefresh(){const r=await window.pywebview.api.provider_profiles_list();state.runway.profiles=r.items||[];rwFill('rwProfileSelect',state.runway.profiles.length?state.runway.profiles.map(p=>({value:p.name,label:`${p.name} · ${p.model}`})):[{value:'',label:'No saved profiles'}])}
 async function rwProfileSave(){const p=rwPayload().runway;const r=await window.pywebview.api.provider_profile_save({...p,name:$('rwProfileName').value.trim()});log(r.ok?`Provider profile saved: ${r.profile.name}`:'Profile: '+r.error);rwProfilesRefresh()}
@@ -1421,7 +1434,7 @@ async function runUiTest(){
     const rwLocal=await api.queue_render({...payload(),shot:{...payload().shot,engine_preference:'runway'}});report.runway_checks.local_queue_refused=rwLocal.ok===false;
     state.avatar=rwOriginalAvatar;state.refs=rwOriginalRefs;refreshRefs();
     // Presenter production view: read-only probes (nothing is installed, generated or uploaded).
-    for(const name of ['provider_status','brand_instructor_spec','review_queue','runway_spend','voiceover_list','voice_profiles_list','qa_reports_list','provider_profiles_list','lesson_list','reference_imports_list'])await probe(name,()=>api[name]());
+    for(const name of ['provider_status','brand_instructor_spec','review_queue','runway_spend','runway_unresolved','voiceover_list','voice_profiles_list','qa_reports_list','provider_profiles_list','lesson_list','reference_imports_list'])await probe(name,()=>api[name]());
     report.presenter_checks={slots:$('rwSlot').options.length,import_sources:$('prImportSource').options.length,still_row_visible:(()=>{setEngine('runway');$('rwTask').value='still';rwTaskChanged();return $('rwStillRow').style.display!=='none'})(),tts_row_hidden_for_still:$('rwTtsRow').style.display==='none',tts_row_for_narration:(()=>{$('rwTask').value='narration';rwTaskChanged();return $('rwTtsRow').style.display!=='none'})(),audio_row_for_performance:(()=>{$('rwTask').value='performance';rwTaskChanged();return $('rwAudioRow').style.display!=='none'&&$('rwOutputAudio').value==='mute'})()};
     $('rwTask').value='still';rwTaskChanged();
     setEngine(originalEngine);setProfile(originalProfile);

@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -83,6 +84,12 @@ OUTPUT_EXTENSIONS = {
     "application/zip": ".zip",
 }
 
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 _TAG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{2,15}$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
@@ -123,9 +130,15 @@ class RunwayAPIError(RunwayError):
         *,
         status_code: int | None = None,
         receipt: dict[str, Any] | None = None,
+        request_sent: bool | None = None,
+        ambiguous: bool = False,
     ) -> None:
         super().__init__(message, receipt=receipt)
         self.status_code = status_code
+        # False only when the request provably never left this machine (connect/pool failures).
+        self.request_sent = request_sent
+        # True when a response arrived but cannot prove whether a task was created.
+        self.ambiguous = ambiguous
         if status_code is None:
             self.error_category = "cloud_unreachable"
             self.error_message = "Runway could not be reached. Check the network connection and try again."
@@ -167,6 +180,44 @@ class RunwayTaskFailed(RunwayError):
 class RunwayTaskCancelled(RunwayError):
     error_category = "cancelled"
     error_message = "The Runway task was cancelled."
+
+
+class RunwayUncertainSubmission(RunwayError):
+    """The create request may have reached Runway, but its outcome is unknown."""
+
+    error_category = "cloud_submission_uncertain"
+    error_message = (
+        "Runway may have accepted (and billed) this task, but the response was lost. It will not be resubmitted "
+        "automatically. Check your Runway usage, then resolve it under Presenter → Providers & budget."
+    )
+
+
+class RunwayPersistenceError(RunwayError):
+    """A required durable record could not be written, so the job was stopped safely."""
+
+    error_category = "cloud_persistence"
+    error_message = (
+        "Avatar V2 could not durably record the Runway submission, so it stopped instead of risking an untracked "
+        "paid task. The receipt says whether anything was sent."
+    )
+
+
+# Statuses that prove the server rejected the request, so no task exists and nothing is billed.
+DEFINITIVE_REJECTIONS = frozenset({400, 401, 402, 403, 404, 405, 409, 413, 415, 422, 429})
+# httpx failures that happen before any request byte is sent.
+_NOT_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol)
+
+
+def classify_create_failure(exc: BaseException) -> str:
+    """'rejected', 'not_sent' (both definitely unbilled) or 'uncertain' for a failed task creation."""
+    if isinstance(exc, RunwayAPIError):
+        if exc.ambiguous:
+            return "uncertain"
+        if exc.status_code in DEFINITIVE_REJECTIONS:
+            return "rejected"
+        if exc.status_code is None and exc.request_sent is False:
+            return "not_sent"
+    return "uncertain"
 
 
 class RunwayTimeout(RunwayError, TimeoutError):
@@ -1061,7 +1112,10 @@ class RunwayClient:
             try:
                 response = self._api.request(method, path, json=json_body, params=params)
             except httpx.HTTPError as exc:
-                raise RunwayAPIError(f"{context}: network error ({type(exc).__name__})") from exc
+                raise RunwayAPIError(
+                    f"{context}: network error ({type(exc).__name__})",
+                    request_sent=not isinstance(exc, _NOT_SENT_ERRORS),
+                ) from exc
             if response.status_code == 429 and attempt < retry_rate_limit:
                 attempt += 1
                 try:
@@ -1097,11 +1151,15 @@ class RunwayClient:
     def create_task(self, endpoint: str, body: dict[str, Any]) -> dict[str, Any]:
         # 429 means no task was created, so retrying is safe. Other errors are not retried
         # to avoid accidentally creating (and paying for) a duplicate task.
-        data = self._json(
-            self._request("POST", endpoint, context="Task creation", json_body=body, retry_rate_limit=3)
-        )
+        response = self._request("POST", endpoint, context="Task creation", json_body=body, retry_rate_limit=3)
+        try:
+            data = self._json(response)
+        except RunwayAPIError as exc:
+            raise RunwayAPIError(str(exc), status_code=response.status_code, ambiguous=True) from exc
         if not data.get("id"):
-            raise RunwayAPIError("Runway did not return a task id.")
+            # A success status without an id cannot prove whether a task exists.
+            raise RunwayAPIError("Runway accepted the request but returned no task id.", status_code=response.status_code,
+                                 ambiguous=True)
         return data
 
     def get_task(self, task_id: str) -> dict[str, Any]:
@@ -1401,8 +1459,10 @@ class RunwayProvider:
         self._monotonic = monotonic
         self._cancel = threading.Event()
         self._task_id: str | None = None
-        # Set by the render queue: called with (task_id, receipt) as soon as Runway accepts a task,
-        # so the id is persisted before polling starts and can be reconciled after a restart.
+        # Set by the render queue. Both hooks must persist durably and raise on failure:
+        # on_submission_started(receipt) runs just before the create request is sent;
+        # on_task_created(task_id, receipt) runs as soon as Runway returns a task id.
+        self.on_submission_started: Callable[[dict[str, Any]], None] | None = None
         self.on_task_created: Callable[[str, dict[str, Any]], None] | None = None
 
     def _output_root(self) -> Path:
@@ -1521,6 +1581,68 @@ class RunwayProvider:
         # Processed files come first; the untouched downloads stay available after them.
         return processed + originals
 
+    @staticmethod
+    def _record_charge(task: dict[str, Any], receipt: dict[str, Any]) -> None:
+        """Actual credits only when Runway reports them; otherwise the charge stays unknown (estimate kept)."""
+        cost = (task.get("cost") or {}).get("credits")
+        if isinstance(cost, (int, float)):
+            receipt.update({"credits_charged": cost, "charge_status": "actual"})
+        else:
+            receipt.update({"credits_charged": None, "charge_status": "unknown"})
+
+    def _submit(self, client: RunwayClient, endpoint: str, body: dict[str, Any], receipt: dict[str, Any]) -> str:
+        """Create the task with durable before/after records. Never retries an uncertain submission."""
+        receipt["submission"] = {"state": "sending", "request_key": f"req:{uuid.uuid4().hex}", "sent_at": _utc_now()}
+        if self.on_submission_started is not None:
+            try:
+                self.on_submission_started(dict(receipt))
+            except Exception as exc:
+                receipt["submission"]["state"] = "not_sent"
+                receipt.update({"charge_status": "none", "credits_charged": 0})
+                raise RunwayPersistenceError(
+                    f"Could not durably record the upcoming Runway submission ({type(exc).__name__}); nothing was sent."
+                ) from exc
+        try:
+            created = client.create_task(endpoint, body)
+        except RunwayError as exc:
+            outcome = classify_create_failure(exc)
+            receipt["submission"]["state"] = outcome
+            if outcome == "uncertain":
+                receipt.update({"charge_status": "unknown", "credits_charged": None, "status": "UNCERTAIN"})
+                raise RunwayUncertainSubmission(
+                    f"Runway task creation outcome is unknown ({exc}). The task may exist and be billed; it will not "
+                    "be resubmitted automatically."
+                ) from exc
+            receipt.update({"charge_status": "none", "credits_charged": 0, "status": "NOT_CREATED"})
+            raise
+        task_id = str(created["id"])
+        self._task_id = task_id
+        receipt["task_id"] = task_id
+        receipt["status"] = "PENDING"
+        receipt["submission"]["state"] = "accepted"
+        receipt["api_estimated_credits"] = (created.get("estimatedCost") or {}).get("credits")
+        if self.on_task_created is not None:
+            try:
+                self.on_task_created(task_id, dict(receipt))
+            except Exception as exc:
+                # Never leave an untracked paid task running: cancel it, and keep the charge unknown.
+                receipt["persistence"] = f"failed: {type(exc).__name__}"
+                try:
+                    client.cancel_task(task_id)
+                    receipt.update({"status": "CANCELLED", "charge_status": "unknown", "credits_charged": None})
+                    receipt["submission"]["state"] = "cancelled_unpersisted"
+                except RunwayError:
+                    receipt["submission"]["state"] = "accepted_unpersisted"
+                    receipt["persistence_warning"] = (
+                        "The task id could not be saved and the task could not be cancelled; polling continues in memory."
+                    )
+                    return task_id
+                raise RunwayPersistenceError(
+                    f"Runway accepted task {task_id}, but its id could not be saved durably ({type(exc).__name__}), so "
+                    "the task was cancelled. Runway may still bill part of it; the estimate stays reserved until resolved."
+                ) from exc
+        return task_id
+
     def render(self, workflow: str, job: RenderJob) -> dict[str, Any]:
         spec = load_spec(job)
         model = model_spec(spec.get("model", ""))
@@ -1537,6 +1659,7 @@ class RunwayProvider:
             "uploads": [],
             "task_id": None,
             "status": "PREPARING",
+            "submission": {"state": "preparing"},
             "api_version": RUNWAY_API_VERSION,
         }
         try:
@@ -1546,7 +1669,8 @@ class RunwayProvider:
                     if not _UUID_RE.match(resume_task_id):
                         raise RunwayValidationError("The stored Runway task id is not valid; cannot reconcile it.")
                     task_id = resume_task_id
-                    receipt.update({"task_id": task_id, "status": "RECONCILING", "resumed": True})
+                    receipt.update({"task_id": task_id, "status": "RECONCILING", "resumed": True,
+                                    "submission": {"state": "accepted"}})
                     self._task_id = task_id
                 else:
                     media = self._resolve_media(client, spec, job, receipt, model)
@@ -1554,30 +1678,19 @@ class RunwayProvider:
                     receipt["request"] = redact_request(body)
                     if self._cancel.is_set():
                         raise RunwayTaskCancelled("Cancelled before the Runway task was created.")
-
-                    created = client.create_task(endpoint, body)
-                    task_id = str(created["id"])
-                    self._task_id = task_id
-                    receipt["task_id"] = task_id
-                    receipt["status"] = "PENDING"
-                    api_estimate = (created.get("estimatedCost") or {}).get("credits")
-                    receipt["api_estimated_credits"] = api_estimate
-                    if self.on_task_created is not None:
-                        try:
-                            self.on_task_created(task_id, dict(receipt))
-                        except Exception as hook_error:  # persistence trouble must not orphan the task
-                            receipt["persist_warning"] = f"{type(hook_error).__name__}: {hook_error}"
+                    task_id = self._submit(client, endpoint, body, receipt)
+                    api_estimate = receipt.get("api_estimated_credits")
                     cap = spec.get("max_credits")
                     if cap and isinstance(api_estimate, (int, float)) and api_estimate > float(cap):
                         try:
                             client.cancel_task(task_id)
                         except RunwayError:
                             pass
-                        receipt["status"] = "CANCELLED"
-                        receipt["credits_charged"] = 0
+                        receipt.update({"status": "CANCELLED", "charge_status": "unknown", "credits_charged": None})
                         raise RunwayBudgetError(
                             f"Runway estimated {api_estimate} credits for task {task_id}, above the {cap}-credit "
-                            "per-job cap; the task was cancelled before it ran."
+                            "per-job cap, so the task was cancelled immediately. Whether Runway bills a cancelled "
+                            "task is not reported, so its estimate stays reserved until resolved."
                         )
                     if self._cancel.is_set():
                         client.cancel_task(task_id)
@@ -1588,16 +1701,20 @@ class RunwayProvider:
                     if task.get("progress") is not None:
                         receipt["progress"] = task.get("progress")
 
-                task = client.wait_for_task(
-                    task_id,
-                    timeout_s=float(self.config.timeout_s),
-                    poll_interval_s=float(self.config.poll_interval_s),
-                    cancel_event=self._cancel,
-                    on_update=on_update,
-                )
+                try:
+                    task = client.wait_for_task(
+                        task_id,
+                        timeout_s=float(self.config.timeout_s),
+                        poll_interval_s=float(self.config.poll_interval_s),
+                        cancel_event=self._cancel,
+                        on_update=on_update,
+                    )
+                except (RunwayTaskCancelled, RunwayTimeout):
+                    receipt.update({"charge_status": "unknown", "credits_charged": None})
+                    raise
                 status = str(task.get("status"))
                 receipt["status"] = status
-                receipt["credits_charged"] = (task.get("cost") or {}).get("credits")
+                self._record_charge(task, receipt)
                 receipt["failure_code"] = task.get("failureCode")
                 receipt["created_at"] = task.get("createdAt")
                 if status == "FAILED":
@@ -1619,3 +1736,20 @@ class RunwayProvider:
         receipt["outputs"] = [Path(path).name for path in outputs]
         history = {key: value for key, value in task.items() if key != "output"}
         return {"prompt_id": task_id, "outputs": outputs, "history": history, "cloud_receipt": receipt}
+
+    def reconcile_task(self, task_id: str) -> dict[str, Any]:
+        """Check one existing task (for example found in the Runway dashboard) without creating anything."""
+        if not _UUID_RE.match(str(task_id or "")):
+            raise RunwayValidationError("Runway task ids are UUIDs.")
+        receipt: dict[str, Any] = {"provider": "runway", "task_id": task_id, "reconciled": True}
+        with self._client() as client:
+            task = client.get_task(task_id)
+            status = str(task.get("status"))
+            receipt["status"] = status
+            if status not in TERMINAL_STATUSES:
+                return {"terminal": False, "status": status, "outputs": [], "cloud_receipt": receipt}
+            self._record_charge(task, receipt)
+            receipt["failure_code"] = task.get("failureCode")
+            outputs = self._download_outputs(client, task_id, list(task.get("output") or [])) if status == "SUCCEEDED" else []
+        receipt["downloads_sha256"] = {Path(path).name: sha256_file(path) for path in outputs}
+        return {"terminal": True, "status": status, "outputs": outputs, "cloud_receipt": receipt}

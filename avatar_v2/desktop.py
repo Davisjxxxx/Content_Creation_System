@@ -2177,6 +2177,7 @@ class DesktopAPI(PresenterMixin):
             "cap": batch_cap if batch else cap,
             "within_cap": within_cap,
             "budget": self._budget_status(first["settings"], total),
+            "unresolved": self._unresolved_summary(),
             "uploads": uploads,
             "warnings": first["warnings"],
             "prompt": first["prompt"],
@@ -2236,6 +2237,9 @@ class DesktopAPI(PresenterMixin):
         budget = self._budget_status(settings, total)
         if not budget["ok"]:
             return {"ok": False, "error": budget["error"], "budget": budget}
+        guard = self._unresolved_guard(payload)
+        if guard:
+            return {"ok": False, "error": guard, "unresolved": self._unresolved_summary()}
         base_label = str(payload.get("label") or "").strip()
         items = []
         for entry in builds:
@@ -2420,10 +2424,13 @@ def main() -> None:
         ui_url += "?uitest=1"
 
     api = DesktopAPI()
+    # Expose only the allowlisted operations, never the API object's internals (queue, library, paths).
+    from .js_bridge import JsBridge
+
     window = webview.create_window(
         "Avatar V2",
         ui_url,
-        js_api=api,
+        js_api=JsBridge(api),
         width=1480,
         height=940,
         min_size=(1180, 760),
