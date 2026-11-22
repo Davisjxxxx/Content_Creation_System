@@ -550,7 +550,7 @@ async function engLoad(){let e;try{e=await window.pywebview.api.engine_status()}
   if(e.state!=='ready'&&st.opts.moveEngine==='local')stChipSet('moveEngine','best');
 }
 async function engStart(){const r=await window.pywebview.api.comfyui_start();log(r.ok?'GPU engine starting':'GPU engine: '+r.error);engLoad()}
-async function engStop(){const r=await window.pywebview.api.comfyui_stop();log(r.ok?'GPU engine stopped':'GPU engine: '+r.error);engLoad()}
+async function engStop(){$('setEngine').textContent='Stopping… (it can take a minute to release the models)';const r=await window.pywebview.api.comfyui_stop();log(r.ok?(r.message||'GPU engine stopped'):'GPU engine: '+r.error);engLoad()}
 
 /* ---------- My stuff ---------- */
 async function libLoad(){const r=await window.pywebview.api.studio_library(st.libKind);if(!r.ok)return;const items=r.items||[];$('libCount').textContent=`${items.length} item${items.length===1?'':'s'}`;

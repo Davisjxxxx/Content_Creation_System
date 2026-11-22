@@ -12,8 +12,12 @@ ENGINE_DIR="${AVATAR_V2_ENGINE_DIR:-$HOME/AvatarForge}"
 COMFY="$ENGINE_DIR/comfyui"
 VENV="$ENGINE_DIR/venv"
 BASE_PYTHON="${AVATAR_V2_ENGINE_PYTHON:-python3.12}"
-TORCH_INDEX="${AVATAR_V2_TORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
-TORCH_PINS="${AVATAR_V2_TORCH_PINS:-torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0}"
+# CUDA 13 PyTorch: current ComfyUI only enables its optimized CUDA kernels on cu130+ builds. This
+# needs an NVIDIA driver that supports CUDA 13 (580 or newer). For an older driver use, for example:
+#   AVATAR_V2_TORCH_INDEX=https://download.pytorch.org/whl/cu128 \
+#   AVATAR_V2_TORCH_PINS="torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0" scripts/setup_local_engine.sh
+TORCH_INDEX="${AVATAR_V2_TORCH_INDEX:-https://download.pytorch.org/whl/cu130}"
+TORCH_PINS="${AVATAR_V2_TORCH_PINS:-torch==2.14.1 torchvision==0.29.1 torchaudio==2.11.0}"
 MIN_FREE_GB="${AVATAR_V2_MIN_FREE_GB:-15}"
 HF="https://huggingface.co"
 

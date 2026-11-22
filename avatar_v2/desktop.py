@@ -1613,7 +1613,12 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         COMFY_PID_PATH.write_text(str(proc.pid), encoding="utf-8")
         return {"ok": True, "state": "STARTING", "pid": proc.pid}
 
-    def comfyui_stop(self) -> dict[str, Any]:
+    def comfyui_stop(self, wait_s: float = 90.0) -> dict[str, Any]:
+        """Ask the ComfyUI that Avatar V2 started to exit (SIGTERM only; never force-killed).
+
+        A loaded engine can take a minute to release its models, so a slow exit is reported as
+        "still shutting down", not as an error.
+        """
         current = self.comfyui_status()
         if not current["ready"] and not current["pid"]:
             return {"ok": True, "state": "STOPPED", "message": "ComfyUI is not running."}
@@ -1630,11 +1635,12 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             os.kill(pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + max(float(wait_s), 0.0)
         while time.monotonic() < deadline and Path(f"/proc/{pid}").exists():
             time.sleep(0.5)
         if Path(f"/proc/{pid}").exists():
-            return {"ok": False, "error": f"ComfyUI pid {pid} did not stop after SIGTERM."}
+            return {"ok": True, "state": "STOPPING", "pid": pid,
+                    "message": "ComfyUI is still shutting down (releasing its models); it finishes on its own."}
         try:
             COMFY_PID_PATH.unlink()
         except FileNotFoundError:
@@ -2453,9 +2459,9 @@ def main() -> None:
     api._self_window = window
     webview.start(debug=False)
     api.queue.shutdown()
-    try:  # stop ComfyUI if this app started it, so it doesn't keep holding GPU memory
+    try:  # stop ComfyUI if this app started it, so it doesn't keep holding GPU memory; don't hold up closing
         if api.comfyui_status().get("pid"):
-            api.comfyui_stop()
+            api.comfyui_stop(wait_s=3)
     except Exception:
         pass
 

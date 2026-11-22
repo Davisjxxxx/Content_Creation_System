@@ -31,7 +31,7 @@ FRAMES = 81  # Wan uses 4n+1 frames: 81 frames at 16 fps is about 5 seconds
 SECONDS = round(FRAMES / FPS)
 NEGATIVE = "blurry, distorted face, extra fingers, morphing, flicker, text, watermark, frozen still image"
 PROFILE = "low_memory"  # forces the safe GPU-memory cleanup before every local render
-# Measured on the RTX 4070 Laptop GPU (8 GB) on 2026-11-22; refreshed by the live test in the docs.
+# Measured on the RTX 4070 Laptop GPU (8 GB), 2026-11-22: 345 s for a 5 s 480p clip (docs/LOCAL_ENGINE.md).
 ESTIMATED_MINUTES = 6
 
 

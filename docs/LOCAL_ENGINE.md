@@ -26,12 +26,16 @@ scripts/setup_local_engine.sh   # about 27 GB of models plus about 7 GB for Comf
 - Re-runnable: finished files are verified and skipped, partial downloads resume, and every model
   is checked against its published SHA-256. It stops before a download that would leave less than
   15 GB free (`AVATAR_V2_MIN_FREE_GB`).
-- PyTorch 2.8 for CUDA 12.8 (works with the 580 driver's CUDA 13), in a Python 3.12 environment.
+- PyTorch 2.14.1 built for CUDA 13.0 (needs an NVIDIA driver with CUDA 13 support, 580 or newer), in a
+  Python 3.12 environment. Current ComfyUI only enables its optimized CUDA kernels on CUDA 13 builds; the
+  script's comments show the override for older drivers.
 
-The app starts ComfyUI when it opens (only if it's installed) and stops it when the app closes,
-if the app started it. **Settings → Your GPU engine** shows its state and has Start / Stop
-buttons; Stop frees the GPU memory. Extra ComfyUI flags go in the `comfyui_args` setting
-(default `--disable-auto-launch`).
+The app starts ComfyUI when it opens (only if it's installed; it is ready in about 10 seconds) and
+asks it to quit when the app closes, if the app started it. **Settings → Your GPU engine** shows its
+state and has Start / Stop buttons. Stop frees the GPU memory. A loaded engine can take about a minute
+to release its models; it is only ever asked to quit (SIGTERM), never force-killed. Extra ComfyUI flags
+go in the `comfyui_args` setting (default `--disable-auto-launch`); ComfyUI's own dynamic VRAM manager
+needs no tuning flags on 8 GB.
 
 ## GPU memory safety
 
@@ -44,10 +48,17 @@ another program's GPU process.
 
 Measured on 2026-11-22: RTX 4070 Laptop GPU (8 GB) with 62 GB RAM and ComfyUI defaults.
 
-| Measurement | Value |
-|---|---|
-| First clip (includes loading the models from disk) | _pending_ |
-| Peak VRAM during the render | _pending_ |
-| Pre-render cleanup | _pending_ |
+| Measurement | PyTorch 2.8 / CUDA 12.8, first run (models loaded from disk) | PyTorch 2.14.1 / CUDA 13.0 (the default) |
+|---|---|---|
+| Whole job, queued to finished | 390 s | **345 s (about 5¾ minutes)** |
+| ComfyUI render time | 376 s | 331 s |
+| Peak VRAM (whole GPU, including about 1.3 GB used by the desktop) | 7,396 MB of 8,188 | 7,503 MB of 8,188 |
+| Pre-render cleanup (`POST /free`, forced by the `low_memory` profile) | requested, recorded | requested, recorded |
+| Post-render cleanup (forced) | not verified (that test stopped the engine too early) | requested, freed 224 MB, recorded |
+| Output | 480x832, 81 frames, 16 fps, 5.06 s, H.264 | same |
+
+The weights stream from RAM during sampling ("0 MB loaded, 8475 MB offloaded" in ComfyUI's log),
+which is what keeps the 14B model within 8 GB; 62 GB of system RAM helps. A test frame kept the
+presenter's face, a natural smile and a five-finger open-hand wave.
 
 Runway Gen-4.5 is still faster (about 1-2 minutes) and sharper (720p), so the recipe offers both.
