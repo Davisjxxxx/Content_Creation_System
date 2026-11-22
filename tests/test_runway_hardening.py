@@ -507,3 +507,18 @@ def test_bridge_allowlist_matches_every_ui_call_and_forwards_arguments():
         bridge.queue  # internals are not reachable
     with pytest.raises(AttributeError):
         JsBridge(object())  # a bridge over an incomplete API fails fast
+
+
+def test_insufficient_credits_is_reported_plainly_and_definitely_unbilled(tmp_path):
+    """Real response observed on the first live attempt (2026-11-22): HTTP 400, balance 0."""
+    server = Server({CREATE: httpx.Response(400, json={"error": "You do not have enough credits to run this task."})})
+    with pytest.raises(RunwayAPIError) as caught:
+        _provider(tmp_path, server).render("w", _job(tmp_path))
+    receipt = caught.value.receipt
+    assert receipt["submission"]["state"] == "rejected" and receipt["charge_status"] == "none"
+    assert server.count(CREATE) == 1
+    classified = classify_exception(caught.value)
+    assert classified.category == "cloud_insufficient_credits"
+    assert "Add credits" in classified.message and "nothing was billed" in classified.message
+    other = RunwayAPIError("Task creation failed with HTTP 400: ratio: Invalid enum value", status_code=400)
+    assert classify_exception(other).category == "cloud_invalid_request"

@@ -123,6 +123,9 @@ class RunwayBudgetError(RunwayError):
     error_message = "Runway estimated more credits than the per-job cap allows, so the task was cancelled."
 
 
+_INSUFFICIENT_CREDITS = re.compile(r"(not have enough credits|insufficient (credits|balance)|out of credits)", re.IGNORECASE)
+
+
 class RunwayAPIError(RunwayError):
     def __init__(
         self,
@@ -148,6 +151,12 @@ class RunwayAPIError(RunwayError):
         elif status_code == 429:
             self.error_category = "cloud_rate_limited"
             self.error_message = "Runway rate-limited the request. Wait a moment, then retry."
+        elif status_code in {400, 402} and _INSUFFICIENT_CREDITS.search(message):
+            self.error_category = "cloud_insufficient_credits"
+            self.error_message = (
+                "Your Runway account does not have enough credits for this task, so Runway did not create it and "
+                "nothing was billed. Add credits in the Runway developer portal, then queue the job again."
+            )
         elif status_code == 400:
             self.error_category = "cloud_invalid_request"
             self.error_message = "Runway rejected the request parameters. The detail names the field."
