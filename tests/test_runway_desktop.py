@@ -604,3 +604,25 @@ def test_worker_keeps_the_cloud_receipt_when_a_runway_job_fails(tmp_path, monkey
     assert queue.memory_manager.calls == []
     history = json.loads((tmp_path / "history" / f"{item.id}.json").read_text())
     assert history["cloud_receipt"]["task_id"] == "task-9"
+
+
+def test_cloud_and_adult_policies_refuse_prompts_describing_minors(api, tmp_path):
+    from avatar_v2.policy import evaluate_policy
+
+    minor = _payload(tmp_path)
+    minor["shot"]["user_prompt"] = "Caucasion 15-year-old girl: attractive, intelligent, approachable."
+    refused = api.runway_estimate(minor)
+    assert refused["ok"] is False and "has to be an adult" in refused["error"]
+    adult = _payload(tmp_path)
+    adult["shot"]["user_prompt"] = "Fictional 18-year-old woman with minor asymmetry and baby hairs at the hairline."
+    assert api.runway_estimate(adult)["ok"] is True
+
+    avatar = AvatarManifest.model_validate(
+        {"avatar_id": "s", "display_name": "S", "subjects": [{"id": "s", "kind": "synthetic", "age_verified_18_plus": True, "consent_confirmed": True}]}
+    )
+    teen = ShotSpec.model_validate({"shot_id": "s", "user_prompt": "a teen on a bed", "content_class": "adult_nudity"})
+    assert evaluate_policy(avatar, teen).allowed is False
+    grown = ShotSpec.model_validate({"shot_id": "s", "user_prompt": "a 30-year-old woman", "content_class": "adult_nudity"})
+    assert evaluate_policy(avatar, grown).allowed is True
+    with pytest.raises(ValueError):
+        AvatarManifest.model_validate({"avatar_id": "y", "display_name": "Y", "apparent_age_years": 15, "subjects": []})

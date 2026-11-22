@@ -1651,16 +1651,18 @@ function stRenderMaster(){
   if(!d.pending_master.length){picks.innerHTML='';return}
   picks.innerHTML=`<div class="tiny" style="margin-bottom:6px">${d.master?'New options. Click one to see it full size, or pick one to switch to it:':'Click a photo to see it full size, then pick the one you like best:'}</div><div class="st-picks two"></div>`;
   const grid=picks.querySelector('.st-picks');
-  d.pending_master.slice(0,8).forEach((c,i)=>{const cell=document.createElement('div');cell.className='st-pick';cell.innerHTML='<span class="zoomhint">🔍 full size</span><img alt="Presenter option" title="Click to see it full size"><div class="acts"><button class="mini use">Use</button><button class="mini" title="Toss this option">✕</button></div>';
+  d.pending_master.slice(0,4).forEach((c,i)=>{const cell=document.createElement('div');cell.className='st-pick';cell.innerHTML='<span class="zoomhint">🔍 full size</span><img alt="Presenter option" title="Click to see it full size"><div class="acts"><button class="mini use">Use</button><button class="mini" title="Toss this option">✕</button></div>';
     const img=cell.querySelector('img');stThumb(img,c.path);img.onclick=()=>viewerOpen(stMasterItems(),i);
     const [use,toss]=cell.querySelectorAll('button');use.onclick=()=>stPick(c.path,'identity_front',true);toss.onclick=()=>stPick(c.path,'identity_front',false);grid.appendChild(cell)});
+  if(d.pending_master.length>4){const all=document.createElement('button');all.className='mini';all.style.marginTop='8px';all.textContent=`See all ${d.pending_master.length} options full size`;all.onclick=()=>viewerOpen(stMasterItems(),0);picks.appendChild(all)}
 }
 function stRenderPhotos(){
   const d=st.data,pick=$('stPhotoPick'),strip=$('stPhotos');
   if(d.pending_photos.length){pick.innerHTML='<div class="tiny" style="margin-bottom:6px">New photos. Click one to see it full size; keep the ones that look like her:</div><div class="st-picks three"></div>';const grid=pick.querySelector('.st-picks');
-    d.pending_photos.slice(0,8).forEach((c,i)=>{const cell=document.createElement('div');cell.className='st-pick';cell.innerHTML=`<span class="tag">${esc(c.label)}</span><img alt="${esc(c.label)}" title="Click to see it full size"><div class="acts"><button class="mini use">Keep</button><button class="mini" title="Toss this one">✕</button></div>`;
+    d.pending_photos.slice(0,6).forEach((c,i)=>{const cell=document.createElement('div');cell.className='st-pick';cell.innerHTML=`<span class="tag">${esc(c.label)}</span><img alt="${esc(c.label)}" title="Click to see it full size"><div class="acts"><button class="mini use">Keep</button><button class="mini" title="Toss this one">✕</button></div>`;
       const img=cell.querySelector('img');stThumb(img,c.path);img.onclick=()=>viewerOpen(stPhotoItems(),i);
-      const [keep,toss]=cell.querySelectorAll('button');keep.onclick=()=>stPick(c.path,c.slot_id,true);toss.onclick=()=>stPick(c.path,c.slot_id,false);grid.appendChild(cell)})}
+      const [keep,toss]=cell.querySelectorAll('button');keep.onclick=()=>stPick(c.path,c.slot_id,true);toss.onclick=()=>stPick(c.path,c.slot_id,false);grid.appendChild(cell)});
+    if(d.pending_photos.length>6){const all=document.createElement('button');all.className='mini';all.style.marginTop='8px';all.textContent=`See all ${d.pending_photos.length} new photos full size`;all.onclick=()=>viewerOpen(stPhotoItems(),0);pick.appendChild(all)}}
   else pick.innerHTML='';
   strip.innerHTML=d.photos.length?'<span class="tiny">Kept:</span>':'';
   d.photos.forEach((p,i)=>{const img=document.createElement('img');img.alt=p.label;img.title=p.label+' (click for full size)';stThumb(img,p.path);img.onclick=()=>viewerOpen(stKeptItems(),d.master?i+1:i);strip.appendChild(img)});
@@ -1795,10 +1797,10 @@ document.addEventListener('keydown',ev=>{
   else return;
   ev.preventDefault();
 });
-function stMasterItems(){const d=st.data;return d.pending_master.slice(0,8).map(c=>({path:c.path,title:d.master?'New option for her face':'Presenter option',meta:'"Use this one" makes it her master photo',actions:[
+function stMasterItems(){const d=st.data;return d.pending_master.map(c=>({path:c.path,title:d.master?'New option for her face':'Presenter option',meta:'"Use this one" makes it her master photo',actions:[
   {label:'Use this one',primary:true,run:async()=>{await stPick(c.path,'identity_front',true);return 'close'}},
   {label:'Toss',toss:true,run:async()=>{await stPick(c.path,'identity_front',false);return true}}]}))}
-function stPhotoItems(){return st.data.pending_photos.slice(0,8).map(c=>({path:c.path,title:c.label,meta:'Keep it if it looks like her',actions:[
+function stPhotoItems(){return st.data.pending_photos.map(c=>({path:c.path,title:c.label,meta:'Keep it if it looks like her',actions:[
   {label:'Keep',primary:true,run:async()=>{await stPick(c.path,c.slot_id,true);return true}},
   {label:'Toss',toss:true,run:async()=>{await stPick(c.path,c.slot_id,false);return true}}]}))}
 function stKeptItems(){const d=st.data;return [...(d.master?[{path:d.master,title:'Her master photo'}]:[]),...d.photos.map(p=>({path:p.path,title:p.label}))]}

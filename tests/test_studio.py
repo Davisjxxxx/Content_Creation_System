@@ -270,3 +270,14 @@ def test_results_list_recent_runway_outputs_and_recent_failures_only(api, home):
     assert set(results) == {"done", "fresh_fail"}
     assert results["done"]["outputs"][0]["kind"] == "image" and results["done"]["credits"] == 8
     assert results["fresh_fail"]["error"] == "Runway said no." and results["fresh_fail"]["charge_status"] == "none"
+
+
+def test_presenter_stays_an_adult_and_nothing_is_sent_for_minor_prompts(api, home):
+    api.runway_save_key(KEY)
+    refused = api.studio_price({"action": "presenter", "count": 4, "extra": "make her a 15-year-old girl"})
+    assert refused["ok"] is False and "has to be an adult" in refused["error"] and "15-year-old" in refused["error"]
+    go = api.studio_go({"action": "presenter", "count": 4, "extra": "Caucasion 15-year-old girl"})
+    assert go["ok"] is False and api.queue.items == []
+    assert api.studio_go({"action": "presenter", "count": 1, "extra": "looks about 18-year-old, freckles"})["ok"] is True
+    _pick_master(api, home)
+    assert "has to be an adult" in api.studio_price({"action": "move", "motion": "she turns into a schoolgirl"})["error"]

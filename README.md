@@ -179,7 +179,8 @@ before you click, and jobs start on one click. Spending limits (per job, per bat
 are optional and off unless you set them under Pro tools → Settings. It is never used as an
 automatic fallback for local rendering, and the app never resubmits a paid job on its own. Cloud
 jobs stay limited to general content and to avatars declared synthetic or consenting adults, so a
-real person's likeness is never uploaded without their consent.
+real person's likeness is never uploaded without their consent, and the presenter is always an adult:
+prompts that describe someone under 18 are refused before anything is sent or billed.
 Setup, costs and the presenter workflow: [`docs/RUNWAY_PROVIDER.md`](docs/RUNWAY_PROVIDER.md).
 
 ## Presenter production (BRAND Instructor)
