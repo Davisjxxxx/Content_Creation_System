@@ -121,6 +121,10 @@ h2{font-size:28px;margin:0;letter-spacing:-.03em}
 .settings input{border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.025);color:#e8e8ee;padding:10px;font-size:15px;width:100%}
 .limits{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:10px 0}
 .limits label{display:grid;gap:5px;font-size:12px;color:#9696a2}
+.shots{display:grid;gap:8px}
+.shot{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:8px;align-items:start}
+.shot .label{padding-top:12px}
+.more{margin-top:14px;text-align:center}
 pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(--line);border-radius:10px;padding:10px;font:12px/1.5 ui-monospace,monospace;color:#9a9aa5;white-space:pre-wrap;margin:8px 0 0}
 /* full-size photo viewer */
 .viewer{position:fixed;inset:0;z-index:200;background:rgba(4,4,7,.97);display:none;grid-template-rows:auto minmax(0,1fr) auto;padding:14px 18px;gap:10px}
@@ -190,7 +194,8 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
     <button class="back" onclick="openRecipe(null)">← All recipes</button>
     <div class="rhead"><span class="ic">📸</span><div><h2>Photos of her</h2><p class="lead">The same face from new angles and with new expressions. Keep the good ones; they help her look the same everywhere.</p></div></div>
     <ol class="steps">
-      <li><span class="n">1</span><div><h4>Which photos?</h4><div class="checks" id="stAngles"></div></div></li>
+      <li><span class="n">1</span><div><h4>Start photo</h4><div class="thumbs" id="anglesImages"></div><p class="tiny">Her master photo by default — or choose any picture from My stuff.</p></div></li>
+      <li><span class="n">2</span><div><h4>Which photos?</h4><div class="checks" id="stAngles"></div></div></li>
     </ol>
     <button class="btn primary go" id="goAngles" onclick="stGo('angles')">Make photos</button>
     <div class="note" id="noteAngles"></div>
@@ -232,8 +237,9 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
     <button class="back" onclick="openRecipe(null)">← All recipes</button>
     <div class="rhead"><span class="ic">🎭</span><div><h2>Act it out</h2><p class="lead">Film yourself and she copies your face and moves. Your own voice is removed.</p></div></div>
     <ol class="steps">
-      <li><span class="n">1</span><div><h4>Choose your clip <small>(3–30 seconds)</small></h4><div class="row"><button class="btn" onclick="stPickVideo()">Choose video</button><span class="tiny" id="stActFile">No video chosen</span></div><p class="tiny">Tip: face the camera in good light and keep your head in frame.</p></div></li>
-      <li><span class="n">2</span><div><h4>What should she copy?</h4><div class="chips" data-chips="stActBody"><button data-v="body" class="on">Face + body</button><button data-v="face">Face only</button></div></div></li>
+      <li><span class="n">1</span><div><h4>Start photo</h4><div class="thumbs" id="actImages"></div><p class="tiny">Her master photo by default — or choose any picture from My stuff.</p></div></li>
+      <li><span class="n">2</span><div><h4>Choose your clip <small>(3–30 seconds)</small></h4><div class="row"><button class="btn" onclick="stPickVideo()">Choose video</button><span class="tiny" id="stActFile">No video chosen</span></div><p class="tiny">Tip: face the camera in good light and keep your head in frame.</p></div></li>
+      <li><span class="n">3</span><div><h4>What should she copy?</h4><div class="chips" data-chips="stActBody"><button data-v="body" class="on">Face + body</button><button data-v="face">Face only</button></div></div></li>
       <li><span class="n">3</span><div><h4>Shape and sound</h4><div class="pair"><div><span class="label">Shape</span><div class="chips" data-chips="stActShape"><button data-v="tall" class="on">Phone</button><button data-v="portrait">Like her photo</button></div></div><div><span class="label">Sound</span><select id="stActNarration"><option value="">Silent (your voice is removed)</option></select></div></div></div></li>
     </ol>
     <button class="btn primary go" id="goAct" onclick="stGo('act')">Make it</button>
@@ -247,7 +253,7 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
     <div class="rhead"><span class="ic">🎬</span><div><h2>Moving clip</h2><p class="lead">Turn her photo into a short clip. Free on your GPU, or faster and sharper on Runway.</p></div></div>
     <ol class="steps">
       <li><span class="n">1</span><div><h4>Start photo</h4><div class="thumbs" id="moveImages"></div></div></li>
-      <li><span class="n">2</span><div><h4>What happens?</h4><textarea id="stMotion" rows="3" maxlength="600" placeholder="She smiles warmly, nods, and starts explaining something with a small hand gesture."></textarea><div class="chips" id="moveIdeas" style="margin-top:8px"></div></div></li>
+      <li><span class="n">2</span><div><h4>What happens?</h4><textarea id="stMotion" rows="3" placeholder="She smiles warmly, nods, and starts explaining something with a small hand gesture."></textarea><div class="chips" id="moveIdeas" style="margin-top:8px"></div></div></li>
       <li><span class="n">3</span><div><h4>Where should it render?</h4><div class="chips" data-chips="moveEngine"><button data-v="local">Free · your GPU<small id="localEngineHint">checking…</small></button><button data-v="best" class="on">Runway Gen-4.5<small>best quality</small></button><button data-v="fast">Runway Turbo<small>cheaper</small></button></div></div></li>
       <li><span class="n">4</span><div><h4>Length, shape and sound</h4><div class="pair"><div><span class="label">Length</span><div class="chips" data-chips="moveSeconds"><button data-v="5" class="on">5 s</button><button data-v="10" id="moveTen">10 s</button></div></div><div><span class="label">Shape</span><div class="chips" data-chips="moveShape"><button data-v="tall" class="on">Phone</button><button data-v="portrait">Like her photo</button></div></div><div><span class="label">Sound</span><select id="stMoveNarration"><option value="">Silent</option></select></div></div></div></li>
     </ol>
@@ -256,13 +262,27 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
     <div class="out" data-jobs-wrap="move" style="display:none"><h3>Working on it</h3><div class="jobs" data-jobs="move"></div></div>
     <div class="out"><h3>Your clips</h3><div class="thumbs" data-results="move"></div></div>
   </section>
+  <section class="recipe" id="recipe-scene" hidden>
+    <button class="back" onclick="openRecipe(null)">← All recipes</button>
+    <div class="rhead"><span class="ic">🎞</span><div><h2>Video scene</h2><p class="lead">A longer scene made offline on your GPU, free: up to 12 shots in a row (about a minute), each one continuing from where the last one ended, joined into one video.</p></div></div>
+    <ol class="steps">
+      <li><span class="n">1</span><div><h4>Start picture</h4><div class="thumbs" id="sceneImages"></div><p class="tiny">Pick the picture to start from — nothing is chosen for you. Or open any picture in My stuff and choose "Make a scene from this".</p></div></li>
+      <li><span class="n">2</span><div><h4>What happens, shot by shot <small>(about 5 seconds each)</small></h4><div class="shots" id="sceneShots"></div><div class="row" style="margin-top:8px"><button class="mini" id="sceneAdd" onclick="sceneAddShot()">+ Add a shot</button><button class="mini" onclick="sceneUseTemplate()" title="Fill in a 12-shot lesson that stitches into about a minute of video">Fill in a full-video template</button></div><div class="chips" id="sceneIdeas" style="margin-top:10px"></div></div></li>
+      <li><span class="n">3</span><div><h4>Shape and sound</h4><div class="pair"><div><span class="label">Shape</span><div class="chips" data-chips="sceneShape"><button data-v="tall" class="on">Phone</button><button data-v="portrait">Like the photo</button><button data-v="wide">Wide</button></div></div><div><span class="label">Sound</span><select id="stSceneNarration"><option value="">Silent</option></select></div></div></div></li>
+    </ol>
+    <button class="btn primary go" id="goScene" onclick="stGo('scene')">Make scene</button>
+    <div class="note" id="noteScene"></div>
+    <div class="out" data-jobs-wrap="scene" style="display:none"><h3>Working on it</h3><div class="jobs" data-jobs="scene"></div></div>
+    <div class="out"><h3>Your scenes</h3><div class="thumbs" data-results="scene"></div></div>
+  </section>
 </div>
 
 <!-- ============================== MY STUFF ============================== -->
 <div id="view-library" class="view">
   <div class="top"><div><div class="eyebrow">Everything you've made</div><h2>My stuff</h2></div><div class="row"><span class="tiny" id="libCount"></span><button class="mini" onclick="window.pywebview.api.open_output_dir()">Open folder</button></div></div>
-  <div class="chips" id="libKinds" style="margin-bottom:14px"><button data-k="all" class="on">All</button><button data-k="image">Photos</button><button data-k="video">Videos</button><button data-k="audio">Voiceovers</button></div>
+  <div class="chips" id="libKinds" style="margin-bottom:14px"><button data-k="all" class="on">All</button><button data-k="image">Photos</button><button data-k="video">Videos</button><button data-k="audio">Audio</button><button data-k="avatars">Saved avatars</button></div>
   <div class="thumbs" id="libGrid"></div>
+  <div class="more" id="libMore"></div>
 </div>
 
 <!-- ============================== SETTINGS ============================== -->
@@ -318,20 +338,39 @@ function openLocalPath(path){window.pywebview.api.open_path(path).then(r=>{if(r&
 
 const RECIPES=[
   {id:'look',ic:'👤',title:'Her look',text:'Design or change her face. Make a few options and pick your favourite.',price:'8 credits per option',master:false},
-  {id:'photos',ic:'📸',title:'Photos of her',text:'The same face from new angles and with new expressions.',price:'8 credits per photo',master:true},
+  {id:'photos',ic:'📸',title:'Photos of her',text:'The same face from new angles and with new expressions — from her photo or any picture.',price:'8 credits per photo',master:false},
   {id:'voice',ic:'🔊',title:'Voiceover',text:'Her voice reading your script, for any video.',price:'about 1 credit per 200 words',master:false},
   {id:'talk',ic:'🎤',title:'Talking video',text:'She says your words on camera, lip-synced.',price:'about 1 credit per 3 seconds',master:true},
-  {id:'act',ic:'🎭',title:'Act it out',text:'Film yourself; she copies your face and moves.',price:'5 credits per second',master:true},
-  {id:'move',ic:'🎬',title:'Moving clip',text:'Turn her photo into a short clip.',price:'free on your GPU, or 25–120 credits',master:true},
+  {id:'act',ic:'🎭',title:'Act it out',text:'Film yourself; your chosen picture copies your face and moves.',price:'5 credits per second',master:false},
+  {id:'move',ic:'🎬',title:'Moving clip',text:'Turn any picture into a short clip.',price:'free on your GPU, or 25–120 credits',master:false},
+  {id:'scene',ic:'🎞',title:'Video scene',text:'Up to 12 shots in a row, made offline on your GPU and joined into one video.',price:'free · about 6 min per shot',master:false},
 ];
-const ACTION_OF={look:'presenter',photos:'angles',voice:'voiceover',talk:'talk',act:'act',move:'move'};
-const ST_BTN={presenter:'goPresenter',angles:'goAngles',voiceover:'goVoiceover',sample:'goSample',talk:'goTalk',act:'goAct',move:'goMove'};
-const ST_NOTE={presenter:'notePresenter',angles:'noteAngles',voiceover:'noteVoiceover',sample:'noteVoiceover',talk:'noteTalk',act:'noteAct',move:'noteMove'};
-const ST_VERB={presenter:o=>o.count>1?`Make ${o.count} options`:'Make 1 option',angles:o=>`Make ${o.slots.length} photo${o.slots.length===1?'':'s'}`,voiceover:()=>'Make voiceover',talk:()=>'Make talking video',act:()=>'Make it',move:()=>'Make clip'};
+const ACTION_OF={look:'presenter',photos:'angles',voice:'voiceover',talk:'talk',act:'act',move:'move',scene:'scene'};
+const ST_BTN={presenter:'goPresenter',angles:'goAngles',voiceover:'goVoiceover',sample:'goSample',talk:'goTalk',act:'goAct',move:'goMove',scene:'goScene'};
+const ST_NOTE={presenter:'notePresenter',angles:'noteAngles',voiceover:'noteVoiceover',sample:'noteVoiceover',talk:'noteTalk',act:'noteAct',move:'noteMove',scene:'noteScene'};
+const ST_VERB={presenter:o=>o.count>1?`Make ${o.count} options`:'Make 1 option',angles:o=>`Make ${o.slots.length} photo${o.slots.length===1?'':'s'}`,voiceover:()=>'Make voiceover',talk:()=>'Make talking video',act:()=>'Make it',move:()=>'Make clip',scene:o=>`Make scene · ${o.shots.length} shot${o.shots.length===1?'':'s'}`};
 const ST_DEFAULT_ANGLES=['identity_three_quarter_left','identity_three_quarter_right','presenter_expression_smile'];
 const MOVE_IDEAS=['She smiles warmly and nods.','She waves hello to the camera.','She explains something with natural hand gestures.','She turns to face the camera and smiles.','She laughs naturally, then looks back at the camera.'];
-const st={data:null,engine:null,thumbs:new Map(),recipe:null,look:'natural',actVideo:'',moveImage:'',priceTimer:null,sig:{},talkerTimer:null,lastJobs:0,noteUntil:{},libKind:'all',
-  opts:{stCount:'4',stTalkMode:'type',stActBody:'body',stActShape:'tall',moveEngine:'best',moveSeconds:'5',moveShape:'tall'},engineChosen:false};
+const st={data:null,engine:null,thumbs:new Map(),recipe:null,look:'natural',actVideo:'',moveImage:'',sceneImage:'',actImage:'',anglesImage:'',sceneShots:[''],priceTimer:null,sig:{},talkerTimer:null,lastJobs:0,noteUntil:{},libKind:'all',libItems:[],libShown:60,libImages:[],pickShown:{},pickExpanded:{},presenterAddOpen:false,
+  opts:{stCount:'4',stTalkMode:'type',stActBody:'body',stActShape:'tall',moveEngine:'best',moveSeconds:'5',moveShape:'tall',sceneShape:'tall'},engineChosen:false};
+const SCENE_IDEAS=['She walks into the room and smiles at the camera.','She sits down at the desk and opens a laptop.','She explains a point with natural hand gestures.','The camera slowly pushes in as she keeps talking.','She laughs, then turns back to the camera.'];
+// Each shot starts from the previous shot's last frame, so every line begins where the last one ended:
+// a 12-shot lesson that stitches into about one minute of continuous video.
+const SCENE_TEMPLATE=[
+ 'She sits at a desk facing the camera, hands resting in front of her, and smiles as she says hello.',
+ 'From the same seated pose, she lifts one hand and gestures beside her as if introducing the topic.',
+ 'She keeps the same hand up, then brings both hands together in front of her chest, still facing the camera.',
+ 'Both hands open outward like she is laying out two options, then return to rest on the desk.',
+ 'Still seated at the desk, she picks up a pen and holds it up to the camera, eyes on the lens.',
+ 'She lowers the pen and writes a quick note on a notepad on the desk, then looks back up at the camera.',
+ 'Still holding the pen, she turns slightly toward a screen beside her, points at it, then turns back to the camera.',
+ 'Facing the camera again, she nods once and leans slightly forward, hands clasped on the desk.',
+ 'She leans back, smiles warmly, and spreads her hands wide as if wrapping up the explanation.',
+ 'Her hands settle back on the desk and she holds the pose, smiling at the camera.',
+ 'She slowly pushes back from the desk and begins to stand, keeping her eyes on the camera.',
+ 'Now standing, she gives the camera a small wave and holds it as the video ends.'];
+const thumbObserver=('IntersectionObserver' in window)?new IntersectionObserver(entries=>entries.forEach(e=>{if(e.isIntersecting){thumbObserver.unobserve(e.target);stThumb(e.target,e.target.dataset.path)}}),{rootMargin:'300px'}):null;
+function lazyThumb(img,path){if(!thumbObserver){stThumb(img,path);return}img.dataset.path=path;thumbObserver.observe(img)}
 
 function stCredits(n){n=Number(n)||0;const v=Number.isInteger(n)?n.toLocaleString():n.toFixed(1);return `${v} credit${n===1?'':'s'}`}
 function stUsd(n){return '$'+(Number(n||0)*0.01).toFixed(2)}
@@ -344,7 +383,7 @@ async function stThumb(img,path){if(!img||!path)return;const hit=st.thumbs.get(p
 /* ---------- navigation ---------- */
 function view(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='view-'+v));document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));if(v==='make')stLoad();if(v==='library')libLoad();if(v==='settings')setLoad()}
 document.querySelectorAll('.nav button[data-view]').forEach(b=>b.onclick=()=>{view(b.dataset.view);if(b.dataset.view==='make')openRecipe(null)});
-function openRecipe(id){st.recipe=id;$('makeHome').hidden=!!id;RECIPES.forEach(r=>{$('recipe-'+r.id).hidden=r.id!==id});document.querySelector('.main').scrollTop=0;if(id){stLoad();stPriceSoon()}}
+function openRecipe(id){st.recipe=id;$('makeHome').hidden=!!id;RECIPES.forEach(r=>{$('recipe-'+r.id).hidden=r.id!==id});document.querySelector('.main').scrollTop=0;if(id){stLoad();if(['move','scene','photos','act'].includes(id))stLoadImages().then(()=>stRender(false));stPriceSoon()}}
 function renderTiles(){const d=st.data||{};$('tiles').innerHTML='';RECIPES.forEach(r=>{const b=document.createElement('button');b.className='tile'+(r.master&&!d.master?' locked':'');b.innerHTML=`<span class="ic">${r.ic}</span><b>${esc(r.title)}</b><span>${esc(r.text)}</span><small>${r.master&&!d.master?'Design her look first':esc(r.price)}</small>`;b.onclick=()=>openRecipe(r.master&&!d.master?'look':r.id);$('tiles').appendChild(b)})}
 
 /* ---------- options, prices and actions ---------- */
@@ -357,22 +396,26 @@ function stLookChips(){const root=$('stLook');root.innerHTML='';((st.data&&st.da
 function stOptions(action){
   const o={action};
   if(action==='presenter'){o.count=Number(st.opts.stCount);o.look=st.look;o.extra=$('stExtra').value}
-  if(action==='angles')o.slots=[...document.querySelectorAll('#stAngles input:checked')].map(x=>x.value);
+  if(action==='angles'){o.slots=[...document.querySelectorAll('#stAngles input:checked')].map(x=>x.value);if(st.anglesImage)o.image=st.anglesImage}
   if(action==='voiceover'||action==='sample'){o.voice=$('stVoice').value;o.script=$('stVoScript').value}
   if(action==='talk'){if(st.opts.stTalkMode==='voiceover')o.narration_id=$('stTalkNarration').value;else o.script=$('stTalkScript').value;o.talker_voice=$('stTalkerVoice').value}
-  if(action==='act'){o.video=st.actVideo;o.body=st.opts.stActBody==='body';o.shape=st.opts.stActShape;o.narration_id=$('stActNarration').value}
+  if(action==='act'){o.video=st.actVideo;o.body=st.opts.stActBody==='body';o.shape=st.opts.stActShape;o.narration_id=$('stActNarration').value;if(st.actImage)o.image=st.actImage}
   if(action==='move'){o.engine=st.opts.moveEngine;o.motion=$('stMotion').value;o.seconds=Number(st.opts.moveSeconds);o.shape=st.opts.moveShape;o.narration_id=$('stMoveNarration').value;if(st.moveImage)o.image=st.moveImage}
+  if(action==='scene'){o.shots=st.sceneShots.map(t=>t.trim()).filter(Boolean);o.shape=st.opts.sceneShape;o.narration_id=$('stSceneNarration').value;if(st.sceneImage)o.image=st.sceneImage}
   return o;
 }
 function stHint(action,o){
   const d=st.data;
-  if(['angles','talk','act','move'].includes(action)&&!d.master&&!(action==='move'&&st.moveImage))return 'Design her look first';
+  if(action==='scene'&&!o.image)return 'Pick a start picture first (step 1)';
+  if(['angles','act','move','scene'].includes(action)&&!d.master&&!o.image)return 'Pick a start photo first (step 1)';
+  if(action==='talk'&&!d.master)return 'Design her look first';
   if(action==='angles'&&!o.slots.length)return 'Tick at least one kind of photo';
   if(action==='voiceover'&&!o.script.trim())return 'Type what she says first';
   if(action==='talk'&&st.opts.stTalkMode==='type'&&!o.script.trim())return 'Type what she says first';
   if(action==='talk'&&st.opts.stTalkMode==='voiceover'&&!o.narration_id)return 'Make a voiceover first';
   if(action==='act'&&!o.video)return 'Choose your video first';
   if(action==='move'&&o.engine==='local'&&!(st.engine&&st.engine.state==='ready'))return (st.engine&&st.engine.message)||'Your GPU engine is not ready';
+  if(action==='scene'){if(!(st.engine&&st.engine.state==='ready'))return (st.engine&&st.engine.message)||'Your GPU engine is not ready';if(!o.shots.length)return 'Describe at least one shot'}
   return '';
 }
 function stPriceSoon(){clearTimeout(st.priceTimer);st.priceTimer=setTimeout(stPriceAll,300)}
@@ -402,7 +445,7 @@ async function stGo(action,extra){
   if(btn)btn.dataset.busy='0';
   if(r.ok){
     const n=(r.queued||[]).length;st.noteUntil[action]=Date.now()+12000;
-    if(r.local)say(`Started on your GPU · free · about ${r.minutes} minutes. It shows up below when it's done.`,'ok');
+    if(r.local)say(`Started on your GPU · free · about ${r.minutes} minutes${r.shots>1?` for ${r.shots} shots`:''}. It shows up below when it's done.`,'ok');
     else say(`Started${n>1?' '+n+' jobs':''} · about ${stCredits(r.total_credits)}. ${action==='sample'?'The sample appears in the list below in a few seconds.':'It shows up below when it\'s done.'}`,'ok');
     log(`${action} started${r.local?' on your GPU':' · about '+r.total_credits+' credits'}`);
   }else if(r.setup_started){st.noteUntil[action]=Date.now()+600000;say(r.message,'ok');stWaitForTalker(o)}
@@ -410,7 +453,52 @@ async function stGo(action,extra){
   await stLoad();stPriceSoon();
 }
 function stSharpen(path){stGo('sharpen',{image:path})}
-function stAnimate(path){st.moveImage=path;view('make');openRecipe('move');st.noteUntil.move=Date.now()+8000;stNote('move','Starting from '+base(path)+'.','ok');stRenderMoveImages(true)}
+function stAnimate(path){st.moveImage=path;view('make');openRecipe('move');st.noteUntil.move=Date.now()+8000;stNote('move','Starting from '+base(path)+'.','ok')}
+function stSceneFrom(path){st.sceneImage=path;view('make');openRecipe('scene');st.noteUntil.scene=Date.now()+8000;stNote('scene','Starting from '+base(path)+'.','ok')}
+async function stLoadImages(){let r;try{r=await window.pywebview.api.studio_library('image')}catch(e){r=null}
+  st.libImages=(r&&r.items)||[]}
+function stPickImages(rootId,getChosen,setChosen,opts){
+  opts=opts||{};const d=st.data,root=$(rootId);if(!root||!d)return;
+  const chosen=getChosen();
+  const compact=[...(d.master?[{path:d.master,label:'Her master photo'}]:[]),...d.photos.map(p=>({path:p.path,label:p.label}))];
+  const options=st.pickExpanded[rootId]
+    ?[...compact,...st.libImages.filter(x=>!compact.some(c=>c.path===x.path)).map(x=>({path:x.path,label:x.label||base(x.path)}))]
+    :compact;
+  if(chosen&&!options.some(o=>o.path===chosen))options.unshift({path:chosen,label:base(chosen)});
+  const sig=[d.master,d.photos.length,chosen,st.pickExpanded[rootId],st.libImages.length,st.pickShown[rootId]||48,opts.requirePick];
+  if(!stSig('pick:'+rootId,sig))return;
+  root.innerHTML='';
+  if(chosen){  // one clear choice: hide every other picture until they ask to change it
+    const label=(options.find(o=>o.path===chosen)||{}).label||base(chosen);
+    root.appendChild(makeTile(chosen,'image',{badge:label,selected:true,
+      onOpen:()=>viewerOpen([{path:chosen,title:label}],0),
+      actions:[{label:'🔍 Full size',run:()=>viewerOpen([{path:chosen,title:label}],0)}]}));
+    const b=document.createElement('button');b.type='button';b.className='mini';b.style.marginTop='8px';
+    b.textContent='Change…';b.title='Pick a different picture';
+    b.onclick=()=>{setChosen('');stPickImages(rootId,getChosen,setChosen,opts)};
+    root.appendChild(b);return;
+  }
+  const hint=opts.requirePick?'Pick the photo to start from:':(!d.master?'No presenter is set — pick the photo to start from:':'');
+  if(hint){const h=document.createElement('div');h.className='tiny';h.style.marginBottom='6px';h.textContent=hint;root.appendChild(h)}
+  const sel=opts.requirePick?chosen:(chosen||d.master||''),limit=st.pickExpanded[rootId]?(st.pickShown[rootId]||48):1e9;
+  options.slice(0,limit).forEach(o=>root.appendChild(makeTile(o.path,'image',{badge:o.label,selected:o.path===sel,
+    onOpen:()=>{setChosen(o.path);stPickImages(rootId,getChosen,setChosen,opts);stPriceSoon()},
+    actions:[{label:'🔍 Full size',run:()=>viewerOpen([{path:o.path,title:o.label}],0)}]})));
+  if(!options.length){const e=document.createElement('div');e.className='empty';e.textContent='Nothing here yet.';root.appendChild(e)}
+  if(st.pickExpanded[rootId]&&options.length>limit){const b=document.createElement('button');b.className='btn';b.style.marginTop='8px';
+    b.textContent=`Show all (${options.length-limit} more)`;b.onclick=()=>{st.pickShown[rootId]=1e9;stPickImages(rootId,getChosen,setChosen,opts)};root.appendChild(b)}
+  const t=document.createElement('button');t.type='button';t.className='mini';t.style.marginTop='8px';
+  t.textContent=st.pickExpanded[rootId]?'Just her photos':'Choose from My stuff…';
+  t.title='Pick any picture in My stuff as the start';
+  t.onclick=()=>{st.pickExpanded[rootId]=!st.pickExpanded[rootId];st.pickShown[rootId]=48;stPickImages(rootId,getChosen,setChosen,opts)};
+  root.appendChild(t);
+}
+function sceneRenderShots(){const root=$('sceneShots');root.innerHTML='';st.sceneShots.forEach((text,i)=>{const row=document.createElement('div');row.className='shot';row.innerHTML=`<span class="label">Shot ${i+1}</span><textarea rows="2" placeholder="${i===0?'She smiles at the camera and starts explaining…':'What happens next…'}"></textarea>`;const ta=row.querySelector('textarea');ta.value=text;ta.oninput=()=>{st.sceneShots[i]=ta.value;stPriceSoon()};ta.onfocus=()=>{st.sceneFocus=i};
+    if(st.sceneShots.length>1){const x=document.createElement('button');x.className='mini';x.textContent='✕';x.title='Remove this shot';x.onclick=()=>{st.sceneShots.splice(i,1);sceneRenderShots();stPriceSoon()};row.appendChild(x)}root.appendChild(row)});
+  $('sceneAdd').disabled=st.sceneShots.length>=12}
+function sceneAddShot(){if(st.sceneShots.length<12){st.sceneShots.push('');sceneRenderShots();stPriceSoon()}}
+function sceneUseIdea(text){let i=st.sceneShots.findIndex(t=>!t.trim());if(i<0){if(st.sceneShots.length<12){st.sceneShots.push('');i=st.sceneShots.length-1}else i=st.sceneShots.length-1}st.sceneShots[i]=text;sceneRenderShots();stPriceSoon()}
+function sceneUseTemplate(){st.sceneShots=[...SCENE_TEMPLATE];sceneRenderShots();stNote('scene','Template filled in: each shot starts where the last one ended. Edit any line, then make the scene.','ok');stPriceSoon()}
 function stWaitForTalker(o){clearInterval(st.talkerTimer);let tries=0;
   st.talkerTimer=setInterval(async()=>{tries++;let r;try{r=await window.pywebview.api.studio_talker_status()}catch(e){r={ok:false,error:String(e)}}
     const status=r.ok&&r.talker?String(r.talker.status||'').toUpperCase():'';
@@ -433,24 +521,37 @@ function makeTile(path,kind,opts){
   opts=opts||{};const t=document.createElement('div');t.className='tilev'+(opts.selected?' sel':'');
   const badge=kind==='video'?'▶ video':kind==='audio'?'♪ voice':(opts.badge||'photo');
   t.innerHTML=`<div class="pic"><span class="badge">${esc(badge)}</span>${kind==='audio'?'<span>♪</span>':'<img alt="">'}</div><div class="meta">${opts.title?`<b title="${esc(opts.title)}">${esc(opts.title)}</b>`:''}${opts.sub?`<span>${esc(opts.sub)}</span>`:''}<div class="acts"></div></div>`;
-  const img=t.querySelector('img');if(img)stThumb(img,path);
+  const img=t.querySelector('img');if(img)lazyThumb(img,path);
   t.querySelector('.pic').onclick=opts.onOpen||(()=>{if(kind==='image')viewerOpen([{path,title:opts.title||base(path)}],0);else openLocalPath(path)});
   const acts=t.querySelector('.acts');(opts.actions||[]).forEach(a=>{const b=document.createElement('button');b.className='mini'+(a.use?' use':'');b.textContent=a.label;if(a.title)b.title=a.title;b.onclick=ev=>{ev.stopPropagation();a.run()};acts.appendChild(b)});
   if(!(opts.actions||[]).length)acts.remove();
   return t;
 }
 function resultItems(filter){const out=[];(st.data.results||[]).forEach(r=>{if(r.status!=='done')return;if(filter&&r.action!==filter)return;r.outputs.forEach(o=>out.push({...o,result:r}))});return out}
+async function stDelete(path,tile){let r;try{r=await window.pywebview.api.studio_delete({path})}catch(e){r={ok:false,error:String(e)}}
+  if(!r.ok){say(r.error||'Could not delete it.','err');return}
+  say(`Deleted ${base(path)}`,'ok');if(tile)tile.remove();
+  ['moveImage','sceneImage','actImage','anglesImage'].forEach(k=>{if(st[k]===path)st[k]=''});
+  if($('view-library').classList.contains('active'))libLoad();else stLoad();
+  const viewer=viewer.items[viewer.index];if(viewer&&viewer.path===path)viewerClose()}
 function imageViewerItems(list){return list.filter(x=>x.kind==='image').map(x=>({path:x.path,title:x.result?x.result.label:x.label,meta:stWhen(x.result?x.result.finished_at:x.finished_at),actions:[
+  {label:'Make a scene from this',run:async()=>{viewerClose();stSceneFrom(x.path);return 'close'}},
   {label:'Animate this photo',run:async()=>{viewerClose();stAnimate(x.path);return 'close'}},
-  {label:'Sharpen · 25 credits',run:async()=>{stSharpen(x.path);return 'close'}}]}))}
+  {label:'Sharpen · 25 credits',run:async()=>{stSharpen(x.path);return 'close'}},
+  {label:'Presenter option',title:'Add this to her face options in the look recipe',run:async()=>{await stPresenterAdd(x.path);return 'close'}},
+  {label:'Delete',title:'Remove this from My stuff for good',run:async()=>{await stDelete(x.path);return 'close'}}]}))}
 function renderResultTiles(root,list,limit){
   root.innerHTML='';const items=list.slice(0,limit||60);
   if(!items.length){root.innerHTML='<div class="empty">Nothing here yet.</div>';return}
   const viewable=imageViewerItems(items);
   items.forEach(x=>{const r=x.result||x;const isImg=x.kind==='image';
-    root.appendChild(makeTile(x.path,x.kind,{title:r.label,sub:`${stWhen(r.finished_at)}${r.local?' · free (your GPU)':(r.credits!==null&&r.credits!==undefined?' · '+stCredits(r.credits):'')}`,
+    const src=r.source||x.source,origin=src==='old'?' · made with the old app':src==='gpu'?' · free (your GPU)':(r.credits!==null&&r.credits!==undefined?' · '+stCredits(r.credits):'');
+    let tile;
+    const remove=()=>stDelete(x.path,tile);
+    tile=makeTile(x.path,x.kind,{title:r.label,sub:`${stWhen(r.finished_at)}${origin}`,
       onOpen:isImg?()=>viewerOpen(viewable,Math.max(0,viewable.findIndex(v=>v.path===x.path))):()=>openLocalPath(x.path),
-      actions:isImg?[{label:'Animate',title:'Use this photo for a moving clip',run:()=>stAnimate(x.path)},{label:'Sharpen',title:'2x sharper copy · 25 credits',run:()=>stSharpen(x.path)}]:[{label:x.kind==='audio'?'Play':'Open',run:()=>openLocalPath(x.path)}]}))});
+      actions:[...(isImg?[{label:'Animate',title:'Use this picture for a moving clip',run:()=>stAnimate(x.path)},{label:'Scene',title:'Make an offline video scene from this picture',run:()=>stSceneFrom(x.path)},{label:'Presenter option',title:'Add this to her face options in the look recipe',run:()=>stPresenterAdd(x.path)}]:[{label:x.kind==='audio'?'Play':'Open',run:()=>openLocalPath(x.path)}]),{label:'Delete',title:'Remove this from My stuff for good',run:remove}]});
+    root.appendChild(tile)});
 }
 
 /* ---------- render the Make screen ---------- */
@@ -459,7 +560,7 @@ function stRenderHer(){const d=st.data;const side=$('sideHer');
   if(d.master)stThumb($('sideHerImg'),d.master);
   $('startBanner').style.display=d.master?'none':'flex';
   const box=$('lookMaster');
-  if(d.master){box.innerHTML='';const row=document.createElement('div');row.className='row';row.appendChild(makeTile(d.master,'image',{badge:'her master photo',title:'Her master photo',onOpen:()=>viewerOpen(keptItems(),0)}));row.firstChild.style.width='170px';const txt=document.createElement('div');txt.className='tiny';txt.style.maxWidth='420px';txt.textContent='This is her. Every recipe uses this face. To change her, make new options below and pick one.';row.appendChild(txt);box.appendChild(row)}
+  if(d.master){box.innerHTML='';const row=document.createElement('div');row.className='row';row.appendChild(makeTile(d.master,'image',{badge:'her master photo',title:'Her master photo',onOpen:()=>viewerOpen(keptItems(),0),actions:[{label:'Remove',title:'Delete this photo and start from a blank slate',run:()=>stDelete(d.master)}]}));row.firstChild.style.width='170px';const txt=document.createElement('div');txt.className='tiny';txt.style.maxWidth='420px';txt.textContent='This is her. Every recipe uses this face. To change her, make new options below and pick one — or Remove it and pick a start photo per recipe.';row.appendChild(txt);box.appendChild(row)}
   else box.innerHTML='';
 }
 function keptItems(){const d=st.data;return [...(d.master?[{path:d.master,title:'Her master photo'}]:[]),...d.photos.map(p=>({path:p.path,title:p.label}))]}
@@ -470,9 +571,29 @@ function photoViewerItems(){return st.data.pending_photos.map(c=>({path:c.path,t
   {label:'Keep',primary:true,run:async()=>stPick(c.path,c.slot_id,true)},
   {label:'Toss',toss:true,run:async()=>stPick(c.path,c.slot_id,false)}]}))}
 function stRenderPicks(){const d=st.data,root=$('lookPicks');root.innerHTML='';
-  if(!d.pending_master.length){root.innerHTML=`<div class="empty">${d.master?'No new options. Make some above if you want to change her.':'No options yet. Make a few above.'}</div>`;return}
-  const items=masterViewerItems();
-  d.pending_master.forEach((c,i)=>root.appendChild(makeTile(c.path,'image',{badge:'option',onOpen:()=>viewerOpen(items,i),actions:[{label:'Use this one',use:true,run:()=>stPick(c.path,'identity_front',true)},{label:'✕',title:'Toss this option',run:()=>stPick(c.path,'identity_front',false)}]})));
+  if(!d.pending_master.length){root.innerHTML=`<div class="empty">${d.master?'No new options. Make some above if you want to change her.':'No options yet. Make a few above.'}</div>`}
+  else{
+    const items=masterViewerItems();
+    d.pending_master.forEach((c,i)=>root.appendChild(makeTile(c.path,'image',{badge:'option',onOpen:()=>viewerOpen(items,i),actions:[{label:'Use this one',use:true,run:()=>stPick(c.path,'identity_front',true)},{label:'✕',title:'Toss this option',run:()=>stPick(c.path,'identity_front',false)}]})));
+  }
+  const add=document.createElement('button');add.type='button';add.className='mini';add.style.marginTop='8px';
+  add.textContent='Add from My stuff…';add.title='Choose any older picture as an option for her face';
+  add.onclick=()=>{st.presenterAddOpen=!st.presenterAddOpen;stRenderPresenterAddGrid()};
+  root.appendChild(add);
+  const grid=document.createElement('div');grid.id='lookAddGrid';grid.className='thumbs';grid.style.marginTop='8px';root.appendChild(grid);
+  if(st.presenterAddOpen)stRenderPresenterAddGrid();
+}
+async function stPresenterAdd(path){let r;try{r=await window.pywebview.api.studio_presenter_add({path})}catch(e){r={ok:false,error:String(e)}}
+  if(!r.ok){say(r.error||'Could not add it.','err');return}
+  say(r.already?'Already in your presenter options.':'Added to your presenter options','ok');
+  st.presenterAddOpen=false;stRenderPresenterAddGrid();stLoad()}
+async function stRenderPresenterAddGrid(){const root=$('lookAddGrid');if(!root||!st.presenterAddOpen){if(root)root.innerHTML='';return}
+  root.innerHTML='<div class="empty">Loading My stuff…</div>';await stLoadImages();
+  if(!st.presenterAddOpen)return;root.innerHTML='';
+  if(!st.libImages.length){root.innerHTML='<div class="empty">Nothing in My stuff yet.</div>';return}
+  const shown=st.pickShown.presenterAdd||48;
+  st.libImages.slice(0,shown).forEach(x=>root.appendChild(makeTile(x.path,'image',{badge:x.label||base(x.path),onOpen:()=>stPresenterAdd(x.path)})));
+  if(st.libImages.length>shown){const b=document.createElement('button');b.className='btn';b.textContent=`Show all (${st.libImages.length-shown} more)`;b.onclick=()=>{st.pickShown.presenterAdd=1e9;stRenderPresenterAddGrid()};root.appendChild(b)}
 }
 function stRenderPhotos(){const d=st.data,picks=$('photoPicks'),kept=$('photoKept');picks.innerHTML='';kept.innerHTML='';
   if(!d.pending_photos.length)picks.innerHTML='<div class="empty">New photos show up here.</div>';
@@ -482,13 +603,6 @@ function stRenderPhotos(){const d=st.data,picks=$('photoPicks'),kept=$('photoKep
   if(!d.photos.length)kept.innerHTML='<div class="empty">Photos you keep show up here.</div>';
   d.photos.forEach((p,i)=>kept.appendChild(makeTile(p.path,'image',{badge:p.label,onOpen:()=>viewerOpen(keptList,d.master?i+1:i)})));
 }
-function stRenderMoveImages(force){const d=st.data,root=$('moveImages');if(!force&&!stSig('moveImages',[d.master,d.photos,st.moveImage]))return;root.innerHTML='';
-  const options=[...(d.master?[{path:d.master,label:'Her master photo'}]:[]),...d.photos.map(p=>({path:p.path,label:p.label}))];
-  if(st.moveImage&&!options.some(o=>o.path===st.moveImage))options.unshift({path:st.moveImage,label:base(st.moveImage)});
-  if(!options.length){root.innerHTML='<div class="empty">Design her look first.</div>';return}
-  const chosen=st.moveImage||options[0].path;
-  options.forEach(o=>root.appendChild(makeTile(o.path,'image',{badge:o.label,selected:o.path===chosen,onOpen:()=>{st.moveImage=o.path;stRenderMoveImages(true);stPriceSoon()},actions:[{label:'🔍 Full size',run:()=>viewerOpen([{path:o.path,title:o.label}],0)}]})));
-}
 function stRenderNarrations(){const d=st.data,list=$('voiceList'),items=d.narrations||[];
   list.innerHTML=items.length?'':'<div class="empty">Your voiceovers show up here.</div>';
   items.slice(0,12).forEach(v=>{const row=document.createElement('div');row.className='item';row.innerHTML=`<span title="${esc(v.script||v.label)}">♪ ${esc(v.label)}${v.duration_s?' · '+Number(v.duration_s).toFixed(1)+' s':''}</span>`;const play=document.createElement('button');play.className='mini';play.textContent='Play';play.onclick=()=>openLocalPath(v.path);row.appendChild(play);list.appendChild(row)});
@@ -496,6 +610,7 @@ function stRenderNarrations(){const d=st.data,list=$('voiceList'),items=d.narrat
   stFillSelect('stTalkNarration',opts.length?opts:[{value:'',label:'Make a voiceover first'}],opts.length?opts[0].value:'');
   stFillSelect('stActNarration',[{value:'',label:'Silent (your voice is removed)'},...opts.map(x=>({value:x.value,label:'Her voiceover: '+x.label}))],'');
   stFillSelect('stMoveNarration',[{value:'',label:'Silent'},...opts.map(x=>({value:x.value,label:'Her voiceover: '+x.label}))],'');
+  stFillSelect('stSceneNarration',[{value:'',label:'Silent'},...opts.map(x=>({value:x.value,label:'Her voiceover: '+x.label}))],'');
 }
 function stRenderTalker(){const d=st.data;stFillSelect('stTalkerVoice',(d.talker_voices||[]).map(v=>({value:v,label:v[0].toUpperCase()+v.slice(1)})),d.default_talker_voice);
   $('talkVoiceStep').style.display=d.talker?'none':'grid';
@@ -504,7 +619,7 @@ function stRenderJobs(){const jobs=st.data.jobs||[];
   const row=j=>{const p=typeof j.progress==='number'?` · ${Math.round(j.progress*100)}%`:'';return `<div class="job"><div class="spin"></div><span>${esc(j.label||'Job')}</span><b class="tiny">${j.status==='running'?'making it'+p:'waiting in line'}</b></div>`};
   $('homeWorking').style.display=jobs.length?'block':'none';$('homeJobs').innerHTML=jobs.map(row).join('');
   document.querySelectorAll('[data-jobs]').forEach(el=>{const mine=jobs.filter(j=>j.action===el.dataset.jobs||(el.dataset.jobs==='voiceover'&&j.action==='sample'));el.innerHTML=mine.map(row).join('');const wrap=document.querySelector(`[data-jobs-wrap="${el.dataset.jobs}"]`);if(wrap)wrap.style.display=mine.length?'block':'none'})}
-function stRenderResults(){renderResultTiles($('homeLatest'),resultItems(null),12);document.querySelectorAll('[data-results]').forEach(el=>renderResultTiles(el,resultItems(el.dataset.results),24))}
+function stRenderResults(){renderResultTiles($('homeLatest'),resultItems(null),12);document.querySelectorAll('[data-results]').forEach(el=>renderResultTiles(el,resultItems(el.dataset.results).filter(x=>el.dataset.results!=='scene'||x.name.startsWith('scene_')),24))}
 function stRender(first){
   const d=st.data;const connected=!!(d.key&&d.key.configured);
   if(!connected){$('sideRunwayDot').className='dot bad';$('sideRunway').textContent='Runway: add your key in Settings'}
@@ -515,7 +630,8 @@ function stRender(first){
   if(stSig('picks',[d.master,d.pending_master]))stRenderPicks();
   if(stSig('angles',d.angles))$('stAngles').innerHTML=d.angles.map(a=>`<label><input type="checkbox" value="${esc(a.id)}"${ST_DEFAULT_ANGLES.includes(a.id)?' checked':''}>${esc(a.label)}</label>`).join('');
   if(stSig('photos',[d.master,d.photos,d.pending_photos]))stRenderPhotos();
-  stRenderMoveImages(false);
+  stPickImages('moveImages',()=>st.moveImage,v=>st.moveImage=v);stPickImages('sceneImages',()=>st.sceneImage,v=>st.sceneImage=v,{requirePick:true});
+  stPickImages('anglesImages',()=>st.anglesImage,v=>st.anglesImage=v);stPickImages('actImages',()=>st.actImage,v=>st.actImage=v);
   if(stSig('voices',[d.voices,d.voice]))stFillSelect('stVoice',d.voices.map(v=>({value:v,label:v})),d.voice);
   if(stSig('narrations',d.narrations))stRenderNarrations();
   if(stSig('talker',[d.talker,d.talker_voices]))stRenderTalker();
@@ -548,13 +664,19 @@ async function engLoad(){let e;try{e=await window.pywebview.api.engine_status()}
   if(local){local.disabled=e.state!=='ready';$('localEngineHint').textContent=e.state==='ready'?`free · about ${e.minutes} min · ${e.seconds} s clips`:short}
   if(e.state==='ready'&&!st.engineChosen&&st.opts.moveEngine!=='local')stChipSet('moveEngine','local');
   if(e.state!=='ready'&&st.opts.moveEngine==='local')stChipSet('moveEngine','best');
+  if(st.recipe==='scene')stPriceSoon();
 }
 async function engStart(){const r=await window.pywebview.api.comfyui_start();log(r.ok?'GPU engine starting':'GPU engine: '+r.error);engLoad()}
 async function engStop(){$('setEngine').textContent='Stopping… (it can take a minute to release the models)';const r=await window.pywebview.api.comfyui_stop();log(r.ok?(r.message||'GPU engine stopped'):'GPU engine: '+r.error);engLoad()}
 
 /* ---------- My stuff ---------- */
-async function libLoad(){const r=await window.pywebview.api.studio_library(st.libKind);if(!r.ok)return;const items=r.items||[];$('libCount').textContent=`${items.length} item${items.length===1?'':'s'}`;
-  renderResultTiles($('libGrid'),items.map(x=>({...x,result:{label:x.label,finished_at:x.finished_at,credits:x.credits,local:x.local}})),400)}
+async function libLoad(){st.libShown=60;$('libMore').innerHTML='';
+  if(st.libKind==='avatars'){const r=await window.pywebview.api.studio_avatars();const items=(r&&r.items)||[];$('libCount').textContent=`${items.length} saved avatar${items.length===1?'':'s'}`;const root=$('libGrid');root.innerHTML='';
+    if(!items.length){root.innerHTML='<div class="empty">No saved avatars.</div>';return}
+    items.forEach(a=>{const pics=a.pictures.map((p,i)=>({path:p,title:`${a.name} · picture ${i+1}`,actions:[{label:'Make a scene from this',run:async()=>{viewerClose();stSceneFrom(p);return 'close'}}]}));root.appendChild(makeTile(a.pictures[0],'image',{badge:`${a.pictures.length} picture${a.pictures.length===1?'':'s'}`,title:a.name,onOpen:()=>viewerOpen(pics,0),
+      actions:[{label:'Delete',title:'Remove this avatar so it is no longer an option (its pictures stay in My stuff)',run:async()=>{let r;try{r=await window.pywebview.api.studio_avatar_delete({avatar_id:a.id})}catch(e){r={ok:false,error:String(e)}}if(!r.ok){say(r.error||'Could not remove it.','err');return}say('Removed '+a.name,'ok');libLoad()}}]}))});return}
+  const r=await window.pywebview.api.studio_library(st.libKind);if(!r.ok)return;st.libItems=(r.items||[]).map(x=>({...x,result:{label:x.label,finished_at:x.finished_at,credits:x.credits,local:x.local,source:x.source}}));$('libCount').textContent=`${st.libItems.length} item${st.libItems.length===1?'':'s'}`;libRender()}
+function libRender(){renderResultTiles($('libGrid'),st.libItems,st.libShown);const left=st.libItems.length-st.libShown;$('libMore').innerHTML='';if(left>0){const b=document.createElement('button');b.className='btn';b.textContent=`Show more (${left} left)`;b.onclick=()=>{st.libShown+=60;libRender()};$('libMore').appendChild(b)}}
 document.querySelectorAll('#libKinds button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#libKinds button').forEach(x=>x.classList.toggle('on',x===b));st.libKind=b.dataset.k;libLoad()});
 
 /* ---------- Settings ---------- */
@@ -594,10 +716,12 @@ function stInit(){
   stChipInit();
   $('moveIdeas').innerHTML=MOVE_IDEAS.map(t=>`<button type="button">${esc(t)}</button>`).join('');
   $('moveIdeas').querySelectorAll('button').forEach(b=>b.onclick=()=>{$('stMotion').value=b.textContent;stPriceSoon()});
+  $('sceneIdeas').innerHTML=SCENE_IDEAS.map(t=>`<button type="button">${esc(t)}</button>`).join('');
+  $('sceneIdeas').querySelectorAll('button').forEach(b=>b.onclick=()=>sceneUseIdea(b.textContent));sceneRenderShots();
   $('stAngles').addEventListener('change',stPriceSoon);
   ['stExtra','stTalkScript','stMotion'].forEach(id=>$(id).addEventListener('input',stPriceSoon));
   $('stVoScript').addEventListener('input',()=>{$('stVoCount').textContent=`${$('stVoScript').value.length} / 2500`;stPriceSoon()});
-  ['stVoice','stTalkNarration','stActNarration','stMoveNarration','stTalkerVoice'].forEach(id=>$(id).addEventListener('change',stPriceSoon));
+  ['stVoice','stTalkNarration','stActNarration','stMoveNarration','stSceneNarration','stTalkerVoice'].forEach(id=>$(id).addEventListener('change',stPriceSoon));
   stLoad().then(()=>{renderTiles();stRefreshBalance()});engLoad();
   setInterval(()=>{if($('view-make').classList.contains('active'))stLoad()},4000);
   setInterval(()=>{const e=st.engine;if(!e||e.state!=='ready'||$('view-settings').classList.contains('active'))engLoad()},5000);
@@ -618,7 +742,9 @@ async function runUiTest(){
     for(const r of RECIPES){openRecipe(r.id);await wait(250);report.recipes[r.id]={shown:!$('recipe-'+r.id).hidden,steps:$('recipe-'+r.id).querySelectorAll('.steps>li').length}}
     openRecipe(null);
     const s=await api.studio_state(),price=await api.studio_price({action:'presenter',count:4,look:'natural'}),voice=await api.studio_price({action:'voiceover',script:'Hello and welcome.'}),move=await api.studio_price({action:'move'});
-    const lib=await api.studio_library('all'),eng=await api.engine_status();
+    const lib=await api.studio_library('all'),eng=await api.engine_status(),avs=await api.studio_avatars();report.checks.avatars_ok=avs.ok===true;
+    report.checks.scene_shots_editor=$('sceneShots').querySelectorAll('textarea').length;sceneAddShot();report.checks.scene_add_shot=$('sceneShots').querySelectorAll('textarea').length;st.sceneShots=[''];sceneRenderShots();
+    view('library');await wait(700);document.querySelector('#libKinds button[data-k="avatars"]').click();await wait(500);report.checks.avatars_tab=$('libCount').textContent;report.checks.avatars_grid=$('libGrid').children.length;await wait(700);document.querySelector('#libKinds button[data-k="all"]').click();await wait(700);report.checks.all_tab=$('libCount').textContent;view('make');
     report.checks.state_ok=s.ok===true;report.checks.presenter_price=price.ok?price.credits:'error '+price.error;report.checks.voiceover_price=voice.ok?voice.credits:'error '+voice.error;
     report.checks.move_without_master_explains=move.ok===false&&/presenter/i.test(move.error||'');report.checks.library_ok=lib.ok===true;report.checks.engine_state=eng.state;
     const missing=await api.studio_image('/definitely/not/here.png');report.checks.missing_image_refused=missing.ok===false;

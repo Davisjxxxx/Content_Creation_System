@@ -28,13 +28,13 @@ from .composer import build_job
 from .integrity import sha256_file
 from .library import AvatarProfile
 from .policy import depicts_minor
-from .presenter import compile_presenter_prompt
+from .presenter import MOTION_REALISM, NO_TEXT, compile_presenter_prompt
 from .providers import runway as runway_api
 from .render_queue import QueuedRender
 from .secret_store import secret_status
 from .voiceover import segment_script
 
-STUDIO_ACTIONS = ("presenter", "angles", "voiceover", "sample", "talk", "act", "move", "sharpen")
+STUDIO_ACTIONS = ("presenter", "angles", "voiceover", "sample", "talk", "act", "move", "sharpen", "scene")
 PHOTO_RATIO = "1080:1440"  # 3:4 portrait, 1080p tier (8 credits per Gen-4 image)
 VIDEO_SHAPES = {"tall": "720:1280", "portrait": "832:1104"}  # phone 9:16, or the photo's own 3:4
 MOVE_MODELS = {"best": "gen4.5", "fast": "gen4_turbo"}
@@ -53,6 +53,7 @@ AUDIO_SUFFIXES = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg"}
 RECENT_FAILURE_WINDOW = timedelta(hours=6)
 TALK_PART_CHARS = 4500  # Runway avatar videos take up to 5,000 characters; longer scripts become parts
 MOVE_ENGINES = ("local", "best", "fast")  # your GPU, Runway Gen-4.5, Runway Gen-4 Turbo
+SCENE_MAX_SHOTS = 12  # each shot is about 5 s; shots continue from the previous shot's last frame (12 ≈ 1 minute)
 
 
 def _desktop():
@@ -178,12 +179,16 @@ class StudioMixin:
                 runway["candidates"] = count
             label = "New presenter option"
         elif action == "angles":
-            need_master()
             allowed = {slot["id"] for slot in _angle_slots()}
             slots = [str(item) for item in options.get("slots") or [] if str(item) in allowed]
             if not slots:
                 raise ValueError("Tick at least one kind of photo.")
-            # Her face comes from the master photo; extra design notes would crowd out the angle direction.
+            anchor = str(options.get("image") or "").strip() or need_master()
+            if not Path(anchor).is_file():
+                raise ValueError("Pick a start photo first (step 1).")
+            # The same face as the chosen picture, from the ticked angles. Her master photo is the
+            # default; any picture in My stuff can be the anchor instead.
+            avatar["identity_refs"] = [anchor]
             shot["user_prompt"] = bi.look_prompt(look)
             runway = {"task": "variations", "model": "gen4_image", "ratio": PHOTO_RATIO, "variations": slots}
             label = "Photo of her"
@@ -219,7 +224,9 @@ class StudioMixin:
                 runway["avatar_preset"] = runway_api.AVATAR_PRESETS[0]
             label = "Talking video"
         elif action == "act":
-            character = need_master()
+            character = str(options.get("image") or "").strip() or need_master()
+            if not Path(character).is_file():
+                raise ValueError("Pick a start photo first (step 1).")
             video = str(options.get("video") or "").strip()
             if not video:
                 raise ValueError("Choose the video of you acting it out.")
@@ -237,7 +244,7 @@ class StudioMixin:
         elif action == "move":
             image = str(options.get("image") or "").strip() or need_master()
             seconds = 10 if int(options.get("seconds") or 5) >= 10 else 5
-            shot["user_prompt"] = " ".join(str(options.get("motion") or "").split())[:600] or DEFAULT_MOTION
+            shot["user_prompt"] = " ".join(str(options.get("motion") or "").split())[:1000] or DEFAULT_MOTION  # Runway video models allow up to 1000
             shot["references"] = {"init_image": image}
             quality = options.get("engine") if options.get("engine") in MOVE_MODELS else options.get("quality")
             runway = {
@@ -262,37 +269,46 @@ class StudioMixin:
             "studio_action": action,
         }
 
-    def _studio_local_move(self, options: dict[str, Any]) -> QueuedRender:
-        """A "Moving clip" rendered on this computer's GPU (Wan 2.2 14B through ComfyUI; free)."""
+    def _is_presenter_image(self, path: str) -> bool:
+        profile = self._studio_profile()
+        if profile is None or not path:
+            return False
+        target = str(Path(path).expanduser().resolve())
+        return any(ref and str(Path(ref).expanduser().resolve()) == target for ref in profile.identity_refs.values())
+
+    def _local_wan_item(self, *, image: str, text: str, shape: str, label: str, action: str) -> QueuedRender:
+        """One free 5-second clip on this computer's GPU (Wan 2.2 14B through ComfyUI)."""
         info = local_engine.inspect(self._settings())
         if not info["installed"] or info["missing_models"]:
             raise ValueError(
                 "Your GPU engine isn't installed yet. Run scripts/setup_local_engine.sh, or pick a Runway option."
             )
-        master, _sha = self._studio_master()
-        image = str(options.get("image") or "").strip() or master
-        if not image:
-            raise ValueError("Pick your presenter photo first (step 1).")
-        motion = " ".join(str(options.get("motion") or "").split())[:600] or DEFAULT_MOTION
-        phrase = depicts_minor(motion)
+        if not image or not Path(image).is_file():
+            raise ValueError("Pick a start picture first.")
+        text = " ".join(str(text or "").split())[:4000] or DEFAULT_MOTION  # long descriptions are fine; only a sanity cap
+        phrase = depicts_minor(text)
         if phrase:
-            raise ValueError(f'The presenter has to be an adult (18+). Remove "{phrase}" from the description.')
+            raise ValueError(f'People shown have to be adults (18+). Remove "{phrase}" from the description.')
         preset = self.brand_instructor_preset()
         avatar_payload = {**preset["avatar"], "identity_refs": [], "hair_refs": [], "wardrobe_refs": []}
         shot_payload = {
             **preset["shot"],
-            "shot_id": "studio-move-local",
+            "shot_id": f"studio-{action}-local",
             "engine_preference": "wan22",
             "duration_s": local_engine.SECONDS,
             "fps": local_engine.FPS,
-            "user_prompt": motion,
+            "user_prompt": text,
             "wind": {},
             "references": {"init_image": image},
         }
         avatar, shot = self._models_from_payload({"avatar": avatar_payload, "shot": shot_payload})
         job = build_job(avatar, shot)
-        prompt, _dropped = compile_presenter_prompt(avatar, shot, budget=900, motion=True)
-        width, height = local_engine.SHAPES[_choice(options.get("shape"), local_engine.SHAPES, "tall")]
+        if self._is_presenter_image(image):
+            # Budget covers identity, realism and camera blocks plus the whole description (up to the 4000-char sanity cap).
+            prompt, _dropped = compile_presenter_prompt(avatar, shot, budget=5000, motion=True)
+        else:  # some other picture: describe the motion only, never the presenter's identity
+            prompt = f"{text if text.endswith(('.', '!', '?')) else text + '.'} {MOTION_REALISM} {NO_TEXT}"
+        width, height = local_engine.SHAPES[_choice(shape, local_engine.SHAPES, "tall")]
         job.prompt = prompt
         job.asset_map.update(
             {
@@ -303,13 +319,10 @@ class StudioMixin:
                 "WAN_HEIGHT": height,
                 "WAN_LENGTH": local_engine.FRAMES,
                 "WAN_SEED": secrets.randbelow(2_000_000_000) + 1,
-                "WAN_PREFIX": f"avatar_v2/studio_move_{job.job_id[:12]}",
+                "WAN_PREFIX": f"avatar_v2/studio_{action}_{job.job_id[:12]}",
                 **local_engine.model_placeholders(),
             }
         )
-        voiceover = ""
-        if str(options.get("narration_id") or "").strip():
-            voiceover = self._narration_file({"voiceover_id": str(options["narration_id"]).strip()}, job)
         runtime = {
             "provider": "comfyui",
             "profile": local_engine.PROFILE,
@@ -320,12 +333,10 @@ class StudioMixin:
             "width": width,
             "height": height,
             "frames": local_engine.FRAMES,
-            "studio_action": "move",
+            "studio_action": action,
             "estimate_credits": 0,
-            "reason": "Moving clip on your GPU (free)",
+            "reason": "Rendered on your GPU (free)",
         }
-        if voiceover:
-            runtime.update({"studio_voiceover": voiceover, "candidate_qa": True})
         return QueuedRender(
             job=job,
             workflow=str(local_engine.WORKFLOW),
@@ -333,8 +344,47 @@ class StudioMixin:
             profile=local_engine.PROFILE,
             runtime=runtime,
             archive_dir=str(self._archive_dir()),
-            label=f"Motion clip · {local_engine.SECONDS} s · your GPU",
+            label=label,
         )
+
+    def _studio_local_move(self, options: dict[str, Any]) -> QueuedRender:
+        """A "Moving clip" rendered on this computer's GPU (free)."""
+        master, _sha = self._studio_master()
+        image = str(options.get("image") or "").strip() or master
+        if not image:
+            raise ValueError("Pick your presenter photo first (step 1).")
+        item = self._local_wan_item(image=image, text=str(options.get("motion") or ""), shape=str(options.get("shape") or ""),
+                                    label=f"Motion clip · {local_engine.SECONDS} s · your GPU", action="move")
+        if str(options.get("narration_id") or "").strip():
+            voiceover = self._narration_file({"voiceover_id": str(options["narration_id"]).strip()}, item.job)
+            item.runtime.update({"studio_voiceover": voiceover, "candidate_qa": True})
+        return item
+
+    def _studio_scene_items(self, options: dict[str, Any]) -> list[QueuedRender]:
+        """A video scene made offline: 1-12 shots (about a minute), each continuing from the previous shot's last frame."""
+        image = str(options.get("image") or "").strip()  # a blank slate: never default to the master photo
+        if not image or not Path(image).is_file():
+            raise ValueError("Pick a start picture first (step 1).")
+        shots = [" ".join(str(text or "").split()) for text in options.get("shots") or []]
+        shots = [text for text in shots if text][:SCENE_MAX_SHOTS]
+        if not shots:
+            raise ValueError("Describe at least one shot (step 2).")
+        shape = str(options.get("shape") or "")
+        items: list[QueuedRender] = []
+        for index, text in enumerate(shots, start=1):
+            item = self._local_wan_item(image=image, text=text, shape=shape, action="scene",
+                                        label=f"Scene · shot {index} of {len(shots)} · your GPU")
+            if items:
+                item.chain_from_previous = True
+                item.runtime["chain_from_id"] = items[-1].id
+            items.append(item)
+        last = items[-1]
+        last.runtime.update({"scene_shots": [item.id for item in items], "candidate_qa": True})
+        if str(options.get("narration_id") or "").strip():
+            last.runtime["studio_voiceover"] = self._narration_file(
+                {"voiceover_id": str(options["narration_id"]).strip()}, last.job
+            )
+        return items
 
     def _studio_payloads(self, options: dict[str, Any]) -> list[dict[str, Any]]:
         """Usually one job; a typed talking-video script longer than Runway's limit becomes parts."""
@@ -359,13 +409,18 @@ class StudioMixin:
     def studio_price(self, options: dict[str, Any]) -> dict[str, Any]:
         """What a Studio action would cost (local estimate, no network, nothing queued)."""
         options = dict(options or {})
-        if options.get("action") == "move" and options.get("engine") == "local":
+        if options.get("action") == "scene" or (options.get("action") == "move" and options.get("engine") == "local"):
             try:
-                self._studio_local_move(options)
+                if options.get("action") == "scene":
+                    shots = len(self._studio_scene_items(options))
+                else:
+                    self._studio_local_move(options)
+                    shots = 1
             except (ValueError, OSError) as exc:
                 return {"ok": False, "error": str(exc)}
-            return {"ok": True, "action": "move", "credits": 0, "usd": 0.0, "upper_bound": False, "local": True,
-                    "minutes": local_engine.ESTIMATED_MINUTES, "warnings": [], "limit_error": None, "needs_talker": False}
+            return {"ok": True, "action": options["action"], "credits": 0, "usd": 0.0, "upper_bound": False, "local": True,
+                    "shots": shots, "minutes": local_engine.ESTIMATED_MINUTES * shots, "warnings": [], "limit_error": None,
+                    "needs_talker": False}
         try:
             payloads = self._studio_payloads(options)
         except (ValueError, runway_api.RunwayError) as exc:
@@ -395,19 +450,20 @@ class StudioMixin:
         """Start a Studio action right away (no confirmation step)."""
         options = dict(options or {})
         action = str(options.get("action") or "")
-        if action == "move" and options.get("engine") == "local":
+        if action == "scene" or (action == "move" and options.get("engine") == "local"):
             engine = self.engine_status()
             if engine["state"] != "ready":
                 if engine["state"] in ("stopped", "error"):
                     self.engine_autostart()
                 return {"ok": False, "error": engine["message"] + " Try again when it says ready."}
             try:
-                item = self._studio_local_move(options)
+                items = self._studio_scene_items(options) if action == "scene" else [self._studio_local_move(options)]
             except (ValueError, OSError) as exc:
                 return {"ok": False, "error": str(exc)}
-            queue_id = self.queue.add(item)
-            return {"ok": True, "action": action, "queue_id": queue_id, "queued": [{"queue_id": queue_id}],
-                    "total_credits": 0, "local": True, "minutes": local_engine.ESTIMATED_MINUTES}
+            queue_ids = self.queue.add_many(items)
+            return {"ok": True, "action": action, "queue_id": queue_ids[0],
+                    "queued": [{"queue_id": queue_id} for queue_id in queue_ids], "total_credits": 0, "local": True,
+                    "shots": len(items), "minutes": local_engine.ESTIMATED_MINUTES * len(items)}
         if action in ("voiceover", "sample"):
             self._studio_remember_voice(self._studio_voice(options.get("voice")))
         try:
@@ -500,6 +556,165 @@ class StudioMixin:
         item.outputs.insert(0, str(voiced))
         item.output_hashes[str(voiced)] = sha256_file(voiced)
         return {"ok": True, "voiceover": "added", "file": voiced.name}
+
+    def _shot_video(self, queue_id: str, current: Any) -> Path | None:
+        if current is not None and current.id == queue_id:
+            outputs = current.outputs
+        else:
+            outputs = next((i.get("outputs") or [] for i in self.queue.list() if i.get("id") == queue_id), None)
+            if outputs is None:
+                try:
+                    outputs = json.loads((_desktop().HISTORY_DIR / f"{queue_id}.json").read_text(encoding="utf-8")).get("outputs") or []
+                except (OSError, json.JSONDecodeError):
+                    outputs = []
+        return next((Path(o) for o in outputs if Path(o).suffix.lower() in VIDEO_SUFFIXES and Path(o).is_file()
+                     and not Path(o).name.startswith("scene_")), None)
+
+    def _studio_finish_scene(self, item: Any) -> dict[str, Any]:
+        """After a scene's last shot renders, join every shot into one video (and add her voiceover)."""
+        videos = [self._shot_video(str(queue_id), item) for queue_id in item.runtime.get("scene_shots") or []]
+        if not videos or any(video is None for video in videos):
+            return {"ok": False, "scene": "not joined: a shot has no video"}
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return {"ok": False, "scene": "not joined: ffmpeg is not installed"}
+        target = videos[-1].with_name(f"scene_{item.id}.mp4")
+        command = [ffmpeg, "-y", "-v", "error"]
+        for video in videos:
+            command += ["-i", str(video)]
+        # Every shot after the first starts on the previous shot's last frame, so drop that repeated frame.
+        parts = [f"[{i}:v]{'trim=start_frame=1,' if i else ''}setpts=PTS-STARTPTS[v{i}]" for i in range(len(videos))]
+        joined = "".join(f"[v{i}]" for i in range(len(videos)))
+        command += ["-filter_complex", ";".join(parts) + f";{joined}concat=n={len(videos)}:v=1:a=0[out]",
+                    "-map", "[out]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(target)]
+        try:
+            subprocess.run(command, capture_output=True, timeout=600, check=True)
+        except (subprocess.SubprocessError, OSError) as exc:
+            return {"ok": False, "scene": f"not joined: {type(exc).__name__}"}
+        final = target
+        voiceover = Path(str(item.runtime.get("studio_voiceover") or ""))
+        if item.runtime.get("studio_voiceover") and voiceover.is_file():
+            try:
+                final = runway_api.replace_audio_track(target, "voiceover", voiceover)
+            except runway_api.RunwayError:
+                final = target
+        item.outputs.insert(0, str(final))
+        if final != target:
+            item.outputs.insert(1, str(target))  # the silent version is kept too
+        for output in {final, target}:
+            item.output_hashes[str(output)] = sha256_file(output)
+        return {"ok": True, "scene": "joined", "shots": len(videos), "file": final.name}
+
+    def studio_avatars(self) -> dict[str, Any]:
+        """Saved avatar profiles from the vault, with the pictures each one keeps (local only)."""
+        library = self._library_or_none()
+        avatars = []
+        for entry in (library.avatars() if library is not None else []):
+            profile = AvatarProfile.model_validate(entry)
+            pictures = []
+            for group in (profile.ordered_identity, *(list(getattr(profile, key).values()) for key in ("body_refs", "hair_refs", "wardrobe_refs"))):
+                for path in group:
+                    if path and Path(str(path)).is_file() and str(path) not in pictures:
+                        pictures.append(str(path))
+            if pictures:
+                avatars.append({"id": profile.avatar_id, "name": profile.display_name, "pictures": pictures})
+        avatars.sort(key=lambda a: (a["id"] != bi.PROFILE_ID, a["name"].lower()))
+        return {"ok": True, "items": avatars}
+
+    def studio_avatar_delete(self, options: dict[str, Any]) -> dict[str, Any]:
+        """Remove a saved avatar so it stops being an option; its picture files stay in My stuff."""
+        avatar_id = str((options or {}).get("avatar_id") or "").strip()
+        if not avatar_id:
+            return {"ok": False, "error": "No avatar given."}
+        if avatar_id == bi.PROFILE_ID:
+            return {"ok": False, "error": "That's your current presenter. Use Remove on her photo in the look recipe instead."}
+        library = self._library_or_none()
+        if library is None or not library.remove_avatar(avatar_id):
+            return {"ok": False, "error": "That avatar isn't saved."}
+        return {"ok": True, "deleted": avatar_id}
+
+    def studio_delete(self, options: dict[str, Any]) -> dict[str, Any]:
+        """Delete one thing from My stuff: its file, and every history entry that lists it.
+
+        Only files the app's own records list can be removed this way; the bridge never
+        gets to delete an arbitrary path.
+        """
+        path = str((options or {}).get("path") or "").strip()
+        if not path:
+            return {"ok": False, "error": "No file given."}
+        target = Path(path).expanduser()
+        profile = self._studio_profile()
+        front = str(profile.identity_refs.get("front") or "") if profile is not None else ""
+        was_master = bool(front) and Path(front).expanduser() == target
+        history_dir = _desktop().HISTORY_DIR
+        updated = 0
+        for record_file in history_dir.glob("*.json"):
+            try:
+                record = json.loads(record_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            outputs = record.get("outputs") or []
+            kept = [str(o) for o in outputs if Path(str(o)).expanduser() != target]
+            if len(kept) == len(outputs):
+                continue
+            if kept:
+                record["outputs"] = kept
+                record_file.write_text(json.dumps(record, indent=2), encoding="utf-8")
+            else:
+                record_file.unlink(missing_ok=True)  # nothing left to show for this job
+            updated += 1
+        if not updated and not was_master:
+            return {"ok": False, "error": "That file isn't in My stuff."}
+        try:
+            target.unlink(missing_ok=True)
+        except OSError as exc:
+            return {"ok": False, "error": f"Could not delete the file: {exc}"}
+        if was_master:
+            self._clear_master_refs()  # blank slate: recipes ask which picture to start from
+        # Its cached thumbnail becomes an orphan; harmless, and reused hashes avoid clutter.
+        return {"ok": True, "deleted": target.name, "records_updated": updated}
+
+    def _clear_master_refs(self) -> None:
+        """After her master photo is deleted, drop it from the vault so the app starts from a blank slate."""
+        library = self._library_or_none()
+        if library is None:
+            return
+        entry = library.get_avatar(bi.PROFILE_ID)
+        if not entry:
+            return
+        profile = AvatarProfile.model_validate(entry)
+        identity = dict(profile.identity_refs or {})
+        hashes = dict(profile.reference_hashes or {})
+        identity.pop("front", None)
+        hashes.pop("front", None)
+        library.put_avatar(profile.model_copy(update={"identity_refs": identity, "reference_hashes": hashes}).model_dump())
+
+    def studio_presenter_add(self, options: dict[str, Any]) -> dict[str, Any]:
+        """Put any picture from My stuff into the 'Your presenter' options (pending, never auto-accepted).
+
+        Only the user's manual pick (studio_pick) ever makes one the master photo.
+        """
+        path = str((options or {}).get("path") or "").strip()
+        if not path:
+            return {"ok": False, "error": "No picture given."}
+        source = Path(path).expanduser()
+        if _kind(str(source)) != "image" or not source.is_file():
+            return {"ok": False, "error": "That isn't a picture."}
+        library = self._library_or_none()
+        if library is None or library.get_avatar(bi.PROFILE_ID) is None:
+            self.brand_instructor_install()
+            library = self._library_or_none()
+        if library is None or library.get_avatar(bi.PROFILE_ID) is None:
+            return {"ok": False, "error": "The presenter profile is missing."}
+        profile = AvatarProfile.model_validate(library.get_avatar(bi.PROFILE_ID))
+        if any(c.path == str(source) and c.slot_id == "identity_front" for c in profile.build_manifest.candidates):
+            return {"ok": True, "path": str(source), "already": True}
+        library.record_candidate(
+            bi.PROFILE_ID,
+            {"path": str(source), "source_path": str(source), "slot_id": "identity_front",
+             "group": "identity", "status": "pending"},
+        )
+        return {"ok": True, "path": str(source), "already": False}
 
     def engine_status(self) -> dict[str, Any]:
         """The local GPU engine (ComfyUI + Wan 2.2 14B): installed, starting, ready or stopped."""
@@ -603,14 +818,14 @@ class StudioMixin:
         """Everything made with Studio and Runway, newest first, one tile per file."""
         kind = kind if kind in ("all", "image", "video", "audio") else "all"
         tiles: list[dict[str, Any]] = []
-        for result in self._studio_results(limit=400, include_failures=False):
+        for result in self._studio_results(limit=5000, include_failures=False):
             for output in result["outputs"]:
                 if kind != "all" and output["kind"] != kind:
                     continue
                 tiles.append({**output, "id": result["id"], "label": result["label"], "action": result["action"],
                               "finished_at": result["finished_at"], "credits": result["credits"],
-                              "local": result["local"]})
-        return {"ok": True, "kind": kind, "items": tiles[:400]}
+                              "local": result["local"], "source": result["source"]})
+        return {"ok": True, "kind": kind, "items": tiles}
 
     def _studio_results(self, limit: int = 24, include_failures: bool = True) -> list[dict[str, Any]]:
         history_dir = _desktop().HISTORY_DIR
@@ -627,9 +842,9 @@ class StudioMixin:
                 continue
             if not isinstance(item, dict):
                 continue
-            local = item.get("provider") == "comfyui" and bool(item.get("studio_action"))
-            if item.get("provider") != "runway" and not local:
-                continue
+            # Everything you've made counts: Runway jobs, recipes on your GPU, and the old app's local renders.
+            source = "runway" if item.get("provider") == "runway" else ("gpu" if item.get("studio_action") else "old")
+            local = source != "runway"
             outputs = [
                 {"path": str(output), "kind": _kind(str(output)), "name": Path(str(output)).name}
                 for output in item.get("outputs") or []
@@ -657,6 +872,7 @@ class StudioMixin:
                     "credits": 0 if local else receipt.get("credits_charged"),
                     "charge_status": "none" if local else receipt.get("charge_status"),
                     "local": local,
+                    "source": source,
                 }
             )
             if len(results) >= limit:

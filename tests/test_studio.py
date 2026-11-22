@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -93,7 +94,8 @@ def _spec(item) -> dict:
 
 def test_studio_methods_are_bridged_and_the_internal_setup_is_not():
     for name in ("studio_state", "studio_price", "studio_go", "studio_pick", "studio_talker_status", "studio_thumb",
-                 "studio_image", "studio_library", "engine_status", "comfyui_start", "comfyui_stop"):
+                 "studio_image", "studio_library", "studio_avatars", "studio_delete", "engine_status",
+                 "comfyui_start", "comfyui_stop"):
         assert name in JS_API_METHODS
     for name in ("studio_setup_talker", "engine_autostart", "queue_runway", "queue_render", "vault_save"):
         assert name not in JS_API_METHODS  # internal, or part of the removed advanced screens
@@ -269,7 +271,8 @@ def test_results_list_recent_runway_outputs_and_recent_failures_only(api, home):
     for key, record in records.items():
         (home / "history" / f"{key}.json").write_text(json.dumps(record))
     results = {r["id"]: r for r in api.studio_state()["results"]}
-    assert set(results) == {"done", "fresh_fail"}
+    assert set(results) == {"done", "fresh_fail", "local"}  # old local renders are shown again
+    assert results["local"]["source"] == "old" and results["done"]["source"] == "runway"
     assert results["done"]["outputs"][0]["kind"] == "image" and results["done"]["credits"] == 8
     assert results["fresh_fail"]["error"] == "Runway said no." and results["fresh_fail"]["charge_status"] == "none"
 
@@ -334,11 +337,9 @@ def test_local_moving_clip_is_free_and_fills_every_workflow_slot(api, home, monk
     waiting = api.studio_go({"action": "move", "engine": "local", "motion": "She waves hello."})
     assert waiting["ok"] is False and "starting" in waiting["error"] and api.queue.items == []
     monkeypatch.setattr(api, "comfyui_status", lambda: {"state": "READY", "ready": True, "pid": 1})
-    added = []
-    api.queue.add = lambda item: added.append(item) or item.id
     go = api.studio_go({"action": "move", "engine": "local", "motion": "She waves hello.", "shape": "portrait"})
     assert go["ok"] is True and go["total_credits"] == 0 and go["local"] is True
-    item = added[0]
+    item = api.queue.items[0]
     assert item.provider_config.provider == "comfyui" and item.profile == "low_memory"  # forced GPU cleanup first
     assert item.workflow == str(local_engine.WORKFLOW) and item.runtime["studio_action"] == "move"
     workflow = json.loads(local_engine.WORKFLOW.read_text())
@@ -386,6 +387,74 @@ def test_long_talking_scripts_become_parts(api, home, monkeypatch):
     assert all(len(_spec(item)["params"]["speech"]["text"]) <= 4500 for item in api.queue.items)
 
 
+def test_delete_removes_a_file_from_the_library_and_its_records(api, home):
+    still = _png(home / "toss.png", size=(300, 400))
+    now = __import__("time").time()
+    records = {
+        "x": {"id": "x", "status": "done", "label": "Old render", "outputs": [str(still)], "finished_at": now},
+        "y": {"id": "y", "status": "done", "label": "Another view", "outputs": [str(still)], "finished_at": now},
+    }
+    for key, record in records.items():
+        (home / "history" / f"{key}.json").write_text(json.dumps(record))
+    assert still.is_file()
+    deleted = api.studio_delete({"path": str(still)})
+    assert deleted["ok"] is True and deleted["records_updated"] == 2
+    assert not still.is_file()
+    assert not (home / "history" / "x.json").exists() and not (home / "history" / "y.json").exists()
+    assert [item["path"] for item in api.studio_library("all")["items"]] == []
+    # files the app never recorded cannot be removed through the bridge
+    outside = _png(home / "untracked.png", size=(100, 100))
+    refused = api.studio_delete({"path": str(outside)})
+    assert refused["ok"] is False and outside.is_file()
+
+
+def test_delete_of_the_master_photo_goes_back_to_a_blank_slate(api, home):
+    master = _pick_master(api, home)
+    assert api.studio_delete({"path": str(master)})["ok"] is True
+    assert not master.is_file()
+    assert api._studio_master() == (None, None)  # the app asks which photo to start from now
+    profile = api._library_or_none().get_avatar(bi.PROFILE_ID)
+    assert "front" not in profile["identity_refs"] and "front" not in profile["reference_hashes"]
+
+
+def test_angles_and_act_can_start_from_any_my_stuff_picture(api, home):
+    other = _png(home / "someone_else.png", size=(300, 400))
+    angle = api._studio_payload({"action": "angles", "slots": ["identity_three_quarter_left"], "image": str(other)})
+    assert angle["avatar"]["identity_refs"] == [str(other)]  # the variations anchor on the chosen picture
+    clip = _video(home / "acting.mp4", 4)
+    act = api._studio_payload({"action": "act", "video": str(clip), "image": str(other)})
+    assert act["shot"]["references"]["init_image"] == str(other)
+
+
+def test_any_picture_can_be_added_to_presenter_options(api, home):
+    master = _pick_master(api, home)
+    old = _png(home / "old_render.png", size=(300, 400))
+    (home / "history" / "oldjob.json").write_text(json.dumps(
+        {"id": "oldjob", "status": "done", "label": "Old render", "outputs": [str(old)], "finished_at": 0}))
+    added = api.studio_presenter_add({"path": str(old)})
+    assert added["ok"] is True and added["already"] is False
+    assert any(c["path"] == str(old) for c in api.studio_state()["pending_master"])  # now an option for her
+    again = api.studio_presenter_add({"path": str(old)})
+    assert again["ok"] is True and again["already"] is True  # never duplicated
+    assert api.studio_presenter_add({"path": str(home / "missing.png")})["ok"] is False
+    clip = _video(home / "clip.mp4", 1)
+    assert api.studio_presenter_add({"path": str(clip)})["ok"] is False  # videos aren't face options
+    picked = api.studio_pick({"path": str(old), "slot_id": "identity_front"})
+    assert picked["ok"] is True and api._studio_master()[0] == str(old.resolve())
+
+
+def test_delete_keeps_a_record_when_other_outputs_remain(api, home):
+    first = _png(home / "keep.png", size=(300, 400))
+    second = _png(home / "toss.png", size=(300, 400))
+    now = __import__("time").time()
+    (home / "history" / "z.json").write_text(json.dumps(
+        {"id": "z", "status": "done", "label": "Pair", "outputs": [str(first), str(second)], "finished_at": now}))
+    assert api.studio_delete({"path": str(second)})["ok"] is True
+    record = json.loads((home / "history" / "z.json").read_text())
+    assert record["outputs"] == [str(first)]
+    assert [item["path"] for item in api.studio_library("all")["items"]] == [str(first)]
+
+
 def test_library_lists_every_output_including_free_gpu_clips(api, home):
     still = _png(home / "photo.png", size=(300, 400))
     clip = _video(home / "clip.mp4", 1)
@@ -400,7 +469,145 @@ def test_library_lists_every_output_including_free_gpu_clips(api, home):
     for key, record in records.items():
         (home / "history" / f"{key}.json").write_text(json.dumps(record))
     everything = api.studio_library("all")["items"]
-    assert {item["id"] for item in everything} == {"a", "b"}
+    assert {item["id"] for item in everything} == {"a", "b", "c"}  # including the old app's local render
+    assert {item["id"]: item["source"] for item in everything} == {"a": "runway", "b": "gpu", "c": "old"}
     local = next(item for item in everything if item["id"] == "b")
     assert local["local"] is True and local["credits"] == 0 and local["kind"] == "video"
     assert [item["id"] for item in api.studio_library("image")["items"]] == ["a"]
+
+
+# --------------------------------------------------------------------------- older work, saved avatars, offline scenes
+
+
+def test_library_brings_back_the_old_apps_renders(api, home):
+    still = _png(home / "old_candidate.png", size=(300, 400))
+    clip = _video(home / "old_render.mp4", 1)
+    now = __import__("time").time()
+    old = {"id": "old1", "status": "done", "label": "avatar_validation_h3 · reddit_full_front", "outputs": [str(clip), str(still)],
+           "finished_at": now - 90 * 86400}  # an old-app record: no provider field at all
+    (home / "history" / "old1.json").write_text(json.dumps(old))
+    items = api.studio_library("all")["items"]
+    assert {item["path"] for item in items} == {str(clip), str(still)}
+    assert all(item["source"] == "old" and item["local"] is True and item["credits"] == 0 for item in items)
+    assert [item["path"] for item in api.studio_library("video")["items"]] == [str(clip)]
+
+
+def test_saved_avatars_list_each_profiles_pictures(api, home):
+    master = _pick_master(api, home)
+    listed = api.studio_avatars()
+    assert listed["ok"] is True
+    brand = next(a for a in listed["items"] if a["id"] == bi.PROFILE_ID)
+    assert brand["pictures"] == [str(master.resolve())] and listed["items"][0]["id"] == bi.PROFILE_ID
+
+
+def test_bad_avatars_can_be_removed_but_not_the_current_presenter(api, home):
+    _pick_master(api, home)
+    other = _png(home / "old_face.png", size=(300, 400))
+    entry = dict(bi.profile_entry())
+    entry.update({"avatar_id": "old_avatar", "display_name": "Old Avatar", "identity_refs": {"front": str(other)},
+                  "reference_hashes": {"front": "sha"}, "build_manifest": {}})
+    api._library_or_none().put_avatar(entry)
+    assert any(a["id"] == "old_avatar" for a in api.studio_avatars()["items"])
+    removed = api.studio_avatar_delete({"avatar_id": "old_avatar"})
+    assert removed["ok"] is True and other.is_file()  # the picture itself stays in My stuff
+    assert all(a["id"] != "old_avatar" for a in api.studio_avatars()["items"])
+    assert api.studio_avatar_delete({"avatar_id": "old_avatar"})["ok"] is False
+    refused = api.studio_avatar_delete({"avatar_id": bi.PROFILE_ID})
+    assert refused["ok"] is False and "presenter" in refused["error"]
+
+
+def test_offline_scene_chains_shots_and_waits_for_the_engine(api, home, monkeypatch):
+    from avatar_v2 import local_engine
+
+    _fake_engine(home, monkeypatch)
+    master = _pick_master(api, home)
+    shots = ["She walks in and smiles.", "She sits down at the desk.", "She explains a point with her hands."]
+    # a blank slate: even with a master set, a scene never defaults to it
+    assert "start picture" in api.studio_price({"action": "scene", "shots": shots})["error"]
+    price = api.studio_price({"action": "scene", "shots": shots, "shape": "wide", "image": str(master)})
+    assert price["ok"] is True and price["credits"] == 0 and price["shots"] == 3
+    assert price["minutes"] == 3 * local_engine.ESTIMATED_MINUTES
+    assert "at least one shot" in api.studio_price({"action": "scene", "shots": ["  "], "image": str(master)})["error"]
+    monkeypatch.setattr(api, "comfyui_status", lambda: {"state": "STARTING", "ready": False, "pid": 1})
+    assert api.studio_go({"action": "scene", "shots": shots, "image": str(master)})["ok"] is False and api.queue.items == []
+    monkeypatch.setattr(api, "comfyui_status", lambda: {"state": "READY", "ready": True, "pid": 1})
+    go = api.studio_go({"action": "scene", "shots": shots, "shape": "wide", "image": str(master)})
+    assert go["ok"] is True and go["shots"] == 3 and len(api.queue.items) == 3
+    first, second, third = api.queue.items
+    assert [i.label for i in api.queue.items] == [f"Scene · shot {n} of 3 · your GPU" for n in (1, 2, 3)]
+    assert first.chain_from_previous is False and first.job.asset_map["INIT_IMAGE"] == str(master.resolve())
+    assert second.chain_from_previous and second.runtime["chain_from_id"] == first.id
+    assert third.runtime["chain_from_id"] == second.id and third.runtime["scene_shots"] == [first.id, second.id, third.id]
+    assert (first.job.asset_map["WAN_WIDTH"], first.job.asset_map["WAN_HEIGHT"]) == (832, 480)
+    assert all(item.runtime["studio_action"] == "scene" and item.profile == "low_memory" for item in api.queue.items)
+    refused = api.studio_price({"action": "scene", "shots": ["a 15-year-old girl walks in"], "image": str(master)})
+    assert refused["ok"] is False and "adult" in refused["error"]
+
+
+def test_scene_from_another_picture_describes_motion_only(api, home, monkeypatch):
+    _fake_engine(home, monkeypatch)
+    other = _png(home / "landscape.png", size=(832, 480), color=(40, 90, 140))
+    item = api._studio_scene_items({"image": str(other), "shots": ["The camera pans across the room."]})[0]
+    assert item.job.asset_map["INIT_IMAGE"] == str(other)
+    assert "woman in her mid-20s" not in item.job.prompt and item.job.prompt.startswith("The camera pans across the room.")
+
+
+def test_long_scene_descriptions_are_kept_whole(api, home, monkeypatch):
+    _fake_engine(home, monkeypatch)
+    long_text = " ".join(
+        ["She walks to the whiteboard, uncaps a marker, and draws three boxes while explaining each one in turn."]
+        * 18
+    )  # about 1,900 characters: well past the old 600-character cut
+    other = _png(home / "wide.png", size=(832, 480), color=(40, 90, 140))
+    item = api._studio_scene_items({"image": str(other), "shots": [long_text]})[0]
+    assert long_text in item.job.prompt  # any other picture: the description is used whole
+    master = _pick_master(api, home)
+    item = api._studio_scene_items({"image": str(master), "shots": [long_text]})[0]
+    assert long_text in item.job.prompt  # the presenter's own picture: identity kept, description not cut
+
+
+def test_scene_caps_at_twelve_shots(api, home, monkeypatch):
+    _fake_engine(home, monkeypatch)
+    master = _pick_master(api, home)
+    shots = [f"Shot {n}: she continues from the exact pose the last shot ended on." for n in range(1, 14)]
+    price = api.studio_price({"action": "scene", "shots": shots, "image": str(master)})
+    assert price["ok"] is True and price["shots"] == 12  # the 13th is dropped at the cap
+    items = api._studio_scene_items({"shots": shots, "image": str(master)})
+    assert len(items) == 12 and items[-1].runtime["scene_shots"] == [item.id for item in items]
+
+
+def test_finished_scene_joins_its_shots_into_one_video(api, home):
+    def frames(path):
+        out = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
+                              "stream=nb_read_frames", "-of", "csv=p=0", str(path)], capture_output=True, text=True)
+        return int(out.stdout.strip())
+
+    first = _video(home / "shot1.mp4", 1)
+    second = _video(home / "shot2.mp4", 1)
+    (home / "history" / "shot1id.json").write_text(json.dumps({"id": "shot1id", "status": "done", "outputs": [str(first)]}))
+    last = SimpleNamespace(id="shot2id", outputs=[str(second)], output_hashes={}, runtime={"scene_shots": ["shot1id", "shot2id"]},
+                           provider_config=SimpleNamespace(provider="comfyui"))
+    result = api._candidate_qa(last)
+    assert result["ok"] is True and result["shots"] == 2 and result["file"] == "scene_shot2id.mp4"
+    joined = Path(last.outputs[0])
+    assert joined.name == "scene_shot2id.mp4" and last.output_hashes[str(joined)]
+    assert frames(joined) == frames(first) + frames(second) - 1  # the repeated boundary frame is dropped
+    assert Path(last.outputs[1]) == second  # the shot itself is kept
+
+
+def test_chained_shot_uses_exactly_its_previous_shot(tmp_path):
+    import threading
+
+    from avatar_v2.render_queue import RenderQueue
+
+    queue = RenderQueue.__new__(RenderQueue)
+    queue._lock, queue.history_dir = threading.RLock(), tmp_path
+    clip = _video(tmp_path / "a.mp4", 1)
+    older = SimpleNamespace(id="older", status="done", outputs=[str(clip)], runtime={})
+    failed = SimpleNamespace(id="shot1", status="error", outputs=[], runtime={})
+    current = SimpleNamespace(id="shot2", status="queued", outputs=[], runtime={"chain_from_id": "shot1"})
+    queue._items = [older, failed, current]
+    assert queue._previous_output(current) is None  # never falls back to an unrelated older video
+    queue._items = [older, current]  # shot 1 was cleared from the list: its saved record is used
+    (tmp_path / "shot1.json").write_text(json.dumps({"status": "done", "outputs": [str(clip)]}))
+    assert queue._previous_output(current) == str(clip)

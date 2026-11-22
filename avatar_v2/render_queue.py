@@ -21,6 +21,7 @@ from .providers import ComfyUIProvider, RunwayProvider
 
 JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
 MEMORY_SENSITIVE_PROFILES = {"int8_12gb", "low_memory", "low_memory_quality"}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".webm", ".mkv"}
 
 
 def _uses_local_gpu(provider: Any) -> bool:
@@ -136,6 +137,7 @@ class RenderQueue:
         history_dir: Path | None = None,
         candidate_qa_runner: Callable[[QueuedRender], dict[str, Any]] | None = None,
         ledger_path: Path | None = None,
+        engine_restart: Callable[[], Any] | None = None,
     ):
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -144,6 +146,10 @@ class RenderQueue:
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.memory_manager = memory_manager or GPUMemoryManager.from_environment()
         self.candidate_qa_runner = candidate_qa_runner
+        # When a local render dies because the engine crashed or CUDA broke, the queue asks the app
+        # to restart its own ComfyUI process once, then retries that shot. Never a process kill:
+        # engine_restart is the app's idempotent engine_autostart, which only launches its own engine.
+        self._engine_restart = engine_restart
         self._items: list[QueuedRender] = []
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -350,9 +356,56 @@ class RenderQueue:
 
     def _next(self) -> QueuedRender | None:
         with self._lock:
-            return next((item for item in self._items if item.status == "queued"), None)
+            now = time.time()
+            statuses = {item.id: item.status for item in self._items}
+            for item in self._items:
+                if item.status != "queued":
+                    continue
+                if float(item.runtime.get("retry_after") or 0) > now:
+                    continue  # a shot awaiting its engine-restart retry
+                chain = str(item.runtime.get("chain_from_id") or "")
+                if chain and statuses.get(chain) not in {None, "done"}:
+                    continue  # wait for the previous shot (or its retry) before starting this one
+                return item
+        return None
+
+    def _cancel_downstream(self, failed_id: str) -> int:
+        """A chained scene stops at its first failure: cancel every queued shot after the failed one."""
+        cancelled = 0
+        with self._lock:
+            pending = [failed_id]
+            changed = True
+            while changed:
+                changed = False
+                for item in self._items:
+                    if item.status == "queued" and str(item.runtime.get("chain_from_id") or "") in pending:
+                        item.status = "cancelled"
+                        item.error = "Scene stopped: the previous shot failed."
+                        pending.append(item.id)
+                        cancelled += 1
+                        changed = True
+        if cancelled:
+            self._persist()
+        return cancelled
 
     def _previous_output(self, current: QueuedRender) -> str | None:
+        wanted = str(current.runtime.get("chain_from_id") or "")
+        if wanted:
+            # Explicit chain (scene shots): only that exact item's video, never a fallback to an older one.
+            with self._lock:
+                for item in self._items:
+                    if item.id == wanted:
+                        if item.status != "done":
+                            return None
+                        return next((o for o in item.outputs if Path(o).suffix.lower() in VIDEO_SUFFIXES and Path(o).is_file()), None)
+            record_path = self.history_dir / f"{wanted}.json"  # it was cleared from the list: use its record
+            try:
+                record = json.loads(record_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+            if record.get("status") != "done":
+                return None
+            return next((o for o in record.get("outputs") or [] if Path(str(o)).suffix.lower() in VIDEO_SUFFIXES and Path(str(o)).is_file()), None)
         with self._lock:
             try:
                 index = self._items.index(current)
@@ -496,6 +549,55 @@ class RenderQueue:
              "credits_charged": receipt.get("credits_charged") if charge == "actual" else (0 if charge == "none" else None)},
         )
 
+    def _handle_failure(self, item: QueuedRender, exc: BaseException) -> None:
+        """Record a render failure, then either recover once (local engine crash) or stop the chain."""
+        classified = classify_exception(exc)
+        with self._lock:
+            receipt = getattr(exc, "receipt", None)
+            if isinstance(receipt, dict) and receipt:
+                item.cloud_receipt = {**item.cloud_receipt, **dict(receipt)}
+            if item.status != "cancelled":
+                item.status = "error"
+                item.error = f"{type(exc).__name__}: {exc}"
+                item.error_category = classified.category
+                item.error_message = classified.message
+        # One automatic recovery for local renders when the engine died or CUDA broke:
+        # clean the GPU through the safe memory manager, restart our own ComfyUI, retry once.
+        if (
+            item.provider_config.provider == "comfyui"
+            and item.status == "error"
+            and int(item.runtime.get("recover_attempts") or 0) < 1
+            and item.error_category in {"comfyui_unavailable", "cuda_oom", "cuda_error_999", "timeout"}
+        ):
+            item.runtime["recover_attempts"] = int(item.runtime.get("recover_attempts") or 0) + 1
+            item.runtime["retry_after"] = time.time() + 45  # let the restarted engine load its models
+            item.memory_events.append({"reason": "engine-crash-recovery", "error": item.error})
+            restart_error = None
+            if self._engine_restart is not None:
+                try:
+                    self._engine_restart()
+                except Exception as restart_exc:
+                    restart_error = f"{type(restart_exc).__name__}: {restart_exc}"
+            if restart_error:
+                item.memory_events.append({"reason": "engine-restart-failed", "error": restart_error})
+            cleanup = self.memory_manager.maybe_cleanup(
+                self._active_provider,
+                reason="pre-retry",
+                force=True,
+                unload_models=True,
+            )
+            item.memory_events.append(cleanup)
+            with self._lock:
+                item.status = "queued"
+                item.error = None
+                item.error_category = None
+                item.error_message = None
+                item.started_at = None
+            self._persist()
+            self._wake.set()
+        elif item.provider_config.provider == "comfyui" and item.status == "error":
+            self._cancel_downstream(item.id)  # a scene stops at its first broken shot
+
     def _make_provider(self, config: ProviderConfig) -> Any:
         # Resolve the module-level provider names at call time so tests can substitute fakes.
         if config.provider == "runway":
@@ -594,16 +696,7 @@ class RenderQueue:
                     if item.status != "cancelled":
                         item.status = "done"
             except Exception as exc:  # surface exact renderer failures for tuning
-                classified = classify_exception(exc)
-                with self._lock:
-                    receipt = getattr(exc, "receipt", None)
-                    if isinstance(receipt, dict) and receipt:
-                        item.cloud_receipt = {**item.cloud_receipt, **dict(receipt)}
-                    if item.status != "cancelled":
-                        item.status = "error"
-                        item.error = f"{type(exc).__name__}: {exc}"
-                        item.error_category = classified.category
-                        item.error_message = classified.message
+                self._handle_failure(item, exc)
             finally:
                 provider = self._active_provider
                 try:

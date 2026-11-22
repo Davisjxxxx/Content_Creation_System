@@ -1,6 +1,7 @@
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 from avatar_v2.composer import build_job
 from avatar_v2.models import AvatarManifest, ProviderConfig, ShotSpec
@@ -51,7 +52,38 @@ def _queue_shell(tmp_path: Path, items=None):
     queue._active_provider = None
     queue._active_id = None
     queue.candidate_qa_runner = None
+    queue._engine_restart = None
+    queue.memory_manager = SimpleNamespace(maybe_cleanup=lambda *a, **k: {"reason": "pre-retry"})
     return queue
+
+
+def test_chained_scene_stops_at_the_first_broken_shot(tmp_path):
+    first = _item(tmp_path, status="error", runtime={"studio_action": "scene"})
+    second = _item(tmp_path, status="queued", runtime={"studio_action": "scene", "chain_from_id": first.id})
+    third = _item(tmp_path, status="queued", runtime={"studio_action": "scene", "chain_from_id": second.id})
+    queue = _queue_shell(tmp_path, [first, second, third])
+    assert queue._cancel_downstream(first.id) == 2
+    assert second.status == "cancelled" and third.status == "cancelled"
+    assert "previous shot failed" in second.error and "previous shot failed" in third.error
+
+
+def test_engine_crash_recovers_once_then_stops_the_scene(tmp_path):
+    import httpx
+
+    first = _item(tmp_path, status="running", runtime={"studio_action": "scene"})
+    second = _item(tmp_path, status="queued", runtime={"studio_action": "scene", "chain_from_id": first.id})
+    queue = _queue_shell(tmp_path, [first, second])
+    restarts = []
+    queue._engine_restart = lambda: restarts.append("restarted")
+    queue._handle_failure(first, httpx.ConnectError("[Errno 111] Connection refused"))
+    assert first.status == "queued" and first.runtime["recover_attempts"] == 1
+    assert first.runtime["retry_after"] > __import__("time").time()
+    assert restarts == ["restarted"]
+    assert any(e.get("reason") == "engine-crash-recovery" for e in first.memory_events)
+    assert any(e.get("reason") == "pre-retry" for e in first.memory_events)  # the CUDA clean runs before the retry
+    assert queue._next() is None  # the failed shot waits for its restart, and its follower waits for it
+    queue._handle_failure(first, httpx.ConnectError("[Errno 111] Connection refused"))
+    assert first.status == "error" and second.status == "cancelled"  # one retry only; the scene stops cleanly
 
 
 def test_queue_add_many_list_clear_and_public_metadata(tmp_path: Path):

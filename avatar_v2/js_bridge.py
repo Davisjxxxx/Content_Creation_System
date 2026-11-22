@@ -18,7 +18,8 @@ JS_API_METHODS: tuple[str, ...] = (
     # The simple Studio app (Make / My stuff / Settings) calls exactly these.
     "choose_files", "comfyui_start", "comfyui_stop", "engine_status", "get_state", "open_output_dir",
     "open_path", "runway_check", "runway_save_key", "save_settings",
-    "studio_go", "studio_image", "studio_library", "studio_pick", "studio_price", "studio_state",
+    "studio_avatar_delete", "studio_avatars", "studio_delete", "studio_go", "studio_image", "studio_library",
+    "studio_pick", "studio_presenter_add", "studio_price", "studio_state",
     "studio_talker_status", "studio_thumb", "ui_test_report",
 )
 

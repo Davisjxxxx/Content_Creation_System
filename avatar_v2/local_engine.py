@@ -24,8 +24,8 @@ MODELS: dict[str, tuple[str, str]] = {
     "WAN_VAE": ("vae", "wan_2.1_vae.safetensors"),
 }
 
-# 480p sizes (multiples of 16). "tall" is phone-shaped; "portrait" keeps the 3:4 photo shape.
-SHAPES: dict[str, tuple[int, int]] = {"tall": (480, 832), "portrait": (480, 640)}
+# 480p sizes (multiples of 16): phone-shaped, the 3:4 photo shape, and widescreen.
+SHAPES: dict[str, tuple[int, int]] = {"tall": (480, 832), "portrait": (480, 640), "wide": (832, 480)}
 FPS = 16
 FRAMES = 81  # Wan uses 4n+1 frames: 81 frames at 16 fps is about 5 seconds
 SECONDS = round(FRAMES / FPS)

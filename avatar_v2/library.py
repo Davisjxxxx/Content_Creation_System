@@ -315,6 +315,16 @@ class LibraryStore:
     def get_avatar(self, avatar_id: str) -> dict[str, Any] | None:
         return self._read("vault.json").get(avatar_id)
 
+    def remove_avatar(self, avatar_id: str) -> bool:
+        """Drop an avatar from the vault and its manifest; its picture files are left untouched."""
+        data = self._read("vault.json")
+        if avatar_id not in data:
+            return False
+        del data[avatar_id]
+        self._write("vault.json", data)
+        self.manifest_path(avatar_id).unlink(missing_ok=True)
+        return True
+
     def put_avatar(self, entry: dict[str, Any]) -> dict[str, Any]:
         profile = AvatarProfile.model_validate(entry)
         existing = self.get_avatar(profile.avatar_id)

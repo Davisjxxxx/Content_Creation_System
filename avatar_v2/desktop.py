@@ -247,6 +247,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             history_dir=HISTORY_DIR,
             candidate_qa_runner=self._candidate_qa,
             ledger_path=CLOUD_LEDGER_PATH,
+            engine_restart=self.engine_autostart,
         )
         settings = self._settings()
         self.queue.memory_manager.update_settings(
@@ -855,6 +856,8 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         """Compare a finished designer still after H3 has been unloaded."""
         if item.provider_config.provider == "runway":
             return self._runway_postprocess(item)
+        if item.runtime.get("scene_shots"):
+            return self._studio_finish_scene(item)
         if item.runtime.get("studio_voiceover"):
             return self._studio_mux_voiceover(item)
         source = Path(str(item.runtime.get("candidate_qa_reference") or "")).expanduser()
