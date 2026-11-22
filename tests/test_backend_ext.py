@@ -41,6 +41,11 @@ def test_library_avatar_crud(tmp_path: Path):
     assert len(store.avatars()) == 1
     profile = AvatarProfile.model_validate(store.get_avatar("ava-01"))
     assert profile.ordered_identity == ["/b.png", "/a.png"]
+    manifest_path = store.manifest_path("ava-01")
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["avatar_id"] == "ava-01"
+    assert manifest["manifest"]["identity_anchors"] == ["/b.png", "/a.png"]
     assert store.delete_avatar("ava-01")
     assert store.avatars() == []
 
@@ -49,6 +54,60 @@ def test_library_rejects_bad_id(tmp_path: Path):
     store = LibraryStore(tmp_path)
     with pytest.raises(ValueError):
         store.put_avatar({"avatar_id": "Bad ID!", "display_name": "x", "identity_refs": {"front": "/a.png"}})
+
+
+def test_library_manifest_preserves_analysis_and_candidate_history(tmp_path: Path):
+    store = LibraryStore(tmp_path)
+    saved = store.put_avatar(
+        {
+            "avatar_id": "ava-01",
+            "display_name": "Ava",
+            "identity_refs": {"front": "/front.png"},
+            "anatomy_refs": {"pelvis_front": "/pelvis.png"},
+            "build_manifest": {
+                "reference_records": [
+                    {
+                        "path": "/front.png",
+                        "slot_ids": ["identity_front"],
+                        "visual_roles": ["identity_front"],
+                        "confidence": 0.9,
+                        "generation_eligible": True,
+                    }
+                ],
+                "protected_source_slots": ["anatomy_hands"],
+            },
+        }
+    )
+    assert saved["build_manifest"]["protected_source_slots"] == [
+        "anatomy_hands",
+        "anatomy_pelvis_front",
+    ]
+    store.record_candidate(
+        "ava-01",
+        {
+            "path": "/candidate.png",
+            "source_path": "/front.png",
+            "slot_id": "identity_front",
+            "group": "identity",
+            "qa_decision": "review",
+            "scores": {"identity_consistency": 0.6},
+        },
+    )
+    profile = AvatarProfile.model_validate(store.get_avatar("ava-01"))
+    assert profile.build_manifest.reference_records[0].path == "/front.png"
+    assert profile.build_manifest.candidates[0].status == "pending"
+    # A stale open form must not erase a candidate written asynchronously by
+    # the render queue, and pending UI state cannot undo an accepted decision.
+    stale = dict(saved)
+    stale["build_manifest"]["candidates"] = []
+    store.put_avatar(stale)
+    assert len(AvatarProfile.model_validate(store.get_avatar("ava-01")).build_manifest.candidates) == 1
+    accepted = AvatarProfile.model_validate(store.get_avatar("ava-01"))
+    accepted_candidate = accepted.build_manifest.candidates[0].model_copy(update={"status": "accepted"})
+    accepted_manifest = accepted.build_manifest.model_copy(update={"candidates": [accepted_candidate]})
+    store.put_avatar(accepted.model_copy(update={"build_manifest": accepted_manifest}).model_dump())
+    store.put_avatar(stale)
+    assert AvatarProfile.model_validate(store.get_avatar("ava-01")).build_manifest.candidates[0].status == "accepted"
 
 
 def test_library_motion_and_scene(tmp_path: Path):

@@ -43,22 +43,3 @@ def test_adult_prompt_payload_merges_only_valid_custom_options():
         "custom": True,
     }
     assert "not_a_category" not in payload["categories"]
-
-
-def test_desktop_ui_keeps_vault_provenance_and_black_select_text():
-    html = (Path(__file__).parents[1] / "avatar_v2" / "ui" / "index.html").read_text(encoding="utf-8")
-    assert "-webkit-appearance:none;appearance:none" in html
-    assert "-webkit-text-fill-color:#111!important" in html
-    assert "background-color:#fff!important" in html
-    assert "avatar:{...state.avatar" in html
-    assert "state.avatar={avatar_id:a.avatar_id" in html
-    assert "state.avatar.age_verified_18_plus===true" in html
-    assert "state.avatar.consent_confirmed===true" in html
-    for control in ("adultRole", "adultEnvironment", "adultAction", "adultToy", "adultMove", "adultPosition"):
-        assert f'id="{control}"' in html
-    assert "Other… · add and save" in html
-    assert 'id="adultCustomEditor"' in html
-    assert "save_adult_prompt_option" in html
-    assert 'id="h3ReferenceMode"' in html
-    assert "exact_primary" in html
-    assert "setPrimaryIdentity()" in html

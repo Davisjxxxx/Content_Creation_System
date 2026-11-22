@@ -48,6 +48,17 @@ COVERAGE_SLOTS: tuple[CoverageSlot, ...] = (
 
 _BY_ID = {slot.id: slot for slot in COVERAGE_SLOTS}
 
+# Presenter reference slots (expressions and instructional framing). They are deliberately NOT
+# part of COVERAGE_SLOTS, so the H3 designer's coverage report and build plans are unchanged;
+# they exist so presenter candidates can be explicitly accepted into a profile.
+PRESENTER_SLOTS: tuple[CoverageSlot, ...] = (
+    CoverageSlot("presenter_expression_neutral", "Presenter · neutral", "identity", "expression_neutral", "chest-up", "calm neutral expression facing the camera", required=False),
+    CoverageSlot("presenter_expression_smile", "Presenter · natural smile", "identity", "expression_smile", "chest-up", "natural gentle smile facing the camera", required=False),
+    CoverageSlot("presenter_expression_speaking", "Presenter · speaking", "identity", "expression_speaking", "chest-up", "mid-sentence speaking expression", required=False),
+    CoverageSlot("presenter_upper_body", "Presenter · upper body", "identity", "upper_body_instructional", "waist-up", "instructional framing with an open-hand gesture", required=False),
+)
+_PRESENTER_BY_ID = {slot.id: slot for slot in PRESENTER_SLOTS}
+
 APPEARANCE_FIELDS = (
     "face",
     "body_type",
@@ -72,7 +83,7 @@ def designer_spec() -> dict[str, Any]:
 
 def slot_by_id(slot_id: str) -> CoverageSlot:
     try:
-        return _BY_ID[str(slot_id)]
+        return _BY_ID.get(str(slot_id)) or _PRESENTER_BY_ID[str(slot_id)]
     except KeyError as exc:
         raise ValueError(f"Unknown avatar designer slot: {slot_id}") from exc
 

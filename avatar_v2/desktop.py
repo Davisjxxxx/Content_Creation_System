@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import base64
+import io
 import os
 import platform
 import re
@@ -13,17 +15,27 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from PIL import Image, ImageOps
 
+from .candidate_qa import compare_candidate_to_reference
 from .composer import build_job
+from . import brand_instructor
+from .desktop_presenter import PresenterMixin
+from .desktop_studio import StudioMixin
+from .integrity import sha256_file
+from .voiceover import apply_pronunciations
 from .avatar_designer import build_designer_prompt, coverage_report, designer_spec, slot_by_id
 from .h3_runtime import H3_FPS, preset_by_id, presets_payload, valid_frame_count
-from .library import AnatomyGuide, AvatarProfile, LibraryStore
+from .library import AnatomyGuide, AvatarCandidateRecord, AvatarProfile, LibraryStore
 from .models import AvatarManifest, ProviderConfig, RenderJob, ShotSpec
-from .policy import evaluate_policy
+from .policy import PolicyError, evaluate_cloud_policy, evaluate_policy
+from .presenter import compile_presenter_prompt, presenter_receipt, variation_by_id, variations_payload
 from .prompt_presets import adult_prompt_presets_payload
-from .reference_cache import scan_reference_cache
+from .reference_cache import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, scan_reference_cache
 from .providers import ComfyUIProvider
+from .providers import runway as runway_api
 from .render_queue import QueuedRender, RenderQueue
+from .secret_store import SecretStoreError, clear_secret, save_secret, secret_status
 from .runtime_profiles import payload as runtime_profiles_payload
 from .runtime_profiles import resolve_profile
 from .workflows_builder import WAN_FPS, snap_wan_canvas, wan_frame_count
@@ -36,6 +48,22 @@ HISTORY_DIR = APP_HOME / "history"
 LIBRARY_DIR = APP_HOME / "library"
 COMFY_PID_PATH = APP_HOME / "comfyui.pid"
 COMFY_LOG_PATH = APP_HOME / "logs" / "comfyui.log"
+RUNWAY_AVATARS_PATH = APP_HOME / "runway_avatars.json"
+CLOUD_LEDGER_PATH = APP_HOME / "cloud_ledger.jsonl"
+VOICEOVER_DIR = APP_HOME / "voiceover"
+IMPORTS_DIR = LIBRARY_DIR / "imports"
+LESSONS_PATH = APP_HOME / "lessons.json"
+QA_DIR = APP_HOME / "qa"
+PROVIDER_PROFILES_PATH = APP_HOME / "provider_profiles.json"
+# Where scripts/setup_local_engine.sh installs ComfyUI + its venv; used when settings leave them empty.
+ENGINE_HOME = Path.home() / "AvatarForge"
+
+# Settings keys that look like credentials are never persisted to desktop.json or sent to the UI.
+SECRET_SETTING_PATTERN = re.compile(r"(api_?key|secret|token|password)", re.IGNORECASE)
+DEFAULT_PRESENTER_PERSONALITY = (
+    "You are {name}, a warm, clear and encouraging course instructor. You explain one idea at a time in "
+    "plain language, check for understanding, and keep a calm, professional tone."
+)
 
 BUNDLED_WORKFLOWS: dict[str, Path] = {
     "ad_sd15": Path(__file__).resolve().parent.parent / "workflows" / "animatediff_sd15_api.json",
@@ -48,6 +76,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "comfyui_output": "",
     "comfyui_dir": "",
     "comfyui_python": "",
+    "comfyui_args": "--disable-auto-launch",
     "workflow_h3_ref2va": "",
     "workflow_h3_fl2va": "",
     "workflow_wan22": "",
@@ -74,8 +103,51 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "preferred_output_dir": "",
     "adult_prompt_custom": {},
     "vision_classifier_url": "http://127.0.0.1:11434",
-    "vision_classifier_model": "qwen3-vl:2b-instruct",
+    "vision_classifier_model": "qwen3-vl:8b-instruct",
+    # Runway cloud provider: ready as soon as an API key is saved. Spending limits are optional
+    # and off by default (0 = no limit); they only apply when the owner sets one.
+    "runway_default_image_model": "gen4_image",
+    "runway_default_video_model": "gen4.5",
+    "runway_job_limit": 0,
+    "runway_batch_limit": 0,
+    "runway_daily_limit": 0,
+    "runway_monthly_limit": 0,
+    "runway_poll_interval_s": 6,
+    "runway_timeout_s": 1800,
 }
+
+_RUNWAY_NUMERIC_SETTINGS = (
+    ("runway_job_limit", 0, 100000),
+    ("runway_batch_limit", 0, 1000000),
+    ("runway_poll_interval_s", 5, 60),
+    ("runway_timeout_s", 60, 7200),
+    ("runway_daily_limit", 0, 1000000),
+    ("runway_monthly_limit", 0, 10000000),
+)
+
+
+def _sanitize_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop credential-like keys and coerce Runway settings to documented values."""
+    clean = {
+        str(key): value
+        for key, value in (settings or {}).items()
+        if not SECRET_SETTING_PATTERN.search(str(key))
+    }
+    for key, low, high in _RUNWAY_NUMERIC_SETTINGS:
+        if key in clean:
+            try:
+                clean[key] = int(min(max(float(clean[key]), low), high))
+            except (TypeError, ValueError):
+                clean.pop(key)
+    for key, task in (
+        ("runway_default_image_model", "text_to_image"),
+        ("runway_default_video_model", "image_to_video"),
+    ):
+        if key in clean:
+            model = runway_api.MODELS.get(str(clean[key]))
+            if model is None or model.task != task:
+                clean.pop(key)
+    return clean
 
 MAX_DESIGNER_BODY_REFS = 8  # H3 accepts nine pictures; reserve one for primary identity.
 
@@ -162,7 +234,7 @@ def _reference_bindings(job: RenderJob, resolved: dict[str, Any] | None = None) 
     return summary
 
 
-class DesktopAPI:
+class DesktopAPI(StudioMixin, PresenterMixin):
     def __init__(self) -> None:
         self._self_window = None
         APP_HOME.mkdir(parents=True, exist_ok=True)
@@ -170,7 +242,12 @@ class DesktopAPI:
         HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         (APP_HOME / "logs").mkdir(parents=True, exist_ok=True)
         self.library = LibraryStore(LIBRARY_DIR)
-        self.queue = RenderQueue(QUEUE_DIR, history_dir=HISTORY_DIR)
+        self.queue = RenderQueue(
+            QUEUE_DIR,
+            history_dir=HISTORY_DIR,
+            candidate_qa_runner=self._candidate_qa,
+            ledger_path=CLOUD_LEDGER_PATH,
+        )
         settings = self._settings()
         self.queue.memory_manager.update_settings(
             enabled=bool(settings.get("gpu_autoclean", True)),
@@ -184,10 +261,19 @@ class DesktopAPI:
             settings_key = f"workflow_{key}"
             if not settings.get(settings_key):
                 settings[settings_key] = str(path)
+        # A local engine installed by scripts/setup_local_engine.sh works without touching settings.
+        if not settings.get("comfyui_dir") and (ENGINE_HOME / "comfyui" / "main.py").is_file():
+            settings["comfyui_dir"] = str(ENGINE_HOME / "comfyui")
+        if not settings.get("comfyui_python") and (ENGINE_HOME / "venv" / "bin" / "python").is_file():
+            settings["comfyui_python"] = str(ENGINE_HOME / "venv" / "bin" / "python")
+        if not settings.get("comfyui_output") and settings.get("comfyui_dir"):
+            settings["comfyui_output"] = str(Path(str(settings["comfyui_dir"])) / "output")
         return settings
 
     def get_state(self) -> dict[str, Any]:
-        settings = self._settings()
+        settings = {
+            key: value for key, value in self._settings().items() if not SECRET_SETTING_PATTERN.search(key)
+        }
         return {
             "app": "Avatar V2",
             "version": "0.3.0",
@@ -210,7 +296,10 @@ class DesktopAPI:
                 {"id": "h3_fl2va", "name": "MiniMax H3 · FL2VA", "tag": "FIRST / LAST"},
                 {"id": "wan22", "name": "Wan 2.2", "tag": "LOCAL FALLBACK"},
                 {"id": "custom", "name": "Custom ComfyUI", "tag": "WORKFLOW"},
+                {"id": "runway", "name": "Runway · Cloud", "tag": "CLOUD · OPT-IN"},
             ],
+            "runway": self._runway_public_status(settings),
+            "presenter": self._presenter_state(),
             "motion_categories": [
                 "walk_confident", "walk_casual", "turn_and_smile", "sit_down", "stand_up",
                 "hair_adjustment", "jacket_adjustment", "phone_selfie_walk", "natural_laugh",
@@ -219,7 +308,7 @@ class DesktopAPI:
         }
 
     def save_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
-        merged = {**self._settings(), **settings}
+        merged = _sanitize_settings({**self._settings(), **_sanitize_settings(settings)})
         _write_json(CONFIG_PATH, merged)
         self.queue.memory_manager.update_settings(
             enabled=bool(merged.get("gpu_autoclean", True)),
@@ -271,7 +360,10 @@ class DesktopAPI:
         import webview
 
         filters = {
-            "image": ("Images (*.png;*.jpg;*.jpeg;*.webp;*.bmp)",),
+            "image": (
+                "Images (*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff;*.PNG;*.JPG;*.JPEG;*.WEBP;*.BMP;*.TIF;*.TIFF)",
+                "All files (*.*)",
+            ),
             "video": ("Video (*.mp4;*.mov;*.webm;*.mkv)",),
             "audio": ("Audio (*.wav;*.mp3;*.flac;*.m4a;*.ogg)",),
             "workflow": ("ComfyUI API JSON (*.json)",),
@@ -306,13 +398,22 @@ class DesktopAPI:
                     "error": "Wait for the render queue to finish before local AI image analysis so the 8 GB GPU is not shared with H3.",
                 }
             settings = self._settings() if hasattr(self, "library") else DEFAULT_SETTINGS
+            image_paths = payload.get("image_paths")
+            if image_paths is not None and not isinstance(image_paths, list):
+                return {"ok": False, "error": "image_paths must be a list of local image files"}
             return {
                 "ok": True,
                 **scan_reference_cache(
                     str(payload.get("cache_dir") or ""),
+                    selected_files=image_paths,
                     use_visual=True,
                     vision_base_url=str(settings.get("vision_classifier_url") or "http://127.0.0.1:11434"),
-                    vision_model=str(settings.get("vision_classifier_model") or "qwen3-vl:2b-instruct"),
+                    vision_model=str(
+                        payload.get("vision_model")
+                        or settings.get("vision_classifier_model")
+                        or "qwen3-vl:8b-instruct"
+                    ),
+                    single_subject_confirmed=bool(payload.get("single_subject_confirmed", False)),
                 ),
             }
         except Exception as exc:
@@ -533,7 +634,8 @@ class DesktopAPI:
             job = job.model_copy(update={
                 "shot": shot.model_copy(update={"fps": WAN_FPS, "width": wan_width, "height": wan_height})
             })
-        job.asset_map.setdefault("OUTPUT_PREFIX", f"avatar_v2_{shot.shot_id[:24]}")
+        avatar_slug = re.sub(r"[^a-z0-9]+", "_", avatar.display_name.lower()).strip("_") or "avatar"
+        job.asset_map.setdefault("OUTPUT_PREFIX", f"{avatar_slug}_{shot.shot_id[:32]}")
         workflow = self._workflow_for(payload, job.selected_engine)
         if not workflow and job.selected_engine in {"h3_ref2va", "h3_fl2va", "wan22", "upscale"}:
             if job.selected_engine == "wan22":
@@ -599,6 +701,12 @@ class DesktopAPI:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     def queue_render(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if str((payload.get("shot") or {}).get("engine_preference") or "") == "runway":
+            return {
+                "ok": False,
+                "error": "Runway is a cloud provider with its own consent and cost checks: use Estimate, "
+                "then Queue on Runway.",
+            }
         try:
             avatar, shot = self._models_from_payload(payload)
             decision = evaluate_policy(avatar, shot)
@@ -675,17 +783,144 @@ class DesktopAPI:
 
     def open_path(self, path: str) -> dict[str, Any]:
         try:
-            target = str(Path(path).expanduser())
+            target_path = Path(path).expanduser().resolve()
+            if not target_path.exists():
+                return {"ok": False, "error": f"File or folder no longer exists: {target_path}"}
+            target = str(target_path)
             system = platform.system()
             if system == "Windows":
                 os.startfile(target)  # type: ignore[attr-defined]
             elif system == "Darwin":
-                subprocess.Popen(["open", target])
+                result = subprocess.run(
+                    ["open", target], capture_output=True, text=True, timeout=10, check=False
+                )
+                if result.returncode:
+                    detail = (result.stderr or result.stdout or "open failed").strip()
+                    return {"ok": False, "error": detail}
             else:
-                subprocess.Popen(["xdg-open", target])
+                if target_path.suffix.lower() in VIDEO_EXTENSIONS and self._launch_linux_video(target):
+                    return {"ok": True}
+                result = subprocess.run(
+                    ["xdg-open", target], capture_output=True, text=True, timeout=10, check=False
+                )
+                if result.returncode:
+                    detail = (result.stderr or result.stdout or "xdg-open failed").strip()
+                    return {"ok": False, "error": detail}
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    @staticmethod
+    def _launch_linux_video(target: str) -> bool:
+        """Open videos without routing them through broken desktop GL players."""
+        players = (
+            ("ffplay", ("-autoexit", "-seek_interval", "1")),
+            ("mpv", ("--force-window=yes",)),
+            ("vlc", ("--started-from-file",)),
+        )
+        for command, options in players:
+            executable = shutil.which(command)
+            if not executable:
+                continue
+            try:
+                subprocess.Popen(
+                    [executable, *options, target],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return True
+            except OSError:
+                continue
+        return False
+
+    def reference_thumbnail(self, path: str) -> dict[str, Any]:
+        """Return a small local-only preview for the reference gallery."""
+        try:
+            source = Path(path).expanduser().resolve()
+            if not source.is_file() or source.suffix.lower() not in IMAGE_EXTENSIONS:
+                return {"ok": False, "error": "Reference must be a supported local image file."}
+            with Image.open(source) as opened:
+                preview = ImageOps.exif_transpose(opened).convert("RGB")
+                preview.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                buffer = io.BytesIO()
+                preview.save(buffer, format="JPEG", quality=78, optimize=True)
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            return {"ok": True, "data_url": f"data:image/jpeg;base64,{encoded}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _candidate_qa(self, item: QueuedRender) -> dict[str, Any]:
+        """Compare a finished designer still after H3 has been unloaded."""
+        if item.provider_config.provider == "runway":
+            return self._runway_postprocess(item)
+        if item.runtime.get("studio_voiceover"):
+            return self._studio_mux_voiceover(item)
+        source = Path(str(item.runtime.get("candidate_qa_reference") or "")).expanduser()
+        candidate = next(
+            (
+                Path(output)
+                for output in reversed(item.outputs)
+                if Path(output).name.endswith("_candidate.png")
+            ),
+            None,
+        )
+        if candidate is None:
+            raise ValueError("designer render has no extracted candidate still")
+        settings = self._settings()
+        try:
+            result = compare_candidate_to_reference(
+                source,
+                candidate,
+                slot_id=str(item.runtime.get("candidate_qa_slot") or "unknown"),
+                slot_group=str(item.runtime.get("candidate_qa_group") or "body"),
+                base_url=str(settings.get("vision_classifier_url") or DEFAULT_SETTINGS["vision_classifier_url"]),
+                model=str(
+                    item.runtime.get("candidate_qa_model")
+                    or settings.get("vision_classifier_model")
+                    or DEFAULT_SETTINGS["vision_classifier_model"]
+                ),
+            )
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "decision": "unavailable",
+                "same_subject": "uncertain",
+                "overall_score": None,
+                "scores": {},
+                "reasons": ["Local candidate comparison did not complete; manual review is required."],
+                "advisory": True,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        result.update(
+            {
+                "avatar_id": str(item.runtime.get("candidate_qa_avatar_id") or ""),
+                "slot_id": str(item.runtime.get("candidate_qa_slot") or ""),
+                "group": str(item.runtime.get("candidate_qa_group") or "body"),
+                "source_path": str(source.resolve()),
+                "candidate_path": str(candidate.resolve()),
+            }
+        )
+        avatar_id = result["avatar_id"]
+        if avatar_id and self.library.get_avatar(avatar_id):
+            self.library.record_candidate(
+                avatar_id,
+                {
+                    "path": result["candidate_path"],
+                    "source_path": result["source_path"],
+                    "slot_id": result["slot_id"],
+                    "group": result["group"],
+                    "status": "pending",
+                    "qa_decision": result["decision"],
+                    "scores": result["scores"],
+                    "reasons": result["reasons"],
+                },
+            )
+            result["manifest_recorded"] = True
+        else:
+            result["manifest_recorded"] = False
+        return result
 
     # ------------------------------------------------------------------
     # Avatar Vault / Motion Library / Scene Library
@@ -696,7 +931,91 @@ class DesktopAPI:
 
     def vault_save(self, avatar: dict[str, Any]) -> dict[str, Any]:
         try:
-            return {"ok": True, "avatar": self.library.put_avatar(avatar)}
+            saved = self.library.put_avatar(avatar)
+            return {
+                "ok": True,
+                "avatar": saved,
+                "manifest_path": str(self.library.manifest_path(saved["avatar_id"])),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def avatar_manifest_open(self, avatar_id: str) -> dict[str, Any]:
+        try:
+            path = self.library.manifest_path(avatar_id)
+            if not path.is_file():
+                return {"ok": False, "error": "Save the avatar once to create its structured manifest."}
+            return self.open_path(str(path))
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def avatar_candidate_decide(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Explicitly accept a face/body candidate into a profile or reject it."""
+        try:
+            avatar_id = str(payload.get("avatar_id") or "").strip()
+            slot = slot_by_id(str(payload.get("slot_id") or ""))
+            decision = str(payload.get("decision") or "").strip()
+            if decision not in {"accepted", "rejected"}:
+                return {"ok": False, "error": "decision must be accepted or rejected"}
+            candidate_path = Path(str(payload.get("path") or "")).expanduser().resolve()
+            if not candidate_path.is_file() or candidate_path.suffix.lower() not in IMAGE_EXTENSIONS:
+                return {"ok": False, "error": "candidate must be a readable local still image"}
+            entry = self.library.get_avatar(avatar_id)
+            if not entry:
+                return {"ok": False, "error": f"avatar '{avatar_id}' not found"}
+            profile = AvatarProfile.model_validate(entry)
+            if decision == "accepted" and slot.group == "anatomy":
+                return {
+                    "ok": False,
+                    "error": "Generated anatomy cannot be accepted as source evidence. Add a verified exact source image to that anatomy slot.",
+                }
+            candidates = []
+            matched = False
+            for item in profile.build_manifest.candidates:
+                if Path(item.path).expanduser() == candidate_path:
+                    candidates.append(item.model_copy(update={"status": decision}))
+                    matched = True
+                else:
+                    candidates.append(item)
+            if not matched:
+                source_path = str(payload.get("source_path") or candidate_path)
+                candidate = {
+                    "path": str(candidate_path),
+                    "source_path": source_path,
+                    "slot_id": slot.id,
+                    "group": slot.group,
+                    "status": decision,
+                    "qa_decision": str(payload.get("qa_decision") or "unavailable"),
+                }
+                candidates.append(AvatarCandidateRecord.model_validate(candidate))
+            updates: dict[str, Any] = {
+                "build_manifest": profile.build_manifest.model_copy(update={"candidates": candidates})
+            }
+            if decision == "accepted":
+                key = "identity_refs" if slot.group == "identity" else "body_refs"
+                refs = dict(getattr(profile, key))
+                refs[slot.role] = str(candidate_path)
+                updates[key] = refs
+                if slot.group == "identity":
+                    # Bind the accepted file by content so later jobs can prove they use this exact identity.
+                    hashes = dict(profile.reference_hashes)
+                    hashes[slot.role] = sha256_file(candidate_path) or ""
+                    updates["reference_hashes"] = hashes
+            saved = self.library.put_avatar(profile.model_copy(update=updates).model_dump())
+            queue_id = str(payload.get("queue_id") or "").strip()
+            if re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", queue_id):
+                history_path = HISTORY_DIR / f"{queue_id}.json"
+                history = _read_json(history_path, {})
+                if isinstance(history, dict) and history:
+                    qa = dict(history.get("candidate_qa") or {})
+                    qa["profile_status"] = decision
+                    history["candidate_qa"] = qa
+                    _write_json(history_path, history)
+            return {
+                "ok": True,
+                "avatar": saved,
+                "manifest_path": str(self.library.manifest_path(avatar_id)),
+            }
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -934,6 +1253,15 @@ class DesktopAPI:
                 return {"ok": False, "error": "Profile coverage must be nude, clothed, or both."}
             validation_run = bool(payload.get("validation_run"))
             full_reference_pool = validation_run and bool(payload.get("full_reference_pool"))
+            if slot.group == "anatomy" and (validation_run or requested_mode == "fl2va"):
+                return {
+                    "ok": False,
+                    "error": (
+                        "Exact FL2VA anatomy regeneration is disabled because temporal pose conversion can invent or "
+                        "deform anatomy. Keep the verified source image as profile evidence, or explicitly choose an "
+                        "experimental guided/body-reference route."
+                    ),
+                }
             try:
                 cycle_index = max(0, int(payload.get("reference_cycle_index") or 0))
                 cycle_total = max(1, int(payload.get("reference_cycle_total") or 1))
@@ -961,7 +1289,11 @@ class DesktopAPI:
             full_component_paths = [path for component in all_components for path in component.get("paths") or []]
             component_labels = [f"{component['label']} ({component['category'].replace('_', ' ')})" for component in components]
             saved_body_ref_count = len({str(value).strip() for value in profile.body_refs.values() if str(value).strip()})
-            use_reference_pool = requested_mode == "body_ref2va" or full_reference_pool
+            # A validation run may cycle through many exact source images, but it
+            # must not silently change FL2VA into Ref2VA.  Ref2VA is an explicit,
+            # experimental route; exact-primary validation keeps the selected
+            # source as the FL2VA first frame.
+            use_reference_pool = requested_mode == "body_ref2va"
             body_refs = self._designer_body_refs(
                 profile,
                 slot,
@@ -972,7 +1304,7 @@ class DesktopAPI:
                 cycle_index=cycle_index,
                 cycle_total=cycle_total,
             ) if use_reference_pool else []
-            effective_mode = "body_ref2va" if full_reference_pool and body_refs else requested_mode
+            effective_mode = requested_mode
             if effective_mode == "body_ref2va" and not body_refs and (
                 full_reference_pool or not (saved_body_ref_count or all_components)
             ):
@@ -1098,6 +1430,16 @@ class DesktopAPI:
                 "full_reference_pool": full_reference_pool,
                 "reference_cycle_index": cycle_index if full_reference_pool else 0,
                 "reference_cycle_total": cycle_total if full_reference_pool else 0,
+                "candidate_qa": True,
+                "candidate_qa_reference": str(Path(source).expanduser().resolve()),
+                "candidate_qa_avatar_id": profile.avatar_id,
+                "candidate_qa_slot": slot.id,
+                "candidate_qa_group": slot.group,
+                "candidate_qa_model": str(
+                    payload.get("vision_model")
+                    or self._settings().get("vision_classifier_model")
+                    or DEFAULT_SETTINGS["vision_classifier_model"]
+                ),
             }
             output_kind = "validation" if validation_run else "designer"
             job.asset_map["OUTPUT_PREFIX"] = f"avatar_{output_kind}_h3_{profile.avatar_id}_{slot.role}"
@@ -1255,10 +1597,12 @@ class DesktopAPI:
         python = str(settings.get("comfyui_python") or "python3")
         url = str(settings.get("comfyui_url") or DEFAULT_SETTINGS["comfyui_url"])
         port = url.rsplit(":", 1)[-1] if ":" in url else "8188"
+        extra = [arg for arg in str(settings.get("comfyui_args") or "").split() if arg.startswith("--")]
         try:
+            COMFY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
             log = open(COMFY_LOG_PATH, "ab")
             proc = subprocess.Popen(
-                [python, "main.py", "--listen", "127.0.0.1", "--port", str(port)],
+                [python, "main.py", "--listen", "127.0.0.1", "--port", str(port), *extra],
                 cwd=str(comfyui_dir),
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -1269,7 +1613,12 @@ class DesktopAPI:
         COMFY_PID_PATH.write_text(str(proc.pid), encoding="utf-8")
         return {"ok": True, "state": "STARTING", "pid": proc.pid}
 
-    def comfyui_stop(self) -> dict[str, Any]:
+    def comfyui_stop(self, wait_s: float = 90.0) -> dict[str, Any]:
+        """Ask the ComfyUI that Avatar V2 started to exit (SIGTERM only; never force-killed).
+
+        A loaded engine can take a minute to release its models, so a slow exit is reported as
+        "still shutting down", not as an error.
+        """
         current = self.comfyui_status()
         if not current["ready"] and not current["pid"]:
             return {"ok": True, "state": "STOPPED", "message": "ComfyUI is not running."}
@@ -1286,11 +1635,12 @@ class DesktopAPI:
             os.kill(pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + max(float(wait_s), 0.0)
         while time.monotonic() < deadline and Path(f"/proc/{pid}").exists():
             time.sleep(0.5)
         if Path(f"/proc/{pid}").exists():
-            return {"ok": False, "error": f"ComfyUI pid {pid} did not stop after SIGTERM."}
+            return {"ok": True, "state": "STOPPING", "pid": pid,
+                    "message": "ComfyUI is still shutting down (releasing its models); it finishes on its own."}
         try:
             COMFY_PID_PATH.unlink()
         except FileNotFoundError:
@@ -1303,11 +1653,32 @@ class DesktopAPI:
 
     def history(self) -> dict[str, Any]:
         entries: list[dict[str, Any]] = []
-        for path in sorted(HISTORY_DIR.glob("*.json"), reverse=True):
+        for path in HISTORY_DIR.glob("*.json"):
             try:
-                entries.append(json.loads(path.read_text(encoding="utf-8")))
+                entry = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(entry, dict):
+                    continue
+                entry["history_modified_at"] = path.stat().st_mtime
+                entry["history_file"] = path.name
+                outputs = entry.get("outputs")
+                if isinstance(outputs, list):
+                    entry["output_exists"] = {
+                        output: Path(output).expanduser().is_file()
+                        for output in outputs
+                        if isinstance(output, str)
+                    }
+                entries.append(entry)
             except (json.JSONDecodeError, OSError):
                 continue
+        entries.sort(
+            key=lambda item: float(
+                item.get("history_modified_at")
+                or item.get("finished_at")
+                or item.get("started_at")
+                or 0
+            ),
+            reverse=True,
+        )
         return {"ok": True, "items": entries}
 
     def open_output_dir(self) -> dict[str, Any]:
@@ -1366,6 +1737,679 @@ class DesktopAPI:
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    # ------------------------------------------------------------------ Runway (cloud)
+    #
+    # Runway is ready as soon as an API key is saved. Jobs queue on one click; the cost is shown
+    # before you click and recorded afterwards. Spending limits apply only when the owner sets one
+    # (read from the *persisted* settings, never from a UI payload). The app never resubmits a
+    # paid job on its own.
+
+    @staticmethod
+    def _runway_limit(settings: dict[str, Any], key: str) -> int:
+        try:
+            return max(int(settings.get(key) or 0), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _runway_public_status(self, settings: dict[str, Any]) -> dict[str, Any]:
+        key = secret_status("runway")
+        return {
+            "ready": bool(key.get("configured")),
+            "key": key,
+            "models": runway_api.models_payload(),
+            "variations": variations_payload(),
+            "voices": list(runway_api.VOICE_PRESETS),
+            "avatar_presets": list(runway_api.AVATAR_PRESETS),
+            "limits": {
+                "job": self._runway_limit(settings, "runway_job_limit"),
+                "batch": self._runway_limit(settings, "runway_batch_limit"),
+                "daily": self._runway_limit(settings, "runway_daily_limit"),
+                "monthly": self._runway_limit(settings, "runway_monthly_limit"),
+            },
+            "default_personality": DEFAULT_PRESENTER_PERSONALITY,
+            "api_version": runway_api.RUNWAY_API_VERSION,
+            "docs_verified": runway_api.DOCS_VERIFIED,
+            "credit_usd": runway_api.CREDIT_USD,
+        }
+
+    def runway_status(self) -> dict[str, Any]:
+        return {"ok": True, **self._runway_public_status(self._settings())}
+
+    def runway_save_key(self, api_key: str) -> dict[str, Any]:
+        try:
+            stored_in = save_secret("runway", api_key)
+        except SecretStoreError as exc:
+            return {"ok": False, "error": str(exc), "key": secret_status("runway")}
+        return {"ok": True, "stored_in": stored_in, "key": secret_status("runway")}
+
+    def runway_clear_key(self) -> dict[str, Any]:
+        removed = clear_secret("runway")
+        status = secret_status("runway")
+        note = (
+            "The RUNWAYML_API_SECRET environment variable still supplies a key; unset it to disable Runway access."
+            if status.get("source") == "environment"
+            else ""
+        )
+        return {"ok": True, "removed": removed, "key": status, "note": note}
+
+    @staticmethod
+    def _runway_gate(settings: dict[str, Any] | None = None, *, uploads: bool = False) -> str | None:
+        """The only thing a Runway call needs is an API key; there is no enable or consent switch."""
+        if not secret_status("runway")["configured"]:
+            return (
+                "Add your Runway API key first: Studio → Connect Runway, or run scripts/set_runway_key.sh "
+                "(or set RUNWAYML_API_SECRET)."
+            )
+        return None
+
+    def runway_check(self) -> dict[str, Any]:
+        blocked = self._runway_gate(self._settings(), uploads=False)
+        if blocked:
+            return {"ok": False, "error": blocked}
+        try:
+            with runway_api.client_from_store(timeout_s=30) as client:
+                organization = client.organization()
+        except runway_api.RunwayError as exc:
+            return {"ok": False, "error": str(exc), "category": exc.error_category}
+        tier = organization.get("tier") or {}
+        return {
+            "ok": True,
+            "credit_balance": organization.get("creditBalance"),
+            "max_monthly_credit_spend": tier.get("maxMonthlyCreditSpend"),
+            "models_with_limits": sorted((tier.get("models") or {}).keys())[:80],
+        }
+
+    @staticmethod
+    def _runway_media_facts(spec: dict[str, Any], asset_map: dict[str, Any]) -> dict[str, Any]:
+        facts: dict[str, Any] = {}
+        media = spec.get("media") or {}
+        for key, fact in (("reference_video", "reference_video_s"), ("speech_audio", "speech_audio_s")):
+            entry = media.get(key)
+            if entry and asset_map.get(entry.get("asset", "")):
+                facts[fact] = runway_api.media_duration_s(str(asset_map[entry["asset"]]))
+        image = media.get("image")
+        if image and asset_map.get(image.get("asset", "")):
+            try:
+                with Image.open(str(asset_map[image["asset"]])) as handle:
+                    facts["image_size"] = handle.size
+            except OSError:
+                pass
+        return facts
+
+    @staticmethod
+    def _aspect_warning(path: Any, ratio: str | None) -> str | None:
+        if not path or not ratio:
+            return None
+        try:
+            with Image.open(str(path)) as handle:
+                width, height = handle.size
+        except OSError:
+            return None
+        target_w, target_h = runway_api.ratio_dims(ratio)
+        source, target = width / height, target_w / target_h
+        if abs(source - target) / target > 0.05:
+            return (
+                f"The first frame is {width}x{height} but the output ratio is {ratio}; Runway will center-crop it. "
+                "Match the still's orientation to avoid losing the head or hands."
+            )
+        return None
+
+    def _runway_build(self, payload: dict[str, Any], *, variation_id: str | None = None) -> dict[str, Any]:
+        """Turn a UI payload into a validated Runway job, spec, estimate and upload receipt (no network)."""
+        settings = self._settings()
+        options = dict(payload.get("runway") or {})
+        task = str(options.get("task") or "still")
+        if task == "variations":
+            task = "still"
+        endpoint_task = runway_api.TASK_ENDPOINT_TASK.get(task)
+        if endpoint_task is None:
+            raise runway_api.RunwayValidationError(f"Unknown Runway task '{task}'.")
+        default_model = {
+            "text_to_image": settings.get("runway_default_image_model") or "gen4_image",
+            "image_to_video": settings.get("runway_default_video_model") or "gen4.5",
+            "character_performance": "act_two",
+            "avatar_video": "gwm1_avatars",
+            "image_upscale": "magnific_precision_upscaler_v2",
+            "text_to_speech": "eleven_v4",
+        }[endpoint_task]
+        model = runway_api.model_spec(str(options.get("model") or default_model))
+        if model.task != endpoint_task:
+            raise runway_api.RunwayValidationError(f"{model.label} cannot run the '{task}' task.")
+
+        candidate = json.loads(json.dumps(payload))
+        candidate.setdefault("shot", {})["engine_preference"] = "runway"
+        avatar, shot = self._models_from_payload(candidate)
+
+        is_video = endpoint_task in {"image_to_video", "character_performance", "avatar_video"}
+        ratio = options.get("ratio") or (model.ratios[0] if model.ratios else None)
+        width, height = runway_api.ratio_dims(ratio) if ratio else (shot.width, shot.height)
+        duration = int(options.get("duration") or model.default_duration) if model.duration_range else None
+        shot = shot.model_copy(
+            update={
+                "engine_preference": "runway",
+                "local_only": False,
+                "width": max(256, width),
+                "height": max(256, height),
+                "duration_s": float(min(duration or 1, 60)) if is_video else 1.0,
+                "fps": 24 if is_video else 1,
+            }
+        )
+        decision = evaluate_cloud_policy(avatar, shot)
+        if not decision.allowed:
+            raise PolicyError(decision.reason)
+        job = build_job(avatar, shot)
+        lock = self._identity_lock(avatar)
+        local_media: dict[str, Any] = {}
+        post: dict[str, Any] = {}
+
+        params: dict[str, Any] = {}
+        media: dict[str, Any] = {}
+        prompt, dropped = "", []
+        warnings: list[str] = []
+        seed = shot.seed if model.supports_seed else None
+
+        if endpoint_task == "text_to_image":
+            references: list[dict[str, Any]] = []
+            identity_tag = outfit_tag = location_tag = None
+            human_subject = "human" if model.max_human_refs else None
+            if avatar.identity_refs:
+                identity_tag = "presenter"
+                drift = self._identity_drift_warning(lock, job.asset_map.get("IDENTITY_REF_1"), role="primary identity reference")
+                if drift:
+                    warnings.append(drift)
+                references.append(
+                    {"asset": "IDENTITY_REF_1", "tag": identity_tag, "subject": human_subject, "role": "primary identity"}
+                )
+                for index in range(2, min(len(avatar.identity_refs), model.max_human_refs) + 1):
+                    references.append({"asset": f"IDENTITY_REF_{index}", "subject": "human", "role": f"identity angle {index}"})
+            else:
+                warnings.append(
+                    "No identity reference is set, so this is pure text-to-image. Use it to design a new fictional "
+                    "presenter, then set the approved still as the primary identity for consistent variations."
+                )
+            object_subject = "object" if model.max_human_refs else None
+            if avatar.wardrobe_refs and len(references) < model.max_refs:
+                outfit_tag = "outfit"
+                references.append({"asset": "WARDROBE_REF_1", "tag": outfit_tag, "subject": object_subject, "role": "wardrobe"})
+            if shot.references.scene_image and len(references) < model.max_refs:
+                location_tag = "location"
+                references.append({"asset": "SCENE_IMAGE", "tag": location_tag, "subject": object_subject, "role": "location"})
+            if len(references) < model.min_refs:
+                raise runway_api.RunwayValidationError(
+                    f"{model.label} needs at least {model.min_refs} reference image; set the primary identity first."
+                )
+            chosen = variation_id or options.get("variation") or options.get("slot")
+            variation = variation_by_id(str(chosen)) if chosen else None
+            if chosen and lock.get("profile_id"):
+                # Slot outputs become pending candidates in the vault profile; never auto-accepted.
+                post.update(
+                    {
+                        "candidate_slot": str(chosen),
+                        "candidate_avatar_id": lock["profile_id"],
+                        "candidate_reference": str(job.asset_map.get("IDENTITY_REF_1") or ""),
+                    }
+                )
+            prompt, dropped = compile_presenter_prompt(
+                avatar,
+                shot,
+                budget=model.prompt_max,
+                identity_tag=identity_tag,
+                outfit_tag=outfit_tag,
+                location_tag=location_tag,
+                variation=variation,
+                realism=brand_instructor.REALISM_GUARDS if avatar.avatar_id == brand_instructor.PROFILE_ID else None,
+            )
+            params = {"prompt": prompt, "ratio": ratio, "seed": seed, "output_count": int(options.get("output_count") or 1)}
+            media = {"references": [{k: v for k, v in ref.items() if v is not None} for ref in references]}
+        elif endpoint_task == "image_to_video":
+            if not job.asset_map.get("INIT_IMAGE"):
+                raise runway_api.RunwayValidationError(
+                    "Set the approved presenter still as the primary identity or first frame."
+                )
+            prompt, dropped = compile_presenter_prompt(avatar, shot, budget=model.prompt_max, motion=True)
+            params = {"prompt": prompt, "duration": duration, "seed": seed}
+            if model.ratios:
+                params["ratio"] = ratio
+                aspect = self._aspect_warning(job.asset_map.get("INIT_IMAGE"), ratio)
+                if aspect:
+                    warnings.append(aspect)
+            if model.resolutions:
+                params["resolution"] = options.get("resolution") or model.resolutions[0]
+            if model.id == "h3_max":
+                params["prompt_expansion"] = options.get("prompt_expansion") or "disabled"
+            media = {"first_frame": {"asset": "INIT_IMAGE", "role": "first frame"}}
+            approved = set((lock.get("approved") or {}).values())
+            if approved and sha256_file(job.asset_map.get("INIT_IMAGE") or "") not in approved:
+                warnings.append("The first frame is not an approved reference of this profile, so identity may drift.")
+            if job.asset_map.get("LAST_FRAME"):
+                if model.supports_last_frame:
+                    media["last_frame"] = {"asset": "LAST_FRAME", "role": "last frame", "optional": True}
+                else:
+                    warnings.append(f"{model.label} ignores the last frame; MiniMax H3 Max accepts first + last keyframes.")
+            if options.get("output_audio"):
+                params["output_audio"] = str(options["output_audio"])
+                if params["output_audio"] == "voiceover":
+                    self._attach_voiceover(options, job, local_media)
+        elif endpoint_task == "character_performance":
+            if not job.asset_map.get("INIT_IMAGE"):
+                raise runway_api.RunwayValidationError("Set the presenter still (primary identity) as the Act-Two character.")
+            if not job.asset_map.get("MOTION_VIDEO"):
+                raise runway_api.RunwayValidationError("Select a 3-30 s performance video in the Motion video slot.")
+            drift = self._identity_drift_warning(lock, job.asset_map.get("INIT_IMAGE"), role="Act-Two character image", any_approved=True)
+            if drift:
+                warnings.append(drift)
+            output_audio = str(options.get("output_audio") or ("voiceover" if options.get("voiceover_id") else "mute"))
+            params = {
+                "ratio": ratio,
+                "seed": seed,
+                "body_control": bool(options.get("body_control", True)),
+                "expression_intensity": int(options.get("expression_intensity") or 3),
+                "output_audio": output_audio,
+            }
+            media = {
+                "character": {"asset": "INIT_IMAGE", "type": "image", "role": "presenter (character)"},
+                "reference_video": {"asset": "MOTION_VIDEO", "role": "performance reference (audio removed)"},
+            }
+            if output_audio == "voiceover":
+                self._attach_voiceover(options, job, local_media)
+            warnings.append(
+                "The performance video's audio track is removed before upload, so the presenter never receives "
+                "the driving performer's voice."
+            )
+        elif endpoint_task == "avatar_video":
+            avatar_id = str(options.get("avatar_id") or "").strip()
+            preset = str(options.get("avatar_preset") or "").strip()
+            if avatar_id:
+                avatar_ref = {"type": "custom", "avatarId": avatar_id}
+            elif preset:
+                avatar_ref = {"type": "runway-preset", "presetId": preset}
+            else:
+                raise runway_api.RunwayValidationError(
+                    "Choose your Runway presenter avatar (create one from the primary identity still first)."
+                )
+            if options.get("speech") == "audio":
+                speech: dict[str, Any] = {"type": "audio"}
+                job.asset_map["RUNWAY_NARRATION"] = self._narration_file(options, job)
+                media = {"speech_audio": {"asset": "RUNWAY_NARRATION", "role": "narration audio"}}
+            else:
+                speech = {"type": "text", "text": str(options.get("script") or "").strip()}
+                voice = str(options.get("voice") or "").strip()
+                if voice:
+                    speech["voice"] = {"type": "preset", "presetId": voice}
+            params = {"avatar": avatar_ref, "speech": speech}
+            if options.get("output_audio"):
+                params["output_audio"] = str(options["output_audio"])
+                if params["output_audio"] == "voiceover":
+                    self._attach_voiceover(options, job, local_media)
+            source = (self._runway_avatar_index().get(avatar_id) or {}) if avatar_id else {}
+            master = str(lock.get("master_sha256") or "")
+            if avatar_id and master and not master.startswith(str(source.get("reference_sha256") or "-")):
+                warnings.append(
+                    "This Runway avatar was not created from the approved master still (or predates it); "
+                    "recreate it from the master to keep the identity locked."
+                )
+        elif endpoint_task == "text_to_speech":
+            profile = self._voiceovers().get_profile(str(options.get("voice_profile_id") or "")) or {}
+            profile_voice = profile.get("voice") or {}
+            script = apply_pronunciations(str(options.get("script") or "").strip(), profile.get("pronunciations"))
+            custom_id = str(options.get("tts_voice_id") or (profile_voice.get("id") if profile_voice.get("type") == "custom" else "") or "")
+            preset_id = str(options.get("tts_voice") or profile_voice.get("presetId") or "")
+            voice_ref = {"type": "custom", "id": custom_id} if custom_id else {"type": "runway-preset", "presetId": preset_id}
+            prompt = script
+            params = {"prompt": script, "voice": voice_ref, "seed": seed}
+            for key in ("speed", "stability", "similarity_boost", "style"):
+                value = options.get(key, profile.get(key))
+                if value is not None and key in model.extras:
+                    params[key] = float(value)
+            language = options.get("language_code") or profile.get("language_code")
+            if language and "language_code" in model.extras:
+                params["language_code"] = str(language)
+            for key in ("previous_text", "next_text"):
+                if options.get(key) and "context" in model.extras:
+                    params[key] = str(options[key])
+            post.update({"register_voiceover": True, "voice_profile_id": str(profile.get("id") or ""), "script": script})
+        elif endpoint_task == "image_upscale":
+            source = str(options.get("image") or job.asset_map.get("INIT_IMAGE") or "")
+            if not source:
+                raise runway_api.RunwayValidationError("Select the still to upscale (primary identity or first frame).")
+            job.asset_map["RUNWAY_UPSCALE_SOURCE"] = source
+            params = {"scale_factor": int(options.get("scale_factor") or 2), "flavor": options.get("flavor") or "photo"}
+            media = {"image": {"asset": "RUNWAY_UPSCALE_SOURCE", "role": "still to upscale"}}
+
+        params = {key: value for key, value in params.items() if value is not None}
+        spec: dict[str, Any] = {"version": 1, "model": model.id, "task": task, "params": params, "media": media}
+        if local_media:
+            spec["local"] = local_media
+        spec["identity"] = {key: lock.get(key) for key in ("profile_id", "master_sha256", "primary_sha256")}
+        runway_api.validate_spec(spec, job.asset_map)
+        facts = self._runway_media_facts(spec, job.asset_map)
+        reference_seconds = facts.get("reference_video_s")
+        if reference_seconds is not None and not 3.0 <= reference_seconds <= 30.0:
+            raise runway_api.RunwayValidationError(
+                f"The performance video is {reference_seconds:.1f} s; Act-Two needs 3-30 s."
+            )
+        estimate = runway_api.estimate_credits(model.id, params, facts)
+        cap = self._runway_limit(settings, "runway_job_limit")  # 0 = no limit (the default)
+        spec["estimate"] = estimate
+        spec["max_credits"] = cap or None
+
+        spoken = str((params.get("speech") or {}).get("text") or "")
+        job.prompt = prompt or spoken or f"Runway {model.label}"
+        job.asset_map["PROMPT"] = job.prompt
+        job.asset_map["RUNWAY_SPEC"] = json.dumps(spec)
+        runtime = {
+            "provider": "runway",
+            "profile": "cloud_runway",
+            "engine": "runway",
+            "model": model.id,
+            "task": task,
+            "estimate_credits": estimate["credits"],
+            "reason": f"Runway cloud job · {model.label}",
+        }
+        if post:
+            runtime.update(post)
+            runtime["candidate_qa"] = True  # routes the finished job through _runway_postprocess
+        if payload.get("studio_action"):
+            runtime["studio_action"] = str(payload["studio_action"])[:32]
+        return {
+            "job": job,
+            "spec": spec,
+            "model": model,
+            "estimate": estimate,
+            "cap": cap,
+            "uploads": runway_api.describe_uploads(spec, job.asset_map),
+            "warnings": warnings,
+            "prompt": prompt,
+            "prompt_receipt": presenter_receipt(prompt, dropped, model.prompt_max) if model.prompt_max else None,
+            "runtime": runtime,
+            "settings": settings,
+        }
+
+    def _runway_builds(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """One build, a batch of slot variations, or N seeded candidates of the same still."""
+        options = payload.get("runway") or {}
+        if options.get("task") == "variations":
+            variation_ids = [str(item) for item in options.get("variations") or [] if str(item).strip()]
+            if not variation_ids:
+                raise runway_api.RunwayValidationError("Choose at least one presenter variation.")
+            if len(variation_ids) > len(variations_payload()):
+                raise runway_api.RunwayValidationError("Too many variations selected.")
+            return [
+                {"key": vid, "label": variation_by_id(vid)["label"], "build": self._runway_build(payload, variation_id=vid)}
+                for vid in variation_ids
+            ]
+        count = int(options.get("candidates") or 1)
+        if count > 1:
+            if options.get("task", "still") != "still" or count > 8:
+                raise runway_api.RunwayValidationError("Seeded candidate batches are for stills, at most 8 at a time.")
+            base_seed = int((payload.get("shot") or {}).get("seed", 41001))
+            builds = []
+            for index in range(count):
+                candidate = json.loads(json.dumps(payload))
+                candidate.setdefault("shot", {})["seed"] = base_seed + index
+                builds.append({"key": None, "label": f"candidate · seed {base_seed + index}", "build": self._runway_build(candidate)})
+            return builds
+        return [{"key": None, "label": None, "build": self._runway_build(payload)}]
+
+    def _runway_limit_error(self, builds: list[dict[str, Any]], settings: dict[str, Any], total: float) -> str | None:
+        """Only limits the owner set themselves can stop a job (all are off by default)."""
+        job_limit = self._runway_limit(settings, "runway_job_limit")
+        if job_limit:
+            for entry in builds:
+                credits = entry["build"]["estimate"]["credits"]
+                if credits > job_limit:
+                    return (
+                        f"This job is about {credits:g} credits, above the per-job limit you set ({job_limit}). "
+                        "Change or clear it under Advanced → Runway."
+                    )
+        batch_limit = self._runway_limit(settings, "runway_batch_limit")
+        if batch_limit and len(builds) > 1 and total > batch_limit:
+            return (
+                f"This batch is about {total:g} credits, above the batch limit you set ({batch_limit}). "
+                "Change or clear it under Advanced → Runway."
+            )
+        budget = self._budget_status(settings, total)
+        return budget["error"]
+
+    def runway_estimate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Local preview of a Runway job: model, cost, uploads, compiled prompt. No network."""
+        try:
+            builds = self._runway_builds(payload)
+        except (runway_api.RunwayError, PolicyError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        first = builds[0]["build"]
+        settings = first["settings"]
+        total = sum(entry["build"]["estimate"]["credits"] for entry in builds)
+        batch = len(builds) > 1 or bool(builds[0]["key"])
+        estimate = dict(first["estimate"])
+        if batch:
+            estimate.update(
+                {
+                    "credits": total,
+                    "usd": round(total * runway_api.CREDIT_USD, 2),
+                    "basis": f"{len(builds)} jobs x {first['estimate']['basis']}",
+                }
+            )
+        uploads: list[dict[str, Any]] = []
+        for entry in builds:
+            for item in entry["build"]["uploads"]:
+                if item not in uploads:
+                    uploads.append(item)
+        limit_error = self._runway_limit_error(builds, settings, total)
+        return {
+            "ok": True,
+            "model": first["model"].public(),
+            "task": (payload.get("runway") or {}).get("task") or "still",
+            "estimate": estimate,
+            "breakdown": [
+                {"label": entry["label"], "credits": entry["build"]["estimate"]["credits"]}
+                for entry in builds
+                if entry["label"]
+            ],
+            # Limits are optional; 0 means none is set.
+            "cap": self._runway_limit(settings, "runway_batch_limit" if batch else "runway_job_limit"),
+            "within_cap": limit_error is None,
+            "limit_error": limit_error,
+            "budget": self._budget_status(settings, total),
+            "unresolved": self._unresolved_summary(),
+            "uploads": uploads,
+            "warnings": first["warnings"],
+            "prompt": first["prompt"],
+            "prompt_receipt": first["prompt_receipt"],
+            "identity": first["spec"].get("identity"),
+            "gate": self._runway_gate(settings),
+        }
+
+    def _runway_queue_item(self, build: dict[str, Any], payload: dict[str, Any], label: str) -> QueuedRender:
+        settings = build["settings"]
+        config = ProviderConfig(
+            provider="runway",
+            base_url=runway_api.RUNWAY_API_BASE,
+            output_dir=str(RUNS_DIR / "runway"),
+            timeout_s=int(settings.get("runway_timeout_s") or 1800),
+            poll_interval_s=float(settings.get("runway_poll_interval_s") or 6),
+        )
+        return QueuedRender(
+            job=build["job"],
+            workflow=f"runway:{build['spec']['task']}:{build['model'].id}",
+            provider_config=config,
+            profile="cloud_runway",
+            runtime=build["runtime"],
+            archive_dir=str(self._archive_dir()),
+            chain_from_previous=bool(payload.get("chain_from_previous")),
+            label=label,
+        )
+
+    def queue_runway(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Queue a Runway job, slot-variation batch, or seeded candidate batch on one click."""
+        try:
+            builds = self._runway_builds(payload)
+        except (runway_api.RunwayError, PolicyError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        settings = builds[0]["build"]["settings"]
+        missing_key = self._runway_gate(settings)
+        if missing_key:
+            return {"ok": False, "error": missing_key}
+        total = sum(entry["build"]["estimate"]["credits"] for entry in builds)
+        limit_error = self._runway_limit_error(builds, settings, total)
+        if limit_error:
+            return {"ok": False, "error": limit_error, "budget": self._budget_status(settings, total)}
+        budget = self._budget_status(settings, total)
+        base_label = str(payload.get("label") or "").strip()
+        items = []
+        for entry in builds:
+            build = entry["build"]
+            label = base_label or f"runway · {build['model'].label}"
+            if entry["label"]:
+                label = f"{base_label or ('presenter variation' if entry['key'] else 'runway still')} · {entry['label']}"
+            items.append(self._runway_queue_item(build, payload, label))
+        queue_ids = self.queue.add_many(items)
+        return {
+            "ok": True,
+            "queue_id": queue_ids[0],
+            "queued": [
+                {"queue_id": queue_id, "variation": entry["key"], "label": entry["label"]}
+                for queue_id, entry in zip(queue_ids, builds)
+            ],
+            "total_credits": total,
+            "budget": budget,
+            "unresolved": self._unresolved_summary(),
+            "runtime": builds[0]["build"]["runtime"],
+            "warnings": builds[0]["build"]["warnings"],
+        }
+
+    def _runway_avatar_index(self) -> dict[str, Any]:
+        data = _read_json(RUNWAY_AVATARS_PATH, {})
+        return data if isinstance(data, dict) else {}
+
+    def runway_avatars_list(self) -> dict[str, Any]:
+        blocked = self._runway_gate(self._settings(), uploads=False)
+        if blocked:
+            return {"ok": False, "error": blocked}
+        try:
+            with runway_api.client_from_store(timeout_s=30) as client:
+                data = client.list_avatars(limit=100)
+        except runway_api.RunwayError as exc:
+            return {"ok": False, "error": str(exc)}
+        index = self._runway_avatar_index()
+        items = []
+        for entry in data.get("data") or []:
+            voice = entry.get("voice") or {}
+            avatar_id = str(entry.get("id") or "")
+            items.append(
+                {
+                    "id": avatar_id,
+                    "name": entry.get("name"),
+                    "status": entry.get("status"),
+                    "voice": voice.get("presetId") or voice.get("name"),
+                    "created_at": entry.get("createdAt"),
+                    "failure_reason": entry.get("failureReason"),
+                    "vault_avatar_id": (index.get(avatar_id) or {}).get("vault_avatar_id"),
+                }
+            )
+        return {"ok": True, "items": items, "has_more": bool(data.get("hasMore"))}
+
+    def runway_avatar_create(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Upload the approved presenter still and create a Runway custom avatar for lip-synced videos."""
+        blocked = self._runway_gate()
+        if blocked:
+            return {"ok": False, "error": blocked}
+        try:
+            avatar, shot = self._models_from_payload(
+                {
+                    "avatar": payload.get("avatar") or {},
+                    "shot": {"engine_preference": "runway", "content_class": "general", "user_prompt": "presenter avatar"},
+                }
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        decision = evaluate_cloud_policy(avatar, shot)
+        if not decision.allowed:
+            return {"ok": False, "error": decision.reason}
+        reference = str(payload.get("reference_image") or (avatar.identity_refs[0] if avatar.identity_refs else "")).strip()
+        if not reference:
+            return {"ok": False, "error": "Set the approved presenter still as the primary identity first."}
+        name = (str(payload.get("name") or avatar.display_name or "Presenter").strip() or "Presenter")[:50]
+        voice = str(payload.get("voice") or "").strip() or runway_api.DEFAULT_AVATAR_VOICE
+        if voice not in runway_api.VOICE_PRESETS:
+            return {"ok": False, "error": f"'{voice}' is not one of Runway's avatar voices: {', '.join(runway_api.VOICE_PRESETS)}."}
+        personality = (
+            str(payload.get("personality") or "").strip() or DEFAULT_PRESENTER_PERSONALITY.format(name=name)
+        )[:10000]
+        body: dict[str, Any] = {
+            "name": name,
+            "personality": personality,
+            "voice": {"type": "runway-live-preset", "presetId": voice},
+            "imageProcessing": "none" if payload.get("image_processing") == "none" else "optimize",
+        }
+        start_script = str(payload.get("start_script") or "").strip()
+        if start_script:
+            body["startScript"] = start_script[:2000]
+        try:
+            with runway_api.client_from_store(timeout_s=120) as client:
+                prepared = runway_api.prepare_media(
+                    reference, kind="image", role="avatar reference image", uploader=client.upload
+                )
+                body["referenceImage"] = prepared.uri
+                created = client.create_avatar(body)
+        except runway_api.RunwayError as exc:
+            return {"ok": False, "error": str(exc)}
+        avatar_id = str(created.get("id") or "")
+        if avatar_id:
+            index = self._runway_avatar_index()
+            index[avatar_id] = {
+                "vault_avatar_id": avatar.avatar_id,
+                "name": name,
+                "voice": voice,
+                "reference_file": Path(reference).name,
+                "reference_sha256": prepared.sha256[:16],
+                "source_sha256": sha256_file(reference),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _write_json(RUNWAY_AVATARS_PATH, index)
+        return {
+            "ok": True,
+            "avatar": {"id": avatar_id, "name": created.get("name"), "status": created.get("status")},
+            "upload": prepared.public(),
+        }
+
+    def runway_avatar_status(self, avatar_id: str) -> dict[str, Any]:
+        blocked = self._runway_gate(self._settings(), uploads=False)
+        if blocked:
+            return {"ok": False, "error": blocked}
+        if not runway_api._UUID_RE.match(str(avatar_id or "")):
+            return {"ok": False, "error": "Runway avatar ids are UUIDs."}
+        try:
+            with runway_api.client_from_store(timeout_s=30) as client:
+                data = client.get_avatar(str(avatar_id))
+        except runway_api.RunwayError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "avatar": {
+                "id": data.get("id"),
+                "name": data.get("name"),
+                "status": data.get("status"),
+                "failure_reason": data.get("failureReason"),
+            },
+        }
+
+    def runway_avatar_delete(self, avatar_id: str) -> dict[str, Any]:
+        blocked = self._runway_gate(self._settings(), uploads=False)
+        if blocked:
+            return {"ok": False, "error": blocked}
+        if not runway_api._UUID_RE.match(str(avatar_id or "")):
+            return {"ok": False, "error": "Runway avatar ids are UUIDs."}
+        try:
+            with runway_api.client_from_store(timeout_s=30) as client:
+                client.delete_avatar(str(avatar_id))
+        except runway_api.RunwayError as exc:
+            return {"ok": False, "error": str(exc)}
+        index = self._runway_avatar_index()
+        if index.pop(str(avatar_id), None) is not None:
+            _write_json(RUNWAY_AVATARS_PATH, index)
+        return {"ok": True, "deleted": str(avatar_id)}
+
     def queue_best_of(self, payload: dict[str, Any], count: int = 4) -> dict[str, Any]:
         count = max(2, min(int(count), 8))
         created: list[dict[str, Any]] = []
@@ -1395,10 +2439,17 @@ def main() -> None:
         ui_url += "?uitest=1"
 
     api = DesktopAPI()
+    try:  # start the local GPU engine (ComfyUI) in the background when it is installed
+        api.engine_autostart()
+    except Exception:
+        pass
+    # Expose only the allowlisted operations, never the API object's internals (queue, library, paths).
+    from .js_bridge import JsBridge
+
     window = webview.create_window(
         "Avatar V2",
         ui_url,
-        js_api=api,
+        js_api=JsBridge(api),
         width=1480,
         height=940,
         min_size=(1180, 760),
@@ -1408,6 +2459,11 @@ def main() -> None:
     api._self_window = window
     webview.start(debug=False)
     api.queue.shutdown()
+    try:  # stop ComfyUI if this app started it, so it doesn't keep holding GPU memory; don't hold up closing
+        if api.comfyui_status().get("pid"):
+            api.comfyui_stop(wait_s=3)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

@@ -40,6 +40,8 @@ AppearanceComponentCategory = Literal[
     "feet",
     "skin",
 ]
+CandidateStatus = Literal["pending", "accepted", "rejected"]
+CandidateQADecision = Literal["pass", "review", "reject", "unavailable"]
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{1,63}$")
 
@@ -48,6 +50,54 @@ def _validate_id(value: str) -> str:
     if not _ID_RE.match(value):
         raise ValueError("id must be 2-64 chars of lowercase letters, digits, '-' or '_'")
     return value
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class AvatarReferenceRecord(BaseModel):
+    """One locally analyzed source image and the profile views it can support."""
+
+    path: str
+    slot_ids: list[str] = Field(default_factory=list)
+    visual_roles: list[str] = Field(default_factory=list)
+    visual_facts: dict[str, Any] = Field(default_factory=dict)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    source_quality: float | None = Field(default=None, ge=0, le=1)
+    identity_confidence: float | None = Field(default=None, ge=0, le=1)
+    generation_eligible: bool = False
+
+
+class AvatarCandidateRecord(BaseModel):
+    """A generated candidate plus its advisory local visual-QA result."""
+
+    path: str
+    source_path: str
+    slot_id: str
+    group: Literal["identity", "body", "anatomy"]
+    status: CandidateStatus = "pending"
+    qa_decision: CandidateQADecision = "unavailable"
+    scores: dict[str, float] = Field(default_factory=dict)
+    reasons: list[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=_utc_now)
+
+
+class AvatarBuildManifest(BaseModel):
+    """Machine-readable profile evidence, constraints, and candidate history."""
+
+    schema_version: str = "1.0"
+    preferred_sources: dict[str, str] = Field(default_factory=dict)
+    reference_records: list[AvatarReferenceRecord] = Field(default_factory=list)
+    identity_anchors: list[str] = Field(default_factory=list)
+    body_anchors: list[str] = Field(default_factory=list)
+    anatomy_sources: list[str] = Field(default_factory=list)
+    appearance: dict[str, str] = Field(default_factory=dict)
+    persistent_features: list[str] = Field(default_factory=list)
+    protected_source_slots: list[str] = Field(default_factory=list)
+    inferable_slots: list[str] = Field(default_factory=list)
+    candidates: list[AvatarCandidateRecord] = Field(default_factory=list)
+    updated_at: str = Field(default_factory=_utc_now)
 
 
 class AvatarProfile(BaseModel):
@@ -59,6 +109,9 @@ class AvatarProfile(BaseModel):
     age_verified_18_plus: bool = False
     consent_confirmed: bool = False
     identity_refs: dict[str, str] = Field(default_factory=dict)
+    # SHA-256 of each explicitly accepted reference, keyed like identity_refs. The "front" entry
+    # is the approved master identity that cloud jobs are locked to.
+    reference_hashes: dict[str, str] = Field(default_factory=dict)
     body_refs: dict[str, str] = Field(default_factory=dict)
     hair_refs: dict[str, str] = Field(default_factory=dict)
     wardrobe_refs: dict[str, str] = Field(default_factory=dict)
@@ -66,7 +119,10 @@ class AvatarProfile(BaseModel):
     anatomy_guide_ids: list[str] = Field(default_factory=list, max_length=8)
     component_option_ids: list[str] = Field(default_factory=list, max_length=8)
     source_refs: list[str] = Field(default_factory=list)
+    reference_galleries: dict[str, list[str]] = Field(default_factory=dict)
+    reference_selections: dict[str, str] = Field(default_factory=dict)
     appearance_manifest: dict[str, str] = Field(default_factory=dict)
+    build_manifest: AvatarBuildManifest = Field(default_factory=AvatarBuildManifest)
     designer_iteration: int = Field(default=0, ge=0)
     nude_mode: Literal["nude", "clothed", "both"] = "nude"
     persistent_features: list[str] = Field(default_factory=list)
@@ -212,6 +268,44 @@ class LibraryStore:
     def _write(self, name: str, data: dict[str, dict[str, Any]]) -> None:
         self._path(name).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
+    def manifest_path(self, avatar_id: str) -> Path:
+        return self.root / "manifests" / f"{_validate_id(avatar_id)}.avatar_manifest.json"
+
+    def _refresh_build_manifest(self, profile: AvatarProfile) -> AvatarBuildManifest:
+        current = profile.build_manifest
+        return current.model_copy(
+            update={
+                "preferred_sources": dict(profile.reference_selections),
+                "identity_anchors": list(dict.fromkeys(profile.ordered_identity)),
+                "body_anchors": list(dict.fromkeys(value for value in profile.body_refs.values() if value)),
+                "anatomy_sources": list(dict.fromkeys(value for value in profile.anatomy_refs.values() if value)),
+                "appearance": dict(profile.appearance_manifest),
+                "persistent_features": list(dict.fromkeys(profile.persistent_features)),
+                "protected_source_slots": list(
+                    dict.fromkeys(
+                        [*current.protected_source_slots]
+                        + [f"anatomy_{role}" for role, value in profile.anatomy_refs.items() if value]
+                    )
+                ),
+                "updated_at": _utc_now(),
+            }
+        )
+
+    def _write_avatar_manifest(self, profile: AvatarProfile) -> Path:
+        path = self.manifest_path(profile.avatar_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        document = {
+            "avatar_id": profile.avatar_id,
+            "display_name": profile.display_name,
+            "subject_kind": profile.subject_kind,
+            "sex": profile.sex,
+            "apparent_age_years": profile.apparent_age_years,
+            "profile_coverage": profile.nude_mode,
+            "manifest": profile.build_manifest.model_dump(),
+        }
+        path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+        return path
+
     def _crud(self, name: str, model: type[BaseModel], entry_id: str) -> None:
         pass  # placeholder to satisfy coverage of future generic CRUD
 
@@ -223,10 +317,39 @@ class LibraryStore:
 
     def put_avatar(self, entry: dict[str, Any]) -> dict[str, Any]:
         profile = AvatarProfile.model_validate(entry)
+        existing = self.get_avatar(profile.avatar_id)
+        if existing:
+            previous = AvatarProfile.model_validate(existing).build_manifest.candidates
+            merged_candidates = {item.path: item for item in previous}
+            for item in profile.build_manifest.candidates:
+                current = merged_candidates.get(item.path)
+                if current is None or item.status != "pending" or current.status == "pending":
+                    merged_candidates[item.path] = item
+            profile = profile.model_copy(
+                update={
+                    "build_manifest": profile.build_manifest.model_copy(
+                        update={"candidates": list(merged_candidates.values())}
+                    )
+                }
+            )
+        profile = profile.model_copy(update={"build_manifest": self._refresh_build_manifest(profile)})
         data = self._read("vault.json")
         data[profile.avatar_id] = profile.model_dump()
         self._write("vault.json", data)
+        self._write_avatar_manifest(profile)
         return data[profile.avatar_id]
+
+    def record_candidate(self, avatar_id: str, candidate: dict[str, Any]) -> dict[str, Any]:
+        entry = self.get_avatar(avatar_id)
+        if not entry:
+            raise ValueError(f"avatar '{avatar_id}' not found")
+        profile = AvatarProfile.model_validate(entry)
+        record = AvatarCandidateRecord.model_validate(candidate)
+        candidates = [item for item in profile.build_manifest.candidates if item.path != record.path]
+        candidates.append(record)
+        build_manifest = profile.build_manifest.model_copy(update={"candidates": candidates, "updated_at": _utc_now()})
+        saved = self.put_avatar(profile.model_copy(update={"build_manifest": build_manifest}).model_dump())
+        return saved
 
     def delete_avatar(self, avatar_id: str) -> bool:
         data = self._read("vault.json")
@@ -376,6 +499,7 @@ class LibraryStore:
             "apparent_age_years": profile.apparent_age_years,
             "age_verified_18_plus": profile.age_verified_18_plus,
             "consent_confirmed": profile.consent_confirmed,
+            "nude_mode": profile.nude_mode,
             "identity_refs": profile.ordered_identity,
             "body_refs": [
                 value

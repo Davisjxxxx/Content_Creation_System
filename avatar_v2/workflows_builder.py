@@ -194,12 +194,6 @@ def build_h3_common(
     next_id += 1
 
     graph[str(next_id)] = _node(
-        "VAEDecodeAudio", samples=_link(sample_id), vae=_link(audio_vae_id)
-    )
-    audio_decode_id = next_id
-    next_id += 1
-
-    graph[str(next_id)] = _node(
         "VHS_VideoCombine",
         images=_link(decode_id),
         frame_rate=float(_value(mapping, "FPS", 24)),
@@ -209,15 +203,6 @@ def build_h3_common(
         pingpong=False,
         save_output=True,
     )
-    video_out_id = next_id
-    next_id += 1
-
-    graph[str(next_id)] = _node(
-        "SaveAudio",
-        audio=_link(audio_decode_id),
-        filename_prefix="audio/" + str(_value(mapping, "OUTPUT_PREFIX", "avatar_v2")),
-    )
-    audio_out_id = next_id
     next_id += 1
 
     return graph

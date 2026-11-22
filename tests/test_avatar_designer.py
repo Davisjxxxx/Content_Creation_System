@@ -1,6 +1,10 @@
+import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from avatar_v2.avatar_designer import (
     build_designer_prompt,
@@ -100,6 +104,11 @@ def test_library_round_trips_designer_profile_and_applies_anatomy(tmp_path: Path
             body_refs={"full_front": "/body.png"},
             anatomy_refs={"pelvis_front": "/pelvis.png"},
             source_refs=["/source.png"],
+            reference_galleries={
+                "identity_front": ["/source.png", "/source-alt.png"],
+                "anatomy_pelvis_front": ["/pelvis.png"],
+            },
+            reference_selections={"identity_front": "/source-alt.png"},
             appearance_manifest={"tattoos": "small star on right shoulder"},
             sex="female",
             nude_mode="both",
@@ -110,10 +119,162 @@ def test_library_round_trips_designer_profile_and_applies_anatomy(tmp_path: Path
     assert saved["apparent_age_years"] == 29
     assert saved["sex"] == "female"
     assert saved["nude_mode"] == "both"
+    assert saved["reference_galleries"]["identity_front"] == ["/source.png", "/source-alt.png"]
+    assert saved["reference_selections"]["identity_front"] == "/source-alt.png"
     payload = store.profile_to_avatar_payload("ava-01")
     assert payload["apparent_age_years"] == 29
     assert payload["body_refs"] == ["/body.png", "/pelvis.png"]
     assert "tattoos: small star on right shoulder" in payload["persistent_features"]
+
+
+def test_reference_thumbnail_returns_small_local_data_url(tmp_path: Path):
+    source = tmp_path / "reference.png"
+    Image.new("RGB", (640, 480), (120, 80, 40)).save(source)
+    api = DesktopAPI.__new__(DesktopAPI)
+
+    result = api.reference_thumbnail(str(source))
+
+    assert result["ok"] is True
+    assert result["data_url"].startswith("data:image/jpeg;base64,")
+    assert api.reference_thumbnail(str(tmp_path / "missing.png"))["ok"] is False
+
+
+def test_history_is_sorted_by_actual_file_modification_time(tmp_path: Path, monkeypatch):
+    from avatar_v2 import desktop
+
+    history = tmp_path / "history"
+    history.mkdir()
+    older = history / "zzzzzzzzzz.json"
+    newer = history / "aaaaaaaaaa.json"
+    existing = tmp_path / "candidate.png"
+    existing.write_bytes(b"image")
+    missing = tmp_path / "missing.png"
+    older.write_text(json.dumps({"id": "older", "finished_at": 500}), encoding="utf-8")
+    newer.write_text(
+        json.dumps({"id": "newer", "finished_at": 100, "outputs": [str(existing), str(missing)]}),
+        encoding="utf-8",
+    )
+    os.utime(older, (1000, 1000))
+    os.utime(newer, (2000, 2000))
+    monkeypatch.setattr(desktop, "HISTORY_DIR", history)
+    api = DesktopAPI.__new__(DesktopAPI)
+
+    items = api.history()["items"]
+
+    assert [item["id"] for item in items] == ["newer", "older"]
+    assert items[0]["history_modified_at"] == 2000
+    assert items[0]["history_file"] == "aaaaaaaaaa.json"
+    assert items[0]["output_exists"] == {str(existing): True, str(missing): False}
+
+
+def test_open_path_rejects_missing_file_before_launch(tmp_path: Path, monkeypatch):
+    api = DesktopAPI.__new__(DesktopAPI)
+    launched = []
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: launched.append(args))
+
+    result = api.open_path(str(tmp_path / "missing.png"))
+
+    assert result["ok"] is False
+    assert "no longer exists" in result["error"]
+    assert launched == []
+
+
+def test_open_path_reports_linux_launcher_failure(tmp_path: Path, monkeypatch):
+    from avatar_v2 import desktop
+
+    source = tmp_path / "candidate.png"
+    source.write_bytes(b"image")
+    api = DesktopAPI.__new__(DesktopAPI)
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        desktop.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 3, "", "no image viewer"),
+    )
+
+    result = api.open_path(str(source))
+
+    assert result == {"ok": False, "error": "no image viewer"}
+
+
+def test_open_path_uses_ffplay_for_linux_video(tmp_path: Path, monkeypatch):
+    from avatar_v2 import desktop
+
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"video")
+    api = DesktopAPI.__new__(DesktopAPI)
+    launched = []
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(desktop.shutil, "which", lambda name: "/usr/bin/ffplay" if name == "ffplay" else None)
+    monkeypatch.setattr(
+        desktop.subprocess,
+        "Popen",
+        lambda *args, **kwargs: launched.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        desktop.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("video should not be delegated to xdg-open"),
+    )
+
+    result = api.open_path(str(source))
+
+    assert result == {"ok": True}
+    assert launched[0][0][0] == [
+        "/usr/bin/ffplay",
+        "-autoexit",
+        "-seek_interval",
+        "1",
+        str(source.resolve()),
+    ]
+
+
+def test_candidate_decision_requires_explicit_accept_and_protects_anatomy(tmp_path: Path, monkeypatch):
+    from avatar_v2 import desktop
+
+    library = LibraryStore(tmp_path / "library")
+    library.put_avatar(_adult_profile(identity_refs={"front": "/old.png"}))
+    candidate = tmp_path / "candidate.png"
+    Image.new("RGB", (64, 64), "blue").save(candidate)
+    library.record_candidate(
+        "ava-01",
+        {
+            "path": str(candidate),
+            "source_path": "/old.png",
+            "slot_id": "identity_front",
+            "group": "identity",
+            "qa_decision": "review",
+        },
+    )
+    history = tmp_path / "history"
+    history.mkdir()
+    monkeypatch.setattr(desktop, "HISTORY_DIR", history)
+    api = DesktopAPI.__new__(DesktopAPI)
+    api.library = library
+
+    accepted = api.avatar_candidate_decide(
+        {
+            "avatar_id": "ava-01",
+            "slot_id": "identity_front",
+            "path": str(candidate),
+            "decision": "accepted",
+        }
+    )
+    assert accepted["ok"] is True
+    saved = AvatarProfile.model_validate(library.get_avatar("ava-01"))
+    assert saved.identity_refs["front"] == str(candidate.resolve())
+    assert saved.build_manifest.candidates[0].status == "accepted"
+
+    anatomy = api.avatar_candidate_decide(
+        {
+            "avatar_id": "ava-01",
+            "slot_id": "anatomy_pelvis_front",
+            "path": str(candidate),
+            "decision": "accepted",
+        }
+    )
+    assert anatomy["ok"] is False
+    assert "cannot be accepted as source evidence" in anatomy["error"]
 
 
 def test_appearance_component_requires_enough_authorized_examples_before_selection(tmp_path: Path):
@@ -253,6 +414,22 @@ def test_desktop_designer_prompt_gates_unverified_adult_anatomy():
     assert "29-year-old adult" in allowed["prompt"]
     assert "selected sex anatomy is female" in allowed["prompt"]
     assert "anatomy-first nude validation pass" in allowed["prompt"]
+
+
+def test_designer_queue_refuses_fl2va_anatomy_regeneration():
+    api = DesktopAPI.__new__(DesktopAPI)
+
+    result = api.queue_avatar_designer(
+        {
+            "avatar": _adult_profile(sex="female", nude_mode="nude"),
+            "slot_id": "anatomy_pelvis_front",
+            "render_mode": "fl2va",
+            "validation_run": True,
+        }
+    )
+
+    assert result["ok"] is False
+    assert "temporal pose conversion can invent or deform anatomy" in result["error"]
 
 
 def test_designer_rejects_apparent_age_below_18():
@@ -637,7 +814,7 @@ def test_complete_validation_rotates_full_pool_and_prioritizes_accepted_target()
     }
 
 
-def test_complete_validation_queue_uses_ref2va_and_marks_candidates(tmp_path: Path):
+def test_complete_validation_keeps_fl2va_exact_source_and_marks_candidates(tmp_path: Path):
     paths = []
     for index in range(10):
         path = tmp_path / f"reference-{index}.png"
@@ -660,11 +837,11 @@ def test_complete_validation_queue_uses_ref2va_and_marks_candidates(tmp_path: Pa
     def resolve(render_payload, avatar, shot):
         from avatar_v2.composer import build_job
 
-        assert render_payload["reference_mode"] == "multi_match"
+        assert render_payload["reference_mode"] == "exact_primary"
         assert avatar.identity_refs == [paths[0]]
-        assert paths[0] not in avatar.body_refs
-        assert len(avatar.body_refs) == 8
-        return build_job(avatar, shot), {"profile": "low_memory", "local_h3_allowed": True}, "builtin:h3_ref2va"
+        assert avatar.body_refs == []
+        assert shot.references.init_image == paths[0]
+        return build_job(avatar, shot), {"profile": "low_memory_quality", "local_h3_allowed": True}, "builtin:h3_fl2va"
 
     api._resolve_runtime = resolve
     result = api.queue_avatar_designer(
@@ -686,11 +863,13 @@ def test_complete_validation_queue_uses_ref2va_and_marks_candidates(tmp_path: Pa
     )
 
     assert result["ok"] is True
-    assert result["engine"] == "h3_ref2va"
+    assert result["engine"] == "h3_fl2va"
     assert result["validation_run"] is True
     assert result["full_reference_pool"] is True
     assert captured["item"].runtime["validation_run"] is True
     assert captured["item"].runtime["full_reference_pool"] is True
+    assert captured["item"].runtime["designer_render_mode"] == "fl2va"
+    assert captured["item"].runtime["body_ref_count"] == 0
     assert captured["item"].label.startswith("Avatar Validation H3")
     assert captured["item"].job.asset_map["OUTPUT_PREFIX"].startswith("avatar_validation_h3_")
 
@@ -711,67 +890,3 @@ def test_h3_candidate_frame_is_appended_to_designer_outputs(tmp_path: Path, monk
 
     assert item.outputs[-1].endswith("designer_candidate.png")
     assert Path(item.outputs[-1]).read_bytes() == b"png"
-
-
-def test_desktop_exposes_profile_build_controls():
-    html = (Path(__file__).parents[1] / "avatar_v2" / "ui" / "index.html").read_text(encoding="utf-8")
-    assert 'id="designerRunNext"' in html
-    assert 'id="designerRunProfile"' in html
-    assert "function designerRunNext()" in html
-    assert "function designerRunProfile()" in html
-    assert 'id="designerRunFullProfile"' in html
-    assert "function designerRunFullProfile()" in html
-    assert "full_reference_pool:validationRun" in html
-    assert "referencePasses=Math.max" in html
-    assert "full rotating image pool" in html
-    assert "existing accepted images stay preserved" in html
-    assert "Existing accepted views will be skipped" not in html
-    assert "complete ${slots.length}-view" not in html
-    assert 'id="designerRunProfile" onclick="designerRunProfile()">' in html
-    assert "function designerEnsureIdentityDefaults()" in html
-    assert "function designerShowPrerequisiteErrors(errors)" in html
-    assert 'id="vApparentAge"' in html
-    assert 'id="vApparentAge" type="number" min="18" value="25"' in html
-    assert 'id="vApparentAge" type="number" min="18" max=' not in html
-    assert "apparent_age_years:Number($('vApparentAge').value)||null" in html
-    assert "errors.push('adult apparent age of 18 or older')" in html
-    assert 'id="vSex"' in html
-    assert '<option value="female">female</option>' in html
-    assert '<option value="male">male</option>' in html
-    assert 'id="vAdultAuth"' in html
-    assert 'id="vNude"' in html
-    assert '<option value="both">Nude, then clothed</option>' in html
-    assert "coverage_variant:coverage" in html
-    assert "coverageVariants=$('vNude').value==='both'?['nude','clothed']" in html
-    assert "Do not identify the person and do not infer or report sex" not in html
-    assert "It does not identify the person or infer sex" in html
-    assert "prompt_has_age" in html
-    assert 'id="designerRenderMode"' in html
-    assert '<option value="body_ref2va">Identity + body refs · Ref2VA · 8 GB experimental</option>' in html
-    assert "function designerBodyRefs()" in html
-    assert "BODY / COMPONENT'} REF ×${referenceCountLabel}" in html
-    assert "function designerReferenceCountForSlot(slot)" in html
-    assert "bodyReferenced=mode==='body_ref2va'&&(slot.group!=='identity'||identityComponent)" in html
-    assert 'id="designerCacheDir"' in html
-    assert "function designerAnalyzeCache()" in html
-    assert "function designerResetCacheMappings()" in html
-    assert "previous working mappings replaced" in html
-    assert 'id="componentSelectors"' in html
-    assert "function componentSave()" in html
-    assert 'id="guideList"' in html
-    assert "function guideFormEntry()" in html
-    assert 'id="gStatus"' in html
-    assert 'onclick="guidePickImage()"' in html
-    assert "function guideValidationErrors(entry)" in html
-    assert "function guideShowErrors(errors)" in html
-    assert "function guideSuggestedIdentity(path)" in html
-    assert "Save guide + attach to avatar" in html
-    assert "await window.pywebview.api.vault_save(avatarEntry)" in html
-    assert "Guide save failed:" in html
-    assert "anatomy_guide_ids:[...state.designer.anatomy_guide_ids]" in html
-    assert "Confirm Profile Build" in html
-    assert "profileConfirmUntil=Date.now()+15000" in html
-    assert "const r=await vaultSave();if(r.ok)" in html
-    assert "else $('designerIteration').value=previous" in html
-    assert "A1111" not in html
-    assert "Juggernaut" not in html

@@ -21,3 +21,24 @@ assets/private/
 *.pth
 renders/
 logs/
+
+# Legacy A1111 tree. It lives at /home/jd/avatar_project_legacy and is reached through the
+# root compatibility symlinks; never commit it if it is moved back inside the repo.
+/avatar_project_legacy/
+# Local Python environments (.venv is the 3.12 rollback, .venv314 the current one)
+.venv*/
+# Credentials. Provider keys belong in the OS keyring, ~/.avatar_v2/secrets or env vars.
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.token
+*_api_key.py
+*api_key*.txt
+*api_key*.json
+credentials*.json
+client_secret*.json
+service-account*.json
+.claude/settings.local.json

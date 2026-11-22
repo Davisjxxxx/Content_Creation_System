@@ -50,6 +50,7 @@ def _queue_shell(tmp_path: Path, items=None):
     queue._stop = threading.Event()
     queue._active_provider = None
     queue._active_id = None
+    queue.candidate_qa_runner = None
     return queue
 
 
@@ -232,3 +233,23 @@ def test_shutdown_stops_trace_and_wakes_worker(tmp_path: Path):
     assert queue._stop.is_set()
     assert queue._wake.is_set()
     assert queue.memory_manager.called is True
+
+
+def test_candidate_qa_is_advisory_and_persisted_in_public_record(tmp_path: Path):
+    item = _item(tmp_path, status="done", runtime={"candidate_qa": True})
+    queue = _queue_shell(tmp_path, [item])
+    queue.candidate_qa_runner = lambda queued: {
+        "ok": True,
+        "decision": "review",
+        "overall_score": 0.68,
+        "candidate_path": "/candidate.png",
+    }
+    queue._run_candidate_qa(item)
+    assert item.public()["candidate_qa"]["decision"] == "review"
+    restored = queue._item_from_dict(queue._item_to_dict(item))
+    assert restored.candidate_qa["overall_score"] == 0.68
+
+    queue.candidate_qa_runner = lambda _queued: (_ for _ in ()).throw(RuntimeError("vision down"))
+    queue._run_candidate_qa(item)
+    assert item.candidate_qa["decision"] == "unavailable"
+    assert "vision down" in item.candidate_qa["error"]

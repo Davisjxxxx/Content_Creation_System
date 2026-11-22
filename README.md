@@ -16,6 +16,40 @@ COMFYUI PROVIDER  →  GPU MEMORY MANAGER  →  RENDER QUEUE
 OUTPUT / QA / HISTORY  →  DESKTOP APPLICATION
 ```
 
+## The app (start here)
+
+Avatar V2 is now one simple screen with three parts in the sidebar:
+
+- **Make**: "What do you want to make?" Six recipes, each a short list of numbered steps with one
+  pink button that shows the price before you click.
+  1. **Her look**: pick Natural, Polished or Original, optionally say what to change, and make
+     1, 2 or 4 options (8 credits each). Click any option for the full-size viewer, then **Use this one**.
+  2. **Photos of her**: the same face from new angles and expressions; keep the ones that look like her.
+  3. **Voiceover**: pick her voice, hear a 1-credit sample, and type the script.
+  4. **Talking video**: she says your words, lip-synced. Long scripts become several videos
+     automatically, and the first video sets up her Runway talking avatar.
+  5. **Act it out**: film yourself for 3-30 s; she copies your face and moves, and your voice is removed.
+  6. **Moving clip**: turn her photo into a 5-second clip **free on your GPU**, or a 5-10 s clip on
+     Runway (Gen-4.5 or the cheaper Turbo).
+- **My stuff**: every photo, video and voiceover as a thumbnail. Click to see it full size (Use /
+  Keep / Toss, arrow keys, actual-size zoom, "Open in its own window").
+- **Settings**: Runway key and balance, the GPU engine (start/stop), optional spending limits, the
+  output folder and an activity log.
+
+The old advanced screens (Create with every renderer and option, Build Avatar, Body/Motion/Scene
+libraries, Presenter tools, the results table and the old settings) were removed on 2026-11-22
+because they didn't run on this machine or conflicted with the recipes. Their backend code is
+still in the package, and the screens are in git history (`798d34f`). Code: `avatar_v2/ui/index.html`
+(the page) and `avatar_v2/desktop_studio.py` (the recipes).
+
+### Your GPU engine (local, free)
+
+`scripts/setup_local_engine.sh` installs ComfyUI with **Wan 2.2 14B image-to-video** (GGUF Q4_K_S
+plus the 4-step Lightning LoRAs), sized for an 8 GB NVIDIA GPU, into `~/AvatarForge` (about 34 GB).
+The app starts it when it opens and stops it when it closes. It powers the free "Moving clip"
+option; everything else uses Runway, because nothing else runs well enough on 8 GB. Details and
+measured speed: [`docs/LOCAL_ENGINE.md`](docs/LOCAL_ENGINE.md).
+
 ## What the desktop app exposes
 
 - **Studio** — renderer lanes (MiniMax H3 Ref2VA, H3 FL2VA, Wan 2.2, Custom ComfyUI), runtime profiles, timed motion prompting, wind physics, H3 reference-role bindings, best-of-N and Profile Sweep. Adult content classes also expose an opt-in prompt builder with preloaded roles, environments, actions, toys/props, moves and positions; it remains gated by the existing verified-adult consent policy.
@@ -27,13 +61,19 @@ OUTPUT / QA / HISTORY  →  DESKTOP APPLICATION
 
 All libraries, runs, and settings live under `~/.avatar_v2/`. Nothing is uploaded anywhere.
 
-The Profile Designer can always build exact slot prompts and import/accept candidate images. **Run Next Missing** queues one reviewable iteration; **Build All Missing Views** is the faster fill-only path. **Build Complete Validation Set** rebuilds every applicable view, including accepted coverage, with the primary identity image anchored and the entire same-avatar cache, accepted profile views, and selected appearance examples automatically rotated through H3's per-render reference capacity. Large caches create additional validation candidates so every image participates. Existing accepted images remain saved until the user explicitly replaces them. Per-slot **Generate** buttons remain available. The selected apparent age is injected into both profile turns and later Studio renders as a stable face/skin/body-maturity anchor. H3 performs one slow transition to the requested angle, holds the target view, and Avatar V2 extracts the final frame as a PNG candidate. Body regions absent from the source still have to be inferred, so generated views remain candidates that require visual acceptance.
+The Profile Designer can always build exact slot prompts and import/accept candidate images. **Run Next Missing** queues one reviewable face/body iteration; **Build All Missing Views** is the faster fill-only path. **Build Complete Validation Set** rebuilds applicable face and body views. It schedules at least one high-quality candidate per supported slot and then schedules each remaining compatible, evidence-gated reference once, so a lower-ranked image is not silently ignored. Every generated job binds one exact source through FL2VA; the app never blends the dump into one Ref2VA identity. Tests on visually conflicting reference sets showed that pooling can destroy identity and body consistency even when every file is technically bound. Anatomy-detail sources are preserved directly in the profile instead of being regenerated by FL2VA: frame-by-frame testing showed that transforming a seated or pitched anatomy source into a standing studio view invents and deforms geometry during the video transition. Missing anatomy evidence therefore stays missing until the user supplies a matching source image. Images held by the evidence gates are named in the confirmation and excluded from generation. Existing accepted images remain saved until the user explicitly replaces them. Explicit experimental Ref2VA modes remain available. The selected apparent age is injected into generated profile turns and later Studio renders as a stable face/skin/body-maturity anchor. H3 performs one slow transition to a requested face/body angle, holds the target view, and Avatar V2 extracts the final frame as a PNG candidate. Body regions absent from the source still have to be inferred, so generated views remain candidates that require visual acceptance.
 
 The optional **Hybrid guided Ref2VA** route keeps identity slots on FL2VA and uses selected guide-only anatomy images for body/anatomy slots. It never treats guides as avatar identity: compiled H3 roles restrict them to clinical topology and explicitly reject transfer of face, age, ethnicity, skin, body identity, marks, tattoos, hair, or clothing. Guide records remain local file references and require provenance, adult-subject confirmation, usage-rights confirmation, and consent/model-release confirmation for real-person photos. Guided Ref2VA forces the INT8 low-memory profile, 352×608 canvas, match-sized references, and reduced steps, but remains experimental—not promised to fit—on an 8 GB GPU.
 
 The separate **Identity + body refs · Ref2VA** route connects the selected primary source as the facial identity anchor and binds up to eight additional images per render, prioritizing the reference matching the requested body angle. Complete validation rotates through the full saved pool across its runs, so the per-render H3 limit does not silently exclude later images. Identity coverage remains on FL2VA unless a ready face-shape or skin option is selected; those identity slots use Ref2VA while retaining the primary source as the identity anchor. Body and anatomy coverage uses Ref2VA with visible bound-versus-available reference counts in each affected slot. This route also forces the INT8 low-memory profile, 352×608 canvas, match-sized references, and reduced steps, and remains experimental on an 8 GB GPU.
 
-For simpler setup, **Quick Profile Builder** accepts one local reference-cache folder and inventories still images, GIFs, videos, and audio. When the bundled local Ollama route is available, `qwen3-vl:2b-instruct` inspects every still image and assigns face, front, rear, side, top, low, torso, pelvis, hands, or feet roles with a confidence threshold; descriptive filenames are only a fallback. Analysis is restricted to the loopback Ollama service, and the vision model is unloaded afterward to return VRAM to H3. Still images can become identity/body candidates; GIF and video remain motion examples; audio remains voice/timing input. Low-confidence and duplicate candidates are listed for review instead of being silently trusted. The detailed per-angle fields, anatomy references, prompts, and renderer controls remain available under Advanced panels.
+For simpler setup, **Quick Profile Builder** accepts either explicitly selected still images or one local reference-cache folder. Folder mode inventories still images, GIFs, videos, and audio; file mode analyzes only the still images the user selected. During the queue-idle analysis phase, the locally installed `qwen3-vl:8b-instruct` model is the recommended 8 GB default because its stricter identity and framing decisions prevent false coverage from becoming bad generations. The selected model inspects every selected still image and assigns every independently usable face, front, rear, side, top, low, torso/chest, pelvis/buttocks, hands, or feet role—not merely one dominant label per file. A region must be complete and clearly visible before it can constrain that slot. It also applies source-quality and non-identifying same-subject consistency gates: heavy occlusion, incomplete faces, low-confidence views, and visually conflicting subjects are held out of automatic generation. Phone UI and watermarks are reported as crop warnings but do not double-penalize otherwise clear, usable face or body geometry. The comparison never names or recognizes a person and remains restricted to the loopback Ollama service; the model is unloaded before H3 uses the GPU. A confirmed single-avatar cache may admit a usable body-only view whose face cannot be compared, but a visible face mismatch remains held.
+
+After analysis, **AI-sorted reference galleries** show local thumbnails for every compatible image under each target region. The user can inspect the grouping, choose which image should be tried first, remove a wrong assignment, or add known face/body/anatomy images directly to a region. Galleries and preferred choices are saved with the avatar. The build confirmation reports how many eligible images were analyzed and scheduled, which were held, and any byte-identical duplicates. GIF and video remain motion examples; audio remains voice/timing input. The detailed per-angle fields, reusable anatomy references, prompts, and renderer controls remain available under Advanced panels.
+
+Each avatar save also writes `~/.avatar_v2/library/manifests/<avatar-id>.avatar_manifest.json`. This structured manifest records analyzed image roles and confidence, preferred sources, identity/body anchors, source-protected anatomy slots, appearance constraints, and pending/accepted/rejected candidate history. After H3 is unloaded, the same local Qwen Vision service compares each extracted face/body candidate with the exact source that produced it and reports an advisory pass/review/reject result in Queue and History. It never auto-accepts a candidate: History provides explicit accept/reject actions, and generated anatomy cannot be promoted to source evidence.
+
+The model selector also exposes locally installed 2B Q4, 2B Q8, 4B, and Qwen2.5-VL experiments. Coverage is not treated as correctness: on a ten-file failure reproduction, 2B Q8 admitted nine files and invented a full-body assignment, while 8B correctly found no full-body source and held six files whose visible identity conflicted with the anchor. The smaller models remain available for speed comparisons, but Quick Build defaults to the stricter 8B result.
 
 Previously authorized anatomy references are presented separately under **Use saved anatomy references**, where they can be attached to the current avatar without recreating labels or provenance. The collapsed **Add a new anatomy reference** form is only for authoring a new reusable reference record.
 
@@ -131,6 +171,44 @@ See `workflows/README.md` for the placeholder contract.
 | Custom ComfyUI / AnimateDiff SDXL | READY — 512²×16f verified (80% peak VRAM) |
 | MiniMax H3 Ref2VA / FL2VA | PARTIALLY READY — native ComfyUI nodes present, workflows structurally validated; BLOCKED on weights + license gate |
 
+> **Status 2026-11-21:** the table above describes the earlier deployment. The ComfyUI install
+> at `/home/jd/AvatarForge` and its model weights are no longer on this machine, so every local
+> lane is unavailable until ComfyUI is reinstalled. See
+> [`docs/AVATAR_V2_CAPABILITY_AUDIT.md`](docs/AVATAR_V2_CAPABILITY_AUDIT.md).
+
+## Runway cloud provider
+
+The recipes send jobs to Runway's developer API:
+photoreal presenter stills (text-only or anchored by tagged identity references), consistent
+character variations, image-to-video (`gen4.5`, `gen4_turbo`, hosted `h3_max`), Act-Two
+performance transfer, lip-synced talking-presenter videos from a script or narration
+(`gwm1_avatars` with a custom avatar), and still upscaling.
+
+Runway works as soon as an API key is saved (OS keyring, a user-only file, or
+`RUNWAYML_API_SECRET`; never `desktop.json`; `scripts/set_runway_key.sh` saves one with hidden
+input). There is no enable switch, upload-consent box or per-job confirmation: the price is shown
+before you click, and jobs start on one click. Spending limits (per job, per batch, daily, monthly)
+are optional and off unless you set them in Settings. It is never used as an
+automatic fallback for local rendering, and the app never resubmits a paid job on its own. Cloud
+jobs stay limited to general content and to avatars declared synthetic or consenting adults, so a
+real person's likeness is never uploaded without their consent, and the presenter is always an adult:
+prompts that describe someone under 18 are refused before anything is sent or billed.
+Setup, costs and the presenter workflow: [`docs/RUNWAY_PROVIDER.md`](docs/RUNWAY_PROVIDER.md).
+
+## Presenter production (BRAND Instructor)
+
+The recipes turn Avatar V2 into a repeatable pipeline for the fictional presenter
+`BRAND_INSTRUCTOR_PHOTOREAL_V1`:
+
+- master-identity candidates you pick in a full-size viewer;
+- nine reference slots whose chosen photos are recorded by hash (a different face is flagged, not blocked);
+- narration that is imported, generated or designed (no voice cloning) and usable right away;
+- talking-head and performance-transfer paths, where the performer's audio is never uploaded;
+- long talking-video scripts split into parts automatically;
+- a cost ledger (charged and unconfirmed spend, optional limits) and verified output hashes.
+
+Settings and the recommended first render: [`docs/BRAND_INSTRUCTOR.md`](docs/BRAND_INSTRUCTOR.md).
+
 ## Install for development (Linux)
 
 Prerequisites: Ubuntu desktop (X11 or Wayland), Python 3.11+, ComfyUI, `ffmpeg`/`ffprobe`, GTK3 + WebKit2GTK (for pywebview).
@@ -144,6 +222,19 @@ source .venv/bin/activate
 pip install -e '.[desktop,dev]'
 avatar-v2-desktop
 ```
+
+The venv must use the same Python version as the system's GTK bindings (`gi`). On this machine,
+after the OS moved to Python 3.14, that is `.venv314`:
+
+```bash
+python3.14 -m venv --system-site-packages .venv314
+.venv314/bin/pip install -e '.[desktop,dev]'
+.venv314/bin/python -m pytest -q
+scripts/launch_avatar_v2.sh   # prefers dist/AvatarV2, then .venv314; AVATAR_V2_FROM_SOURCE=1 forces source
+```
+
+The older Python 3.12 `.venv` is kept as a rollback for the CLI and tests. Rollback paths are listed
+in [`docs/RECOVERY_AND_ROLLBACK.md`](docs/RECOVERY_AND_ROLLBACK.md).
 
 ## Linux desktop launcher
 

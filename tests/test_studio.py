@@ -1,0 +1,406 @@
+"""Studio: the simple start screen maps plain choices onto normal Runway jobs (no network here)."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+from avatar_v2 import brand_instructor as bi
+from avatar_v2 import desktop, desktop_studio, secret_store
+from avatar_v2.desktop import DesktopAPI
+from avatar_v2.integrity import sha256_file
+from avatar_v2.js_bridge import JS_API_METHODS
+from avatar_v2.library import AvatarProfile, LibraryStore
+from avatar_v2.providers import runway as runway_api
+
+KEY = "key_" + "s" * 40
+TALKER_UUID = "11111111-2222-3333-4444-555555555555"
+
+
+class _Memory:
+    def update_settings(self, **_kwargs):
+        pass
+
+
+class FakeQueue:
+    def __init__(self):
+        self.items = []
+        self.memory_manager = _Memory()
+
+    def add_many(self, items):
+        self.items.extend(items)
+        return [item.id for item in items]
+
+    def list(self):
+        return [item.public() for item in self.items]
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    for name, value in {
+        "APP_HOME": tmp_path,
+        "CONFIG_PATH": tmp_path / "desktop.json",
+        "RUNS_DIR": tmp_path / "runs",
+        "HISTORY_DIR": tmp_path / "history",
+        "RUNWAY_AVATARS_PATH": tmp_path / "runway_avatars.json",
+        "CLOUD_LEDGER_PATH": tmp_path / "cloud_ledger.jsonl",
+        "VOICEOVER_DIR": tmp_path / "voiceover",
+        "LESSONS_PATH": tmp_path / "lessons.json",
+    }.items():
+        monkeypatch.setattr(desktop, name, value)
+    (tmp_path / "history").mkdir()
+    monkeypatch.setattr(secret_store, "SECRETS_DIR", tmp_path / "secrets")
+    monkeypatch.setattr(secret_store, "_keyring", lambda: None)
+    monkeypatch.delenv("RUNWAYML_API_SECRET", raising=False)
+    return tmp_path
+
+
+@pytest.fixture
+def api(home):
+    instance = DesktopAPI.__new__(DesktopAPI)
+    instance.queue = FakeQueue()
+    instance.library = LibraryStore(home / "library")
+    return instance
+
+
+def _png(path: Path, size=(1080, 1440), color=(150, 120, 110)) -> Path:
+    Image.new("RGB", size, color).save(path)
+    return path
+
+
+def _video(path: Path, seconds: float = 6.0) -> Path:
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=480x854:rate=24", "-f", "lavfi",
+         "-i", "sine=f=330", "-t", str(seconds), "-shortest", "-pix_fmt", "yuv420p", str(path)],
+        check=True, capture_output=True,
+    )
+    return path
+
+
+def _pick_master(api, home) -> Path:
+    master = _png(home / "master.png")
+    assert api.studio_pick({"path": str(master), "slot_id": "identity_front"})["ok"] is True
+    return master
+
+
+def _spec(item) -> dict:
+    return json.loads(item.job.asset_map["RUNWAY_SPEC"])
+
+
+def test_studio_methods_are_bridged_and_the_internal_setup_is_not():
+    for name in ("studio_state", "studio_price", "studio_go", "studio_pick", "studio_talker_status", "studio_thumb",
+                 "studio_image", "studio_library", "engine_status", "comfyui_start", "comfyui_stop"):
+        assert name in JS_API_METHODS
+    for name in ("studio_setup_talker", "engine_autostart", "queue_runway", "queue_render", "vault_save"):
+        assert name not in JS_API_METHODS  # internal, or part of the removed advanced screens
+
+
+def test_state_installs_the_profile_and_offers_looks_angles_and_voices(api):
+    state = api.studio_state()
+    assert state["ok"] is True and state["master"] is None and state["key"]["configured"] is False
+    assert [look["id"] for look in state["looks"]] == ["natural", "polished", "original"] and state["look"] == "natural"
+    assert len(state["angles"]) == 8 and "identity_front" not in {a["id"] for a in state["angles"]}
+    assert state["voice"] == "Maya" and "Leslie" in state["voices"]
+    assert api.library.get_avatar(bi.PROFILE_ID) is not None  # created on first use, locally
+
+
+def test_prices_match_runway_pricing_and_steps_explain_what_they_need(api, home):
+    assert api.studio_price({"action": "presenter", "count": 4})["credits"] == 32
+    assert api.studio_price({"action": "presenter", "count": 1})["credits"] == 8
+    assert api.studio_price({"action": "sample"})["credits"] == 1
+    for action in ("angles", "talk", "act", "move", "sharpen"):
+        result = api.studio_price({"action": action, "slots": ["identity_three_quarter_left"], "script": "Hi"})
+        assert result["ok"] is False and "Pick your presenter photo first" in result["error"]
+    _pick_master(api, home)
+    assert api.studio_price({"action": "angles", "slots": ["identity_three_quarter_left", "presenter_expression_smile"]})["credits"] == 16
+    assert api.studio_price({"action": "move", "seconds": 10, "quality": "best"})["credits"] == 120
+    assert api.studio_price({"action": "move", "seconds": 5, "quality": "fast"})["credits"] == 25
+    assert api.studio_price({"action": "sharpen"})["credits"] == 25
+    talk = api.studio_price({"action": "talk", "script": "Welcome back! Today we look at three quick ideas."})
+    assert talk["ok"] is True and talk["needs_talker"] is True
+    act = api.studio_price({"action": "act", "video": str(_video(home / "me.mp4", 6))})
+    assert act["ok"] is True and act["credits"] == 30  # 5 credits per second of performance
+    assert "Tick at least one" in api.studio_price({"action": "angles", "slots": []})["error"]
+    assert "Type what she should say" in api.studio_price({"action": "voiceover", "script": "  "})["error"]
+
+
+def test_go_without_a_key_explains_how_to_connect(api):
+    result = api.studio_go({"action": "presenter", "count": 4})
+    assert result["ok"] is False and "API key" in result["error"] and api.queue.items == []
+
+
+def test_presenter_options_queue_in_one_click_with_fresh_seeds_and_the_chosen_look(api):
+    api.runway_save_key(KEY)
+    first = api.studio_go({"action": "presenter", "count": 4, "look": "natural", "extra": "short dark bob"})
+    assert first["ok"] is True and first["total_credits"] == 32 and len(api.queue.items) == 4
+    specs = [_spec(item) for item in api.queue.items]
+    seeds = [spec["params"]["seed"] for spec in specs]
+    assert seeds == list(range(seeds[0], seeds[0] + 4))
+    prompt = specs[0]["params"]["prompt"]
+    assert "no eyeliner" in prompt and "short dark bob." in prompt and len(prompt) <= 1000
+    assert specs[0]["media"]["references"] == []  # a brand-new face from the description
+    assert all(item.runtime["candidate_slot"] == "identity_front" for item in api.queue.items)
+    assert all(item.runtime["studio_action"] == "presenter" for item in api.queue.items)
+    assert api.queue.items[0].public()["studio_action"] == "presenter"
+    second = api.studio_go({"action": "presenter", "count": 1, "look": "polished"})
+    assert second["ok"] is True and _spec(api.queue.items[-1])["params"]["seed"] not in seeds
+    saved = api.studio_state()
+    assert saved["look"] == "polished" and saved["extra"] == ""
+
+
+def test_picking_an_option_makes_it_the_master_and_angles_use_it(api, home):
+    api.runway_save_key(KEY)
+    master = _pick_master(api, home)
+    profile = AvatarProfile.model_validate(api.library.get_avatar(bi.PROFILE_ID))
+    assert profile.identity_refs["front"] == str(master.resolve())
+    assert profile.reference_hashes["front"] == sha256_file(master)
+    assert Path(api.studio_state()["master"]).name == "master.png"
+    result = api.studio_go({"action": "angles", "slots": ["identity_three_quarter_left", "presenter_upper_body"], "extra": "x" * 160})
+    assert result["ok"] is True and len(api.queue.items) == 2
+    for item, slot in zip(api.queue.items, ("identity_three_quarter_left", "presenter_upper_body")):
+        spec = _spec(item)
+        assert spec["media"]["references"][0]["asset"] == "IDENTITY_REF_1"
+        assert bi.slot_by_id(slot)["prompt"][:40] in spec["params"]["prompt"]  # the angle direction survives
+        assert "x" * 40 not in spec["params"]["prompt"]
+
+
+def test_tossing_an_option_rejects_it_without_touching_the_master(api, home):
+    master = _pick_master(api, home)
+    other = _png(home / "other.png", color=(20, 30, 40))
+    api.library.record_candidate(bi.PROFILE_ID, {"path": str(other.resolve()), "source_path": "t2i", "slot_id": "identity_front",
+                                                 "group": "identity", "status": "pending", "qa_decision": "review"})
+    assert [c["path"] for c in api.studio_state()["pending_master"]] == [str(other.resolve())]
+    assert api.studio_pick({"path": str(other), "slot_id": "identity_front", "keep": False})["ok"] is True
+    state = api.studio_state()
+    assert state["pending_master"] == [] and Path(state["master"]) == master.resolve()
+
+
+def test_voiceover_remembers_her_voice_and_registers_the_audio(api):
+    api.runway_save_key(KEY)
+    result = api.studio_go({"action": "voiceover", "voice": "Leslie", "script": "Welcome to the course. Today: fractions."})
+    assert result["ok"] is True
+    spec = _spec(api.queue.items[-1])
+    assert spec["params"]["voice"] == {"type": "runway-preset", "presetId": "Leslie"}
+    assert api.queue.items[-1].runtime["register_voiceover"] is True
+    assert api.studio_state()["voice"] == "Leslie"
+    sample = api.studio_go({"action": "sample", "voice": "Maya"})
+    assert sample["ok"] is True and sample["total_credits"] == 1
+    assert _spec(api.queue.items[-1])["params"]["prompt"] == desktop_studio.SAMPLE_LINE
+
+
+def test_talk_sets_up_the_talking_avatar_first_then_queues_the_video(api, home, monkeypatch):
+    api.runway_save_key(KEY)
+    master = _pick_master(api, home)
+    created = []
+
+    def fake_create(payload):
+        created.append(payload)
+        index = api._runway_avatar_index()
+        index[TALKER_UUID] = {"vault_avatar_id": bi.PROFILE_ID, "name": payload["name"], "voice": payload["voice"],
+                              "source_sha256": sha256_file(payload["reference_image"]), "created_at": "2026-11-22T00:00:00+00:00"}
+        desktop._write_json(desktop.RUNWAY_AVATARS_PATH, index)
+        return {"ok": True, "avatar": {"id": TALKER_UUID, "name": payload["name"], "status": "PROCESSING"}}
+
+    monkeypatch.setattr(api, "runway_avatar_create", fake_create)
+    first = api.studio_go({"action": "talk", "script": "Hi! Today I'll show you three quick ideas.", "talker_voice": "emma"})
+    assert first["ok"] is False and first["setup_started"] is True and api.queue.items == []
+    assert created[0]["reference_image"] == str(master.resolve()) and created[0]["voice"] == "emma"
+    assert api.studio_state()["talker"] == {"id": TALKER_UUID, "voice": "emma"}
+    second = api.studio_go({"action": "talk", "script": "Hi! Today I'll show you three quick ideas."})
+    assert second["ok"] is True and len(api.queue.items) == 1 and len(created) == 1  # no second avatar
+    spec = _spec(api.queue.items[0])
+    assert spec["params"]["avatar"] == {"type": "custom", "avatarId": TALKER_UUID}
+    assert spec["params"]["speech"]["type"] == "text"
+
+
+def test_act_and_move_use_the_master_and_any_voiceover(api, home):
+    api.runway_save_key(KEY)
+    master = _pick_master(api, home)
+    clip = home / "narration.wav"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=220:duration=2", str(clip)], check=True)
+    narration = api.voiceover_import({"paths": [str(clip)]})["imported"][0]["id"]  # usable straight away
+    acted = api.studio_go({"action": "act", "video": str(_video(home / "me.mp4", 5)), "body": False, "narration_id": narration})
+    assert acted["ok"] is True
+    act_item = api.queue.items[-1]
+    spec = _spec(act_item)
+    assert spec["params"]["output_audio"] == "voiceover" and spec["params"]["body_control"] is False
+    assert spec["params"]["ratio"] == "720:1280" and act_item.job.asset_map["INIT_IMAGE"] == str(master.resolve())
+    moved = api.studio_go({"action": "move", "motion": "She waves hello.", "seconds": 5, "quality": "fast", "shape": "portrait"})
+    assert moved["ok"] is True
+    move_spec = _spec(api.queue.items[-1])
+    assert move_spec["model"] == "gen4_turbo" and move_spec["params"]["ratio"] == "832:1104"
+    assert "She waves hello." in move_spec["params"]["prompt"]
+
+
+def test_owner_limits_still_apply_through_studio(api):
+    api.runway_save_key(KEY)
+    api.save_settings({"runway_job_limit": 5})
+    assert "limit you set" in api.studio_price({"action": "presenter", "count": 1})["limit_error"]
+    refused = api.studio_go({"action": "presenter", "count": 1})
+    assert refused["ok"] is False and "limit you set" in refused["error"] and api.queue.items == []
+
+
+def test_full_size_viewer_image_and_video_thumbnails(api, home):
+    still = _png(home / "big.png", size=(1080, 1440))
+    image = api.studio_image(str(still))
+    assert image["ok"] is True and (image["width"], image["height"]) == (1080, 1440)
+    assert image["data_url"].startswith("data:image/jpeg;base64,")
+    assert api.studio_image(str(home / "missing.png"))["ok"] is False
+    assert api.studio_image(str(_video(home / "clip.mp4", 1)))["ok"] is False  # stills only
+    thumb = api.studio_thumb(str(home / "clip.mp4"))
+    assert thumb["ok"] is True and thumb["data_url"].startswith("data:image/jpeg;base64,")
+
+
+def test_results_list_recent_runway_outputs_and_recent_failures_only(api, home):
+    out = _png(home / "result.png", size=(400, 500))
+    now = __import__("time").time()
+    records = {
+        "done": {"id": "done", "provider": "runway", "status": "done", "label": "Photo of her · Natural smile", "outputs": [str(out)],
+                 "finished_at": now, "studio_action": "angles", "cloud_receipt": {"credits_charged": 8, "charge_status": "actual"}},
+        "fresh_fail": {"id": "fresh_fail", "provider": "runway", "status": "error", "label": "Talking video", "outputs": [],
+                       "finished_at": now, "error_message": "Runway said no.", "cloud_receipt": {"charge_status": "none"}},
+        "old_fail": {"id": "old_fail", "provider": "runway", "status": "error", "label": "Old", "outputs": [], "finished_at": now - 86400},
+        "local": {"id": "local", "provider": "comfyui", "status": "done", "label": "Local", "outputs": [str(out)], "finished_at": now},
+    }
+    for key, record in records.items():
+        (home / "history" / f"{key}.json").write_text(json.dumps(record))
+    results = {r["id"]: r for r in api.studio_state()["results"]}
+    assert set(results) == {"done", "fresh_fail"}
+    assert results["done"]["outputs"][0]["kind"] == "image" and results["done"]["credits"] == 8
+    assert results["fresh_fail"]["error"] == "Runway said no." and results["fresh_fail"]["charge_status"] == "none"
+
+
+def test_presenter_stays_an_adult_and_nothing_is_sent_for_minor_prompts(api, home):
+    api.runway_save_key(KEY)
+    refused = api.studio_price({"action": "presenter", "count": 4, "extra": "make her a 15-year-old girl"})
+    assert refused["ok"] is False and "has to be an adult" in refused["error"] and "15-year-old" in refused["error"]
+    go = api.studio_go({"action": "presenter", "count": 4, "extra": "Caucasion 15-year-old girl"})
+    assert go["ok"] is False and api.queue.items == []
+    assert api.studio_go({"action": "presenter", "count": 1, "extra": "looks about 18-year-old, freckles"})["ok"] is True
+    _pick_master(api, home)
+    assert "has to be an adult" in api.studio_price({"action": "move", "motion": "she turns into a schoolgirl"})["error"]
+
+
+# --------------------------------------------------------------------------- local GPU engine (ComfyUI + Wan 2.2 14B)
+
+
+def _fake_engine(tmp_path, monkeypatch, *, models=True):
+    from avatar_v2 import local_engine
+
+    comfy = tmp_path / "engine" / "comfyui"
+    (comfy / "custom_nodes" / "ComfyUI-GGUF").mkdir(parents=True)
+    (comfy / "main.py").write_text("# fake")
+    python = tmp_path / "engine" / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("")
+    if models:
+        for subfolder, name in local_engine.MODELS.values():
+            (comfy / "models" / subfolder).mkdir(parents=True, exist_ok=True)
+            (comfy / "models" / subfolder / name).write_bytes(b"x")
+    monkeypatch.setattr(desktop, "ENGINE_HOME", tmp_path / "engine")
+    return comfy
+
+
+def test_engine_status_reports_not_installed_missing_and_ready(api, home, monkeypatch):
+    monkeypatch.setattr(desktop, "ENGINE_HOME", home / "nothing-here")
+    assert api.engine_status()["state"] == "not_installed"
+    comfy = _fake_engine(home, monkeypatch, models=False)
+    status = api.engine_status()
+    assert status["state"] == "missing_models" and len(status["missing_models"]) == 6
+    assert api._settings()["comfyui_dir"] == str(comfy)  # found without touching settings
+    _fake_engine(home / "full", monkeypatch)
+    monkeypatch.setattr(api, "comfyui_status", lambda: {"state": "READY", "ready": True, "pid": 123})
+    ready = api.engine_status()
+    assert ready["state"] == "ready" and ready["installed"] is True and ready["seconds"] == 5
+    started = []
+    monkeypatch.setattr(api, "comfyui_status", lambda: {"state": "STOPPED", "ready": False, "pid": None})
+    monkeypatch.setattr(api, "comfyui_start", lambda: started.append(True) or {"ok": True, "state": "STARTING"})
+    assert api.engine_autostart()["state"] == "STARTING" and started == [True]
+
+
+def test_local_moving_clip_is_free_and_fills_every_workflow_slot(api, home, monkeypatch):
+    from avatar_v2 import local_engine
+    from avatar_v2.providers.comfyui import replace_placeholders
+
+    _fake_engine(home, monkeypatch)
+    master = _pick_master(api, home)
+    price = api.studio_price({"action": "move", "engine": "local", "motion": "She waves hello."})
+    assert price["ok"] is True and price["credits"] == 0 and price["local"] is True
+    monkeypatch.setattr(api, "comfyui_status", lambda: {"state": "STARTING", "ready": False, "pid": 1})
+    waiting = api.studio_go({"action": "move", "engine": "local", "motion": "She waves hello."})
+    assert waiting["ok"] is False and "starting" in waiting["error"] and api.queue.items == []
+    monkeypatch.setattr(api, "comfyui_status", lambda: {"state": "READY", "ready": True, "pid": 1})
+    added = []
+    api.queue.add = lambda item: added.append(item) or item.id
+    go = api.studio_go({"action": "move", "engine": "local", "motion": "She waves hello.", "shape": "portrait"})
+    assert go["ok"] is True and go["total_credits"] == 0 and go["local"] is True
+    item = added[0]
+    assert item.provider_config.provider == "comfyui" and item.profile == "low_memory"  # forced GPU cleanup first
+    assert item.workflow == str(local_engine.WORKFLOW) and item.runtime["studio_action"] == "move"
+    workflow = json.loads(local_engine.WORKFLOW.read_text())
+    resolved = replace_placeholders(workflow, item.job.asset_map)
+    assert "${" not in json.dumps(resolved)  # every placeholder is filled
+    assert resolved["11"]["inputs"]["image"] == str(master.resolve())
+    assert (resolved["12"]["inputs"]["width"], resolved["12"]["inputs"]["height"]) == (480, 640)
+    assert resolved["12"]["inputs"]["length"] == 81 and "She waves hello." in resolved["8"]["inputs"]["text"]
+    high, low = resolved["13"]["inputs"], resolved["14"]["inputs"]
+    assert (high["steps"], high["end_at_step"], low["start_at_step"], high["cfg"]) == (4, 2, 2, 1.0)  # Lightning settings
+    assert resolved["5"]["inputs"]["shift"] == 5.0 and resolved["1"]["class_type"] == "UnetLoaderGGUF"
+    refused = api.studio_price({"action": "move", "engine": "local", "motion": "she becomes a 15-year-old girl"})
+    assert refused["ok"] is False and "adult" in refused["error"]
+
+
+def test_local_clip_gets_her_voiceover_as_sound_and_keeps_the_silent_original(api, home, monkeypatch):
+    _fake_engine(home, monkeypatch)
+    _pick_master(api, home)
+    clip = home / "vo.wav"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=220:duration=2", str(clip)], check=True)
+    narration = api.voiceover_import({"paths": [str(clip)]})["imported"][0]["id"]
+    item = api._studio_local_move({"engine": "local", "narration_id": narration})
+    assert item.runtime["candidate_qa"] is True and Path(item.runtime["studio_voiceover"]).is_file()
+    video = _video(home / "render.mp4", 2)
+    item.outputs = [str(video)]
+    item.output_hashes = {str(video): "x"}
+    result = api._candidate_qa(item)
+    assert result["ok"] is True and Path(item.outputs[0]).name == "render_voiceover.mp4"
+    assert Path(item.outputs[1]) == video and item.output_hashes[item.outputs[0]]
+
+
+def test_long_talking_scripts_become_parts(api, home, monkeypatch):
+    api.runway_save_key(KEY)
+    _pick_master(api, home)
+    index = {TALKER_UUID: {"vault_avatar_id": bi.PROFILE_ID, "voice": "clara", "source_sha256": sha256_file(home / "master.png"),
+                           "created_at": "2026-11-22T00:00:00+00:00"}}
+    desktop._write_json(desktop.RUNWAY_AVATARS_PATH, index)
+    paragraph = ("This is one paragraph of a long lesson that keeps going for quite a while. " * 12).strip()
+    script = "\n\n".join([paragraph] * 8)  # about 7,000 characters
+    price = api.studio_price({"action": "talk", "script": script})
+    assert price["ok"] is True and price["parts"] == 2
+    go = api.studio_go({"action": "talk", "script": script})
+    assert go["ok"] is True and go["parts"] == 2 and len(api.queue.items) == 2
+    assert [item.label for item in api.queue.items] == ["Talking video · part 1 of 2", "Talking video · part 2 of 2"]
+    assert all(len(_spec(item)["params"]["speech"]["text"]) <= 4500 for item in api.queue.items)
+
+
+def test_library_lists_every_output_including_free_gpu_clips(api, home):
+    still = _png(home / "photo.png", size=(300, 400))
+    clip = _video(home / "clip.mp4", 1)
+    now = __import__("time").time()
+    records = {
+        "a": {"id": "a", "provider": "runway", "status": "done", "label": "Photo", "outputs": [str(still)], "finished_at": now,
+              "cloud_receipt": {"credits_charged": 8}},
+        "b": {"id": "b", "provider": "comfyui", "status": "done", "label": "Motion clip · 5 s · your GPU", "outputs": [str(clip)],
+              "finished_at": now, "studio_action": "move"},
+        "c": {"id": "c", "provider": "comfyui", "status": "done", "label": "Old local render", "outputs": [str(clip)], "finished_at": now},
+    }
+    for key, record in records.items():
+        (home / "history" / f"{key}.json").write_text(json.dumps(record))
+    everything = api.studio_library("all")["items"]
+    assert {item["id"] for item in everything} == {"a", "b"}
+    local = next(item for item in everything if item["id"] == "b")
+    assert local["local"] is True and local["credits"] == 0 and local["kind"] == "video"
+    assert [item["id"] for item in api.studio_library("image")["items"]] == ["a"]
