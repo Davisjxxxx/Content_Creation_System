@@ -2,7 +2,7 @@
 
 Avatar V2 sends the jobs you start to Runway's developer API. Runway is ready as soon as an API
 key is saved; there is no enable switch, upload-consent box or confirmation pop-up. Every job
-shows its price before you click (Pro tools → Create also lists what will be uploaded), it starts
+shows its price on its button before you click, it starts
 on one click, and its real cost is recorded afterwards. It never runs as a fallback for local
 rendering, and the app never resubmits a paid job on its own.
 
@@ -21,13 +21,13 @@ rendering, and the app never resubmits a paid job on its own.
 
 1. Create an API key in the Runway developer portal and buy credits there
    (1 credit = $0.01).
-2. Save the key: paste it into **Studio → Connect Runway** (or Pro tools → Settings → Runway), or
+2. Save the key: paste it into **Settings → Runway**, or
    run `scripts/set_runway_key.sh`, which reads it with hidden input. It is stored in the OS keyring
    when the optional `keyring` package is installed, otherwise in `~/.avatar_v2/secrets/runway_api_key`
    (directory `0700`, file `0600`). Alternatively, set `RUNWAYML_API_SECRET`, which takes precedence.
    The key is never written to `desktop.json`, never sent to the UI, and never logged.
-3. That's it. Studio shows your credit balance (`GET /v1/organization`, free) and every step is ready.
-   Pro tools → Create → **Runway** renderer card exposes every model and option.
+3. That's it. The sidebar shows your credit balance (`GET /v1/organization`, free), and every
+   recipe on **Make** is ready.
 
 ## What stops a job, and what doesn't
 
@@ -36,9 +36,9 @@ Changed on 2026-11-22 at the owner's request: Runway jobs have no built-in stops
 | Control | Behavior |
 |---|---|
 | API key | The only requirement. Without one, jobs explain how to add it. |
-| Price | Shown on Studio buttons and in Pro tools → Create → **Estimate** before you start a job. No confirmation pop-up, no "estimate must match" check. |
+| Price | Shown on each recipe's button before you start a job. No confirmation pop-up, no "estimate must match" check. |
 | Spending limits | Optional and **off by default** (0 = no limit): `runway_job_limit`, `runway_batch_limit`, `runway_daily_limit`, `runway_monthly_limit`, read only from saved settings. When you set a per-job limit and Runway's own `estimatedCost` comes back above it, the task is cancelled immediately. The old caps (`runway_max_credits_per_*`, `runway_*_credit_cap`) are ignored. |
-| Unconfirmed charges | Jobs whose charge Runway never confirmed are listed in Presenter tools for your records and counted in spend, but never block new jobs. They are never resubmitted automatically. |
+| Unconfirmed charges | Jobs whose charge Runway never confirmed are counted in Settings → Spending for your records and in spend, but never block new jobs. They are never resubmitted automatically. |
 | Identity check | When a vault profile has a chosen master photo (`reference_hashes["front"]`), a different primary identity or Act-Two character adds a warning ("her face may come out different") instead of refusing the job. The job spec and receipt record the identity hashes. |
 | Narration | Any voiceover in the library (generated or imported) can drive a talking head or replace video audio; there is no approval step. Imports take an optional note. |
 | Performer audio | Act-Two driving footage is re-muxed without its audio track before upload, so the performer's voice never reaches Runway. The output can be muted or given a voiceover locally (`output_audio`). |
@@ -79,14 +79,13 @@ narration comes from authorized recordings, preset voices, or voices designed fr
 - **Uncertain submissions.** The intent to send is recorded durably before the create request leaves.
   A lost response, a 5xx, a success without an id, or a crash after that point is recorded as
   **uncertain**: never called unbilled, never resubmitted automatically, and its estimate is counted as
-  unconfirmed spend (it does not block new jobs). Settle it from Presenter tools → Providers & budget
+  unconfirmed spend (it does not block new jobs). Settle it with `runway_resolve_charge` / `runway_reconcile_task`
   (Not billed, Billed, or reconcile from a dashboard task id). Only a job stopped before sending is
   reported as unbilled. The full state table is in [`RECOVERY_AND_ROLLBACK.md`](RECOVERY_AND_ROLLBACK.md).
 - **Cost ledger.** `~/.avatar_v2/cloud_ledger.jsonl` (append-only, fsynced) records Runway's estimate
   at creation and the credits actually charged at completion. A charge counts as actual only when
   Runway reports it; failed, cancelled, timed-out or cost-less tasks keep their estimate as
-  *unconfirmed* until resolved. **Presenter tools → Providers & budget** shows charged, unconfirmed and
-  queued spend.
+  *unconfirmed* until resolved. **Settings → Spending** shows today's and this month's spend.
 - **Output integrity.** Every finished job (local or cloud) records the SHA-256 of each output.
   **Presenter → Output integrity** re-verifies them. Runway receipts also hash each raw download.
 - **You pick.** Slot jobs, seeded master-candidate batches, and manual imports register outputs as

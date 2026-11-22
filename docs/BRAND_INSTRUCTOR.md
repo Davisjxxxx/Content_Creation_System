@@ -109,7 +109,7 @@ and more made-up than the brief, which is why Natural is the default.
 1. **Load BRAND Instructor** (or use Studio step 1). Then queue **4 master candidates**: Gen-4 Image,
    `1080:1440`, fresh seeds, slot *Straight-on portrait*, no identity reference.
    About 32 credits.
-2. Open each candidate in the full-size viewer (Studio, or **Presenter tools → Review**) and pick exactly one as the master.
+2. Open each candidate in the full-size viewer (**Make → Her look**) and pick exactly one as the master.
 3. Re-load the preset, which now carries the master, and queue **Consistent variations** for the other
    eight slots, about 8 credits each. Review and accept or reject each one.
 4. Under **Talking presenter**, create a Runway avatar from the master still with your chosen

@@ -504,7 +504,8 @@ def test_bridge_allowlist_matches_every_ui_call_and_forwards_arguments():
             return lambda *args: (name, args)
 
     bridge = JsBridge(Recorder())
-    assert bridge.queue_runway({"a": 1}) == ("queue_runway", ({"a": 1},))
+    assert bridge.studio_go({"a": 1}) == ("studio_go", ({"a": 1},))
+    assert not hasattr(bridge, "queue_runway")  # advanced operations are no longer reachable from the page
     with pytest.raises(AttributeError):
         bridge.queue  # internals are not reachable
     with pytest.raises(AttributeError):

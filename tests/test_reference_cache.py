@@ -395,23 +395,3 @@ def test_visual_scan_assigns_one_image_to_multiple_supported_slots(tmp_path: Pat
         "anatomy_torso_front",
         "anatomy_pelvis_front",
     ]
-
-
-def test_quick_builder_exposes_ai_analysis_and_saved_anatomy_selection():
-    html = (Path(__file__).parents[1] / "avatar_v2" / "ui" / "index.html").read_text(encoding="utf-8")
-    desktop = (Path(__file__).parents[1] / "avatar_v2" / "desktop.py").read_text(encoding="utf-8")
-    assert "Internal evidence gates" in html
-    assert "same-subject consistency" in html
-    assert "AI analyze references" in html
-    assert 'id="designerVisionModel"' in html
-    assert 'value="qwen3-vl:2b-instruct-q8_0"' in html
-    assert 'value="qwen3-vl:8b-instruct"' in html
-    assert 'id="designerSingleSubject"' in html
-    assert "generation-eligible image${eligible.length===1?'':'s'} analyzed" in html
-    assert "Qwen3-VL 8B Q4 · recommended, strict identity and view check" in html
-    assert '<option value="qwen3-vl:8b-instruct" selected>' in html
-    assert '"vision_classifier_model": "qwen3-vl:8b-instruct"' in desktop
-    assert "Use saved anatomy references" in html
-    assert "Advanced · Add a new anatomy reference" in html
-    assert "Add to this avatar" in html
-    assert "Queue ${missing.length} missing H3 profile views now?" in html

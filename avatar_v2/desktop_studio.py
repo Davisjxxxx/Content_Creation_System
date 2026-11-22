@@ -23,11 +23,16 @@ from typing import Any
 from PIL import Image, ImageOps
 
 from . import brand_instructor as bi
-from . import cloud_ledger
+from . import cloud_ledger, local_engine
+from .composer import build_job
 from .integrity import sha256_file
 from .library import AvatarProfile
+from .policy import depicts_minor
+from .presenter import compile_presenter_prompt
 from .providers import runway as runway_api
+from .render_queue import QueuedRender
 from .secret_store import secret_status
+from .voiceover import segment_script
 
 STUDIO_ACTIONS = ("presenter", "angles", "voiceover", "sample", "talk", "act", "move", "sharpen")
 PHOTO_RATIO = "1080:1440"  # 3:4 portrait, 1080p tier (8 credits per Gen-4 image)
@@ -46,6 +51,8 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
 AUDIO_SUFFIXES = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg"}
 RECENT_FAILURE_WINDOW = timedelta(hours=6)
+TALK_PART_CHARS = 4500  # Runway avatar videos take up to 5,000 characters; longer scripts become parts
+MOVE_ENGINES = ("local", "best", "fast")  # your GPU, Runway Gen-4.5, Runway Gen-4 Turbo
 
 
 def _desktop():
@@ -232,9 +239,10 @@ class StudioMixin:
             seconds = 10 if int(options.get("seconds") or 5) >= 10 else 5
             shot["user_prompt"] = " ".join(str(options.get("motion") or "").split())[:600] or DEFAULT_MOTION
             shot["references"] = {"init_image": image}
+            quality = options.get("engine") if options.get("engine") in MOVE_MODELS else options.get("quality")
             runway = {
                 "task": "image_to_video",
-                "model": MOVE_MODELS[_choice(options.get("quality"), MOVE_MODELS, "best")],
+                "model": MOVE_MODELS[_choice(quality, MOVE_MODELS, "best")],
                 "ratio": shape,
                 "duration": seconds,
             }
@@ -254,39 +262,159 @@ class StudioMixin:
             "studio_action": action,
         }
 
+    def _studio_local_move(self, options: dict[str, Any]) -> QueuedRender:
+        """A "Moving clip" rendered on this computer's GPU (Wan 2.2 14B through ComfyUI; free)."""
+        info = local_engine.inspect(self._settings())
+        if not info["installed"] or info["missing_models"]:
+            raise ValueError(
+                "Your GPU engine isn't installed yet. Run scripts/setup_local_engine.sh, or pick a Runway option."
+            )
+        master, _sha = self._studio_master()
+        image = str(options.get("image") or "").strip() or master
+        if not image:
+            raise ValueError("Pick your presenter photo first (step 1).")
+        motion = " ".join(str(options.get("motion") or "").split())[:600] or DEFAULT_MOTION
+        phrase = depicts_minor(motion)
+        if phrase:
+            raise ValueError(f'The presenter has to be an adult (18+). Remove "{phrase}" from the description.')
+        preset = self.brand_instructor_preset()
+        avatar_payload = {**preset["avatar"], "identity_refs": [], "hair_refs": [], "wardrobe_refs": []}
+        shot_payload = {
+            **preset["shot"],
+            "shot_id": "studio-move-local",
+            "engine_preference": "wan22",
+            "duration_s": local_engine.SECONDS,
+            "fps": local_engine.FPS,
+            "user_prompt": motion,
+            "wind": {},
+            "references": {"init_image": image},
+        }
+        avatar, shot = self._models_from_payload({"avatar": avatar_payload, "shot": shot_payload})
+        job = build_job(avatar, shot)
+        prompt, _dropped = compile_presenter_prompt(avatar, shot, budget=900, motion=True)
+        width, height = local_engine.SHAPES[_choice(options.get("shape"), local_engine.SHAPES, "tall")]
+        job.prompt = prompt
+        job.asset_map.update(
+            {
+                "PROMPT": prompt,
+                "INIT_IMAGE": image,
+                "WAN_NEGATIVE": local_engine.NEGATIVE,
+                "WAN_WIDTH": width,
+                "WAN_HEIGHT": height,
+                "WAN_LENGTH": local_engine.FRAMES,
+                "WAN_SEED": secrets.randbelow(2_000_000_000) + 1,
+                "WAN_PREFIX": f"avatar_v2/studio_move_{job.job_id[:12]}",
+                **local_engine.model_placeholders(),
+            }
+        )
+        voiceover = ""
+        if str(options.get("narration_id") or "").strip():
+            voiceover = self._narration_file({"voiceover_id": str(options["narration_id"]).strip()}, job)
+        runtime = {
+            "provider": "comfyui",
+            "profile": local_engine.PROFILE,
+            "engine": "wan22_i2v_14b_gguf",
+            "model": local_engine.ENGINE_LABEL,
+            "steps": 4,
+            "cfg": 1.0,
+            "width": width,
+            "height": height,
+            "frames": local_engine.FRAMES,
+            "studio_action": "move",
+            "estimate_credits": 0,
+            "reason": "Moving clip on your GPU (free)",
+        }
+        if voiceover:
+            runtime.update({"studio_voiceover": voiceover, "candidate_qa": True})
+        return QueuedRender(
+            job=job,
+            workflow=str(local_engine.WORKFLOW),
+            provider_config=self._provider_config({}),
+            profile=local_engine.PROFILE,
+            runtime=runtime,
+            archive_dir=str(self._archive_dir()),
+            label=f"Motion clip · {local_engine.SECONDS} s · your GPU",
+        )
+
+    def _studio_payloads(self, options: dict[str, Any]) -> list[dict[str, Any]]:
+        """Usually one job; a typed talking-video script longer than Runway's limit becomes parts."""
+        script = str(options.get("script") or "").strip()
+        if options.get("action") == "talk" and not options.get("narration_id") and len(script) > TALK_PART_CHARS:
+            parts: list[str] = []
+            for piece in segment_script(script, TALK_PART_CHARS):  # pack paragraphs into as few videos as fit
+                if parts and len(parts[-1]) + 2 + len(piece) <= TALK_PART_CHARS:
+                    parts[-1] = f"{parts[-1]}\n\n{piece}"
+                else:
+                    parts.append(piece)
+            payloads = []
+            for index, part in enumerate(parts, start=1):
+                payload = self._studio_payload({**options, "script": part})
+                payload["label"] = f"Talking video · part {index} of {len(parts)}"
+                payloads.append(payload)
+            return payloads
+        return [self._studio_payload(options)]
+
     # ------------------------------------------------------------------ actions
 
     def studio_price(self, options: dict[str, Any]) -> dict[str, Any]:
         """What a Studio action would cost (local estimate, no network, nothing queued)."""
+        options = dict(options or {})
+        if options.get("action") == "move" and options.get("engine") == "local":
+            try:
+                self._studio_local_move(options)
+            except (ValueError, OSError) as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True, "action": "move", "credits": 0, "usd": 0.0, "upper_bound": False, "local": True,
+                    "minutes": local_engine.ESTIMATED_MINUTES, "warnings": [], "limit_error": None, "needs_talker": False}
         try:
-            payload = self._studio_payload(dict(options or {}))
+            payloads = self._studio_payloads(options)
         except (ValueError, runway_api.RunwayError) as exc:
             return {"ok": False, "error": str(exc)}
-        estimate = self.runway_estimate(payload)
-        if not estimate.get("ok"):
-            return {"ok": False, "error": estimate.get("error")}
+        total, warnings, limit_error, upper = 0.0, [], None, False
+        for payload in payloads:
+            estimate = self.runway_estimate(payload)
+            if not estimate.get("ok"):
+                return {"ok": False, "error": estimate.get("error")}
+            total += estimate["estimate"]["credits"]
+            upper = upper or bool(estimate["estimate"].get("upper_bound"))
+            warnings.extend(w for w in estimate.get("warnings") or [] if w not in warnings)
+            limit_error = limit_error or estimate.get("limit_error")
         return {
             "ok": True,
-            "action": payload["studio_action"],
-            "credits": estimate["estimate"]["credits"],
-            "usd": estimate["estimate"]["usd"],
-            "upper_bound": bool(estimate["estimate"].get("upper_bound")),
-            "basis": estimate["estimate"].get("basis"),
-            "warnings": estimate.get("warnings") or [],
-            "limit_error": estimate.get("limit_error"),
-            "needs_talker": bool(payload["runway"].get("avatar_preset")),
+            "action": payloads[0]["studio_action"],
+            "credits": total,
+            "usd": round(total * runway_api.CREDIT_USD, 2),
+            "upper_bound": upper,
+            "parts": len(payloads),
+            "warnings": warnings,
+            "limit_error": limit_error,
+            "needs_talker": bool(payloads[0]["runway"].get("avatar_preset")),
         }
 
     def studio_go(self, options: dict[str, Any]) -> dict[str, Any]:
         """Start a Studio action right away (no confirmation step)."""
         options = dict(options or {})
         action = str(options.get("action") or "")
+        if action == "move" and options.get("engine") == "local":
+            engine = self.engine_status()
+            if engine["state"] != "ready":
+                if engine["state"] in ("stopped", "error"):
+                    self.engine_autostart()
+                return {"ok": False, "error": engine["message"] + " Try again when it says ready."}
+            try:
+                item = self._studio_local_move(options)
+            except (ValueError, OSError) as exc:
+                return {"ok": False, "error": str(exc)}
+            queue_id = self.queue.add(item)
+            return {"ok": True, "action": action, "queue_id": queue_id, "queued": [{"queue_id": queue_id}],
+                    "total_credits": 0, "local": True, "minutes": local_engine.ESTIMATED_MINUTES}
         if action in ("voiceover", "sample"):
             self._studio_remember_voice(self._studio_voice(options.get("voice")))
         try:
-            payload = self._studio_payload(options)
+            payloads = self._studio_payloads(options)
         except (ValueError, runway_api.RunwayError) as exc:
             return {"ok": False, "error": str(exc)}
+        payload = payloads[0]
         if payload["runway"].get("avatar_preset"):
             setup = self.studio_setup_talker({"voice": options.get("talker_voice")})
             if not setup.get("ok"):
@@ -305,8 +433,18 @@ class StudioMixin:
                     "studio_extra": " ".join(str(options.get("extra") or "").split())[:300],
                 }
             )
-        result = self.queue_runway(payload)
-        return {**result, "action": action}
+        if len(payloads) == 1:
+            return {**self.queue_runway(payload), "action": action}
+        queued, total = [], 0.0
+        for part in payloads:  # long talking-video scripts: one job per part, in order
+            result = self.queue_runway(part)
+            if not result.get("ok"):
+                return {**result, "action": action, "queued": queued, "total_credits": total,
+                        "error": f"{result.get('error')} ({len(queued)} of {len(payloads)} parts were started.)"}
+            queued.extend(result.get("queued") or [])
+            total += float(result.get("total_credits") or 0)
+        return {"ok": True, "action": action, "queue_id": queued[0]["queue_id"], "queued": queued,
+                "total_credits": total, "parts": len(payloads)}
 
     def studio_pick(self, options: dict[str, Any]) -> dict[str, Any]:
         """Keep (or toss) a generated photo. Keeping a presenter option makes it her master photo."""
@@ -348,6 +486,57 @@ class StudioMixin:
         if not status.get("ok"):
             return {"ok": False, "error": status.get("error"), "talker": {"id": talker["id"]}}
         return {"ok": True, "talker": {**status["avatar"], "voice": talker.get("voice")}}
+
+    def _studio_mux_voiceover(self, item: Any) -> dict[str, Any]:
+        """After a local clip renders, add her voiceover as its sound track (the silent original is kept)."""
+        voiceover = Path(str(item.runtime.get("studio_voiceover") or ""))
+        video = next((Path(o) for o in item.outputs if Path(o).suffix.lower() in VIDEO_SUFFIXES and Path(o).is_file()), None)
+        if video is None or not voiceover.is_file():
+            return {"ok": False, "voiceover": "skipped: video or voiceover file missing"}
+        try:
+            voiced = runway_api.replace_audio_track(video, "voiceover", voiceover)
+        except runway_api.RunwayError as exc:
+            return {"ok": False, "voiceover": f"not added: {exc}"}
+        item.outputs.insert(0, str(voiced))
+        item.output_hashes[str(voiced)] = sha256_file(voiced)
+        return {"ok": True, "voiceover": "added", "file": voiced.name}
+
+    def engine_status(self) -> dict[str, Any]:
+        """The local GPU engine (ComfyUI + Wan 2.2 14B): installed, starting, ready or stopped."""
+        info = local_engine.inspect(self._settings())
+        gpu: dict[str, Any] = {}
+        status_fn = getattr(getattr(self, "queue", None), "memory_status", None)
+        if status_fn is not None:
+            try:
+                gpus = (status_fn() or {}).get("gpus") or []
+                if gpus:
+                    gpu = {"name": gpus[0].get("name"), "vram_gb": round(float(gpus[0].get("total_mb") or 0) / 1024, 1),
+                           "used_gb": round(float(gpus[0].get("used_mb") or 0) / 1024, 1)}
+            except Exception:  # nvidia-smi missing or failing: report no GPU details
+                gpu = {}
+        if not info["installed"]:
+            state, message = "not_installed", "Your GPU engine isn't installed (run scripts/setup_local_engine.sh)."
+        elif info["missing_models"]:
+            state, message = "missing_models", f"Your GPU engine is missing {len(info['missing_models'])} model file(s); run scripts/setup_local_engine.sh again."
+        else:
+            comfy = self.comfyui_status()
+            state = str(comfy.get("state") or "STOPPED").lower()
+            message = {
+                "ready": "Your GPU engine is ready.",
+                "starting": "Your GPU engine is starting (about 30 seconds).",
+                "stopped": "Your GPU engine is stopped.",
+                "error": "Your GPU engine stopped unexpectedly; it restarts when you try again.",
+            }.get(state, "Your GPU engine is " + state + ".")
+        return {"ok": True, "state": state, "message": message, "installed": info["installed"],
+                "missing_models": info["missing_models"], "gpu": gpu, "engine": local_engine.ENGINE_LABEL,
+                "minutes": local_engine.ESTIMATED_MINUTES, "seconds": local_engine.SECONDS}
+
+    def engine_autostart(self) -> dict[str, Any]:
+        """Start ComfyUI when the engine is installed and not already running (called when the app opens)."""
+        status = self.engine_status()
+        if status["state"] in ("stopped", "error"):
+            return self.comfyui_start()
+        return {"ok": True, "state": status["state"]}
 
     def studio_thumb(self, path: str) -> dict[str, Any]:
         """Small preview for an image or (first frame of) a video in the Studio results."""
@@ -410,7 +599,20 @@ class StudioMixin:
 
     # ------------------------------------------------------------------ state for the Studio screen
 
-    def _studio_results(self, limit: int = 24) -> list[dict[str, Any]]:
+    def studio_library(self, kind: str = "all") -> dict[str, Any]:
+        """Everything made with Studio and Runway, newest first, one tile per file."""
+        kind = kind if kind in ("all", "image", "video", "audio") else "all"
+        tiles: list[dict[str, Any]] = []
+        for result in self._studio_results(limit=400, include_failures=False):
+            for output in result["outputs"]:
+                if kind != "all" and output["kind"] != kind:
+                    continue
+                tiles.append({**output, "id": result["id"], "label": result["label"], "action": result["action"],
+                              "finished_at": result["finished_at"], "credits": result["credits"],
+                              "local": result["local"]})
+        return {"ok": True, "kind": kind, "items": tiles[:400]}
+
+    def _studio_results(self, limit: int = 24, include_failures: bool = True) -> list[dict[str, Any]]:
         history_dir = _desktop().HISTORY_DIR
         try:
             files = sorted(history_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
@@ -423,7 +625,10 @@ class StudioMixin:
                 item = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            if not isinstance(item, dict) or item.get("provider") != "runway":
+            if not isinstance(item, dict):
+                continue
+            local = item.get("provider") == "comfyui" and bool(item.get("studio_action"))
+            if item.get("provider") != "runway" and not local:
                 continue
             outputs = [
                 {"path": str(output), "kind": _kind(str(output)), "name": Path(str(output)).name}
@@ -433,6 +638,8 @@ class StudioMixin:
             finished = item.get("finished_at")
             finished_dt = datetime.fromtimestamp(float(finished), timezone.utc) if finished else None
             failed = item.get("status") in {"error", "cancelled"}
+            if failed and not include_failures:
+                continue
             if failed and (finished_dt is None or now - finished_dt > RECENT_FAILURE_WINDOW):
                 continue  # keep the screen about recent work; old failures stay in Pro tools → Results
             if not outputs and not failed:
@@ -447,8 +654,9 @@ class StudioMixin:
                     "finished_at": finished,
                     "outputs": outputs,
                     "error": item.get("error_message") or (item.get("error") if failed else None),
-                    "credits": receipt.get("credits_charged"),
-                    "charge_status": receipt.get("charge_status"),
+                    "credits": 0 if local else receipt.get("credits_charged"),
+                    "charge_status": "none" if local else receipt.get("charge_status"),
+                    "local": local,
                 }
             )
             if len(results) >= limit:

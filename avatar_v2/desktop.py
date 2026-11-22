@@ -55,6 +55,8 @@ IMPORTS_DIR = LIBRARY_DIR / "imports"
 LESSONS_PATH = APP_HOME / "lessons.json"
 QA_DIR = APP_HOME / "qa"
 PROVIDER_PROFILES_PATH = APP_HOME / "provider_profiles.json"
+# Where scripts/setup_local_engine.sh installs ComfyUI + its venv; used when settings leave them empty.
+ENGINE_HOME = Path.home() / "AvatarForge"
 
 # Settings keys that look like credentials are never persisted to desktop.json or sent to the UI.
 SECRET_SETTING_PATTERN = re.compile(r"(api_?key|secret|token|password)", re.IGNORECASE)
@@ -74,6 +76,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "comfyui_output": "",
     "comfyui_dir": "",
     "comfyui_python": "",
+    "comfyui_args": "--disable-auto-launch",
     "workflow_h3_ref2va": "",
     "workflow_h3_fl2va": "",
     "workflow_wan22": "",
@@ -258,6 +261,13 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             settings_key = f"workflow_{key}"
             if not settings.get(settings_key):
                 settings[settings_key] = str(path)
+        # A local engine installed by scripts/setup_local_engine.sh works without touching settings.
+        if not settings.get("comfyui_dir") and (ENGINE_HOME / "comfyui" / "main.py").is_file():
+            settings["comfyui_dir"] = str(ENGINE_HOME / "comfyui")
+        if not settings.get("comfyui_python") and (ENGINE_HOME / "venv" / "bin" / "python").is_file():
+            settings["comfyui_python"] = str(ENGINE_HOME / "venv" / "bin" / "python")
+        if not settings.get("comfyui_output") and settings.get("comfyui_dir"):
+            settings["comfyui_output"] = str(Path(str(settings["comfyui_dir"])) / "output")
         return settings
 
     def get_state(self) -> dict[str, Any]:
@@ -845,6 +855,8 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         """Compare a finished designer still after H3 has been unloaded."""
         if item.provider_config.provider == "runway":
             return self._runway_postprocess(item)
+        if item.runtime.get("studio_voiceover"):
+            return self._studio_mux_voiceover(item)
         source = Path(str(item.runtime.get("candidate_qa_reference") or "")).expanduser()
         candidate = next(
             (
@@ -1585,10 +1597,12 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         python = str(settings.get("comfyui_python") or "python3")
         url = str(settings.get("comfyui_url") or DEFAULT_SETTINGS["comfyui_url"])
         port = url.rsplit(":", 1)[-1] if ":" in url else "8188"
+        extra = [arg for arg in str(settings.get("comfyui_args") or "").split() if arg.startswith("--")]
         try:
+            COMFY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
             log = open(COMFY_LOG_PATH, "ab")
             proc = subprocess.Popen(
-                [python, "main.py", "--listen", "127.0.0.1", "--port", str(port)],
+                [python, "main.py", "--listen", "127.0.0.1", "--port", str(port), *extra],
                 cwd=str(comfyui_dir),
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -2419,6 +2433,10 @@ def main() -> None:
         ui_url += "?uitest=1"
 
     api = DesktopAPI()
+    try:  # start the local GPU engine (ComfyUI) in the background when it is installed
+        api.engine_autostart()
+    except Exception:
+        pass
     # Expose only the allowlisted operations, never the API object's internals (queue, library, paths).
     from .js_bridge import JsBridge
 
@@ -2435,6 +2453,11 @@ def main() -> None:
     api._self_window = window
     webview.start(debug=False)
     api.queue.shutdown()
+    try:  # stop ComfyUI if this app started it, so it doesn't keep holding GPU memory
+        if api.comfyui_status().get("pid"):
+            api.comfyui_stop()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

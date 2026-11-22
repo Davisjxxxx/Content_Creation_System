@@ -16,27 +16,39 @@ COMFYUI PROVIDER  →  GPU MEMORY MANAGER  →  RENDER QUEUE
 OUTPUT / QA / HISTORY  →  DESKTOP APPLICATION
 ```
 
-## Studio (start here)
+## The app (start here)
 
-The app opens on **Studio**, a simple step-by-step screen for making the BRAND presenter with
-Runway. Each step is one card with a couple of plain choices and one pink button that shows its
-price before you click. Nothing is charged until you click, and there are no extra confirmation
-pop-ups.
+Avatar V2 is now one simple screen with three parts in the sidebar:
 
-1. **Your presenter.** Pick a look (Natural, Polished or Original), optionally say what to change,
-   and make 1, 2 or 4 options (8 credits each). Click any option to see it full size, then **Use this one**.
-2. **More photos of her.** The same face from new angles and expressions. Keep the ones that look like her.
-3. **Her voice.** Choose a voice, hear a 1-credit sample, type a script, and make a voiceover.
-4. **Talking video.** She says your typed words, or lip-syncs to one of your voiceovers. The first
-   time, the app sets up her Runway talking avatar automatically, then starts the video.
-5. **Act it out.** Film yourself for 3-30 s. She copies your face and moves, your voice is removed,
-   and the clip can be silent or carry her voiceover.
-6. **Make her move.** Turn her photo into a 5 or 10 s clip from a short description.
+- **Make**: "What do you want to make?" Six recipes, each a short list of numbered steps with one
+  pink button that shows the price before you click.
+  1. **Her look**: pick Natural, Polished or Original, optionally say what to change, and make
+     1, 2 or 4 options (8 credits each). Click any option for the full-size viewer, then **Use this one**.
+  2. **Photos of her**: the same face from new angles and expressions; keep the ones that look like her.
+  3. **Voiceover**: pick her voice, hear a 1-credit sample, and type the script.
+  4. **Talking video**: she says your words, lip-synced. Long scripts become several videos
+     automatically, and the first video sets up her Runway talking avatar.
+  5. **Act it out**: film yourself for 3-30 s; she copies your face and moves, and your voice is removed.
+  6. **Moving clip**: turn her photo into a 5-second clip **free on your GPU**, or a 5-10 s clip on
+     Runway (Gen-4.5 or the cheaper Turbo).
+- **My stuff**: every photo, video and voiceover as a thumbnail. Click to see it full size (Use /
+  Keep / Toss, arrow keys, actual-size zoom, "Open in its own window").
+- **Settings**: Runway key and balance, the GPU engine (start/stop), optional spending limits, the
+  output folder and an activity log.
 
-**Latest results** shows finished photos, voiceovers and videos. Photos open in the full-size
-viewer, which has **Use / Keep / Toss**, arrow keys to compare, an actual-size zoom, and an **Open in its own
-window** button. Everything else (local ComfyUI rendering, every Runway option, lessons, QA,
-settings) is under **Pro tools** in the sidebar. Studio code: `avatar_v2/desktop_studio.py`.
+The old advanced screens (Create with every renderer and option, Build Avatar, Body/Motion/Scene
+libraries, Presenter tools, the results table and the old settings) were removed on 2026-11-22
+because they didn't run on this machine or conflicted with the recipes. Their backend code is
+still in the package, and the screens are in git history (`798d34f`). Code: `avatar_v2/ui/index.html`
+(the page) and `avatar_v2/desktop_studio.py` (the recipes).
+
+### Your GPU engine (local, free)
+
+`scripts/setup_local_engine.sh` installs ComfyUI with **Wan 2.2 14B image-to-video** (GGUF Q4_K_S
+plus the 4-step Lightning LoRAs), sized for an 8 GB NVIDIA GPU, into `~/AvatarForge` (about 34 GB).
+The app starts it when it opens and stops it when it closes. It powers the free "Moving clip"
+option; everything else uses Runway, because nothing else runs well enough on 8 GB. Details and
+measured speed: [`docs/LOCAL_ENGINE.md`](docs/LOCAL_ENGINE.md).
 
 ## What the desktop app exposes
 
@@ -166,7 +178,7 @@ See `workflows/README.md` for the placeholder contract.
 
 ## Runway cloud provider
 
-Studio and the **Runway** renderer card (Pro tools → Create) send jobs to Runway's developer API:
+The recipes send jobs to Runway's developer API:
 photoreal presenter stills (text-only or anchored by tagged identity references), consistent
 character variations, image-to-video (`gen4.5`, `gen4_turbo`, hosted `h3_max`), Act-Two
 performance transfer, lip-synced talking-presenter videos from a script or narration
@@ -176,7 +188,7 @@ Runway works as soon as an API key is saved (OS keyring, a user-only file, or
 `RUNWAYML_API_SECRET`; never `desktop.json`; `scripts/set_runway_key.sh` saves one with hidden
 input). There is no enable switch, upload-consent box or per-job confirmation: the price is shown
 before you click, and jobs start on one click. Spending limits (per job, per batch, daily, monthly)
-are optional and off unless you set them under Pro tools → Settings. It is never used as an
+are optional and off unless you set them in Settings. It is never used as an
 automatic fallback for local rendering, and the app never resubmits a paid job on its own. Cloud
 jobs stay limited to general content and to avatars declared synthetic or consenting adults, so a
 real person's likeness is never uploaded without their consent, and the presenter is always an adult:
@@ -185,18 +197,16 @@ Setup, costs and the presenter workflow: [`docs/RUNWAY_PROVIDER.md`](docs/RUNWAY
 
 ## Presenter production (BRAND Instructor)
 
-Studio, the **Presenter tools** view and the **Load BRAND Instructor** preset turn Avatar V2 into a
-repeatable pipeline for the fictional presenter `BRAND_INSTRUCTOR_PHOTOREAL_V1`:
+The recipes turn Avatar V2 into a repeatable pipeline for the fictional presenter
+`BRAND_INSTRUCTOR_PHOTOREAL_V1`:
 
 - master-identity candidates you pick in a full-size viewer;
 - nine reference slots whose chosen photos are recorded by hash (a different face is flagged, not blocked);
 - narration that is imported, generated or designed (no voice cloning) and usable right away;
 - talking-head and performance-transfer paths, where the performer's audio is never uploaded;
-- realism QA with an advisory production readiness check;
-- lessons that re-render only changed segments;
+- long talking-video scripts split into parts automatically;
 - a cost ledger (charged and unconfirmed spend, optional limits) and verified output hashes.
 
-Midjourney images are supported through manual import only, because there is no official API.
 Settings and the recommended first render: [`docs/BRAND_INSTRUCTOR.md`](docs/BRAND_INSTRUCTOR.md).
 
 ## Install for development (Linux)

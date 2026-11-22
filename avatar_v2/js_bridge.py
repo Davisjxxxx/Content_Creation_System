@@ -15,31 +15,11 @@ from __future__ import annotations
 from typing import Any, Callable
 
 JS_API_METHODS: tuple[str, ...] = (
-    "anatomy_guides_delete", "anatomy_guides_list", "anatomy_guides_save",
-    "appearance_components_delete", "appearance_components_list", "appearance_components_save",
-    "avatar_candidate_decide", "avatar_designer_coverage", "avatar_designer_prompt",
-    "avatar_designer_renderer_status", "avatar_designer_scan_cache", "avatar_manifest_open",
-    "brand_instructor_install", "brand_instructor_preset", "brand_instructor_spec",
-    "cancel_queue_item", "choose_files", "choose_folder", "clear_finished",
-    "comfyui_start", "comfyui_status", "comfyui_stop", "compose", "doctor", "dry_run",
-    "get_state", "gpu_details", "gpu_free", "gpu_status", "gpu_terminate_pids", "history",
-    "lesson_list", "lesson_plan", "lesson_queue_changed", "lesson_save",
-    "motions_delete", "motions_list", "motions_save", "open_output_dir", "open_path",
-    "provider_profile_save", "provider_profiles_list", "provider_status",
-    "qa_reports_list", "qa_review_save", "qa_run",
-    "queue_avatar_designer", "queue_best_of", "queue_profile_sweep", "queue_render", "queue_runway",
-    "queue_state", "queue_upscale",
-    "reference_import", "reference_imports_list", "reference_thumbnail", "review_queue",
-    "runway_avatar_create", "runway_avatars_list", "runway_check", "runway_clear_key", "runway_estimate",
-    "runway_reconcile_task", "runway_resolve_charge", "runway_save_key", "runway_spend", "runway_status",
-    "runway_unresolved", "runway_voice_create", "runway_voice_preview",
-    "save_adult_prompt_option", "save_settings", "scenes_delete", "scenes_list", "scenes_save",
-    "script_analyze",
-    "studio_go", "studio_image", "studio_pick", "studio_price", "studio_state", "studio_talker_status",
-    "studio_thumb",
-    "ui_test_report", "vault_apply", "vault_delete", "vault_list", "vault_save",
-    "verify_outputs", "voice_profile_save", "voice_profiles_list", "voiceover_decide", "voiceover_import",
-    "voiceover_list",
+    # The simple Studio app (Make / My stuff / Settings) calls exactly these.
+    "choose_files", "comfyui_start", "comfyui_stop", "engine_status", "get_state", "open_output_dir",
+    "open_path", "runway_check", "runway_save_key", "save_settings",
+    "studio_go", "studio_image", "studio_library", "studio_pick", "studio_price", "studio_state",
+    "studio_talker_status", "studio_thumb", "ui_test_report",
 )
 
 
