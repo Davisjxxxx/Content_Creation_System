@@ -81,11 +81,6 @@ def import_images(
     """Validate, hash and copy images into ``store_dir`` with provenance sidecars."""
     if source not in SOURCES:
         raise ValueError(f"Unknown source '{source}'. Choose one of: {', '.join(SOURCES)}.")
-    if not attested:
-        raise ValueError(
-            "Confirm that you created or are authorized to use these images and that your plan's terms "
-            "permit this use before importing."
-        )
     target_dir = Path(store_dir) / source
     target_dir.mkdir(parents=True, exist_ok=True)
     imported: list[dict[str, Any]] = []
@@ -114,7 +109,7 @@ def import_images(
             "source_label": SOURCES[source],
             "original_name": path.name,
             "imported_at": _now(),
-            "attested": True,
+            "attested": bool(attested),
             "prompt": prompt[:4000],
             "job_reference": job_reference[:500],
             "notes": notes[:1000],

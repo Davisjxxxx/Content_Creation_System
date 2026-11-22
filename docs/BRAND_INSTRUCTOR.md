@@ -90,29 +90,35 @@ Voice identity is stored separately from visual identity (`brand_instructor_voic
 | Language | `en` |
 | Target pace | 140-160 words per minute |
 
-Narration can be imported (with a stated authorization), generated with a preset voice, or
-generated with a voice designed from a text description. Avatar V2 offers no voice cloning. All
-narration needs explicit approval before it can drive a talking head or replace video audio.
+Narration can be imported (with an optional note), generated with a preset voice, or generated with
+a voice designed from a text description. Avatar V2 offers no voice cloning. Any narration in the
+library can drive a talking head or replace video audio right away.
 
 ## Recommended first render workflow
 
-Paid steps need Runway enabled, upload consent, an API key, and a per-job confirmation of the
-upload list and cost. Credit figures are local estimates from Runway's published prices
-(1 credit = $0.01).
+The quickest route is **Studio** (the start screen), which runs the steps below with simple choices.
+Paid steps need only a saved Runway key; each button shows its price before you click. Credit figures
+are local estimates from Runway's published prices (1 credit = $0.01).
 
-1. **Load BRAND Instructor**, then Estimate. Then queue **4 master candidates**: Gen-4 Image,
-   `1080:1440`, seeds 41001-41004, slot *Straight-on portrait*, no identity reference.
+Studio's **Look** picker sets the identity description used for new master options: **Natural**
+(default: little makeup, no eyeliner, matte skin, natural brows and lip colour, unhighlighted
+brunette hair), **Polished** (soft professional makeup), or **Original** (the text above). These
+are `LOOKS` in `avatar_v2/brand_instructor.py`. The first live master (2026-11-22) came out glossier
+and more made-up than the brief, which is why Natural is the default.
+
+1. **Load BRAND Instructor** (or use Studio step 1). Then queue **4 master candidates**: Gen-4 Image,
+   `1080:1440`, fresh seeds, slot *Straight-on portrait*, no identity reference.
    About 32 credits.
-2. In **Presenter → Review**, compare the candidates and **Accept** exactly one as the master.
+2. Open each candidate in the full-size viewer (Studio, or **Presenter tools → Review**) and pick exactly one as the master.
 3. Re-load the preset, which now carries the master, and queue **Consistent variations** for the other
    eight slots, about 8 credits each. Review and accept or reject each one.
 4. Under **Talking presenter**, create a Runway avatar from the master still with your chosen
    voice.
-5. Prepare narration: import an authorized recording, or queue a **Narration** job (about 5 credits per
-   1,000 characters with Eleven v4). Approve it in Voice & narration.
-6. Render a **20-30 s talking-head segment** from the approved narration
+5. Prepare narration: import a recording, or queue a **Narration** job (about 5 credits per
+   1,000 characters with Eleven v4).
+6. Render a **20-30 s talking-head segment** from that narration
    (about 1 credit per 3 s of video).
-7. Run **Realism QA** on that segment, complete the human review, and proceed only when the
-   production gate reads READY.
+7. Run **Realism QA** on that segment and complete the human review. Its READY / NOT READY result
+   is a guide for your own decision; it does not block anything.
 8. Optional: **Performance transfer** (Act-Two) from your recorded delivery. Your footage's audio is
-   removed before upload, and the approved voiceover is muxed locally.
+   removed before upload, and your voiceover is muxed locally.

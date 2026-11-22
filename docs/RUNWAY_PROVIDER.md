@@ -1,10 +1,12 @@
 # Runway cloud provider
 
-Avatar V2 can send explicitly chosen jobs to Runway's developer API. The provider is
-**off by default**. It never runs as a fallback for local rendering. Every job shows exactly
-what it will upload and what it should cost, and nothing is sent until you confirm.
+Avatar V2 sends the jobs you start to Runway's developer API. Runway is ready as soon as an API
+key is saved; there is no enable switch, upload-consent box or confirmation pop-up. Every job
+shows its price before you click (Pro tools → Create also lists what will be uploaded), it starts
+on one click, and its real cost is recorded afterwards. It never runs as a fallback for local
+rendering, and the app never resubmits a paid job on its own.
 
-- Code: `avatar_v2/providers/runway.py` (adapter), `avatar_v2/presenter.py` (prompt compiler),
+- Code: `avatar_v2/providers/runway.py` (adapter), `avatar_v2/desktop_studio.py` (Studio), `avatar_v2/presenter.py` (prompt compiler),
   `avatar_v2/secret_store.py` (API key storage), `avatar_v2/cloud_ledger.py` (cost ledger), the
   `runway_*` / `queue_runway` methods in `avatar_v2/desktop.py`, and the presenter APIs in
   `avatar_v2/desktop_presenter.py`. The BRAND profile is documented in
@@ -19,27 +21,28 @@ what it will upload and what it should cost, and nothing is sent until you confi
 
 1. Create an API key in the Runway developer portal and buy credits there
    (1 credit = $0.01).
-2. In Avatar V2, open **Advanced → Runway cloud provider (optional)**:
-   - paste the key and press **Save key**. It is stored in the OS keyring when the optional
-     `keyring` package is installed, otherwise in `~/.avatar_v2/secrets/runway_api_key`
-     (directory `0700`, file `0600`). Alternatively, set `RUNWAYML_API_SECRET`, which takes
-     precedence. The key is never written to `desktop.json`, never sent to the UI, and never logged.
-   - tick **Enable Runway** and the **upload consent** box, then press **Save**.
-   - optionally press **Check credit balance** (`GET /v1/organization`).
-3. On **Create**, choose the **Runway** renderer card.
+2. Save the key: paste it into **Studio → Connect Runway** (or Pro tools → Settings → Runway), or
+   run `scripts/set_runway_key.sh`, which reads it with hidden input. It is stored in the OS keyring
+   when the optional `keyring` package is installed, otherwise in `~/.avatar_v2/secrets/runway_api_key`
+   (directory `0700`, file `0600`). Alternatively, set `RUNWAYML_API_SECRET`, which takes precedence.
+   The key is never written to `desktop.json`, never sent to the UI, and never logged.
+3. That's it. Studio shows your credit balance (`GET /v1/organization`, free) and every step is ready.
+   Pro tools → Create → **Runway** renderer card exposes every model and option.
 
-## Consent, privacy and cost controls
+## What stops a job, and what doesn't
+
+Changed on 2026-11-22 at the owner's request: Runway jobs have no built-in stops besides a saved key.
 
 | Control | Behavior |
 |---|---|
-| Enable switch | Off by default. Read only from saved settings; a UI payload cannot enable it. |
-| Upload consent | Required before any job that sends media. Read only from saved settings. |
-| Per-job confirmation | Each job needs **Estimate** first, then a confirmation dialog listing every file to be uploaded and the credit estimate. If the job changed after you confirmed, it is refused until you re-confirm. |
-| Credit caps | `runway_max_credits_per_job` (default 150) and `runway_max_credits_per_batch` (default 400). Jobs above a cap are refused locally. When Runway's own `estimatedCost` comes back above the cap, the task is cancelled immediately. |
-| Budgets | `runway_daily_credit_cap` (default 300) and `runway_monthly_credit_cap` (default 3000), checked against the local cost ledger plus queued jobs before anything is queued. |
-| Identity lock | When a vault profile has an approved master (`reference_hashes["front"]`), cloud jobs refuse a primary identity whose SHA-256 differs. Act-Two characters must match an approved reference. The job spec and receipt record the identity hashes. |
-| Performer audio | Act-Two driving footage is re-muxed without its audio track before upload, so the performer's voice never reaches Runway. The output can be muted or given the approved voiceover locally (`output_audio`). |
-| Content gate | Cloud jobs accept the `general` content class only; adult classes stay on local renderers. The subject must be declared `synthetic`, or a consenting adult with confirmed consent. Unknown provenance fails closed. |
+| API key | The only requirement. Without one, jobs explain how to add it. |
+| Price | Shown on Studio buttons and in Pro tools → Create → **Estimate** before you start a job. No confirmation pop-up, no "estimate must match" check. |
+| Spending limits | Optional and **off by default** (0 = no limit): `runway_job_limit`, `runway_batch_limit`, `runway_daily_limit`, `runway_monthly_limit`, read only from saved settings. When you set a per-job limit and Runway's own `estimatedCost` comes back above it, the task is cancelled immediately. The old caps (`runway_max_credits_per_*`, `runway_*_credit_cap`) are ignored. |
+| Unconfirmed charges | Jobs whose charge Runway never confirmed are listed in Presenter tools for your records and counted in spend, but never block new jobs. They are never resubmitted automatically. |
+| Identity check | When a vault profile has a chosen master photo (`reference_hashes["front"]`), a different primary identity or Act-Two character adds a warning ("her face may come out different") instead of refusing the job. The job spec and receipt record the identity hashes. |
+| Narration | Any voiceover in the library (generated or imported) can drive a talking head or replace video audio; there is no approval step. Imports take an optional note. |
+| Performer audio | Act-Two driving footage is re-muxed without its audio track before upload, so the performer's voice never reaches Runway. The output can be muted or given a voiceover locally (`output_audio`). |
+| Content rule (kept) | Cloud jobs accept the `general` content class only (Runway's usage policy); adult classes stay on local renderers. The subject must be declared `synthetic`, or a consenting adult with confirmed consent, so a real person's likeness is never uploaded without consent. The BRAND presenter is synthetic, so this never gets in her way. |
 | What can be uploaded | Identity references, one wardrobe and one scene reference, first/last frames, the performance video (Act-Two), narration audio, or the still being upscaled. Body, anatomy and guide references are never sent. |
 | Metadata | Images carrying EXIF are re-encoded without it before upload (ICC color profile kept). |
 | Key exposure | The key is sent only to `https://api.dev.runwayml.com`. Presigned upload URLs and output download URLs are contacted by a separate client that carries no credentials. |
@@ -74,21 +77,22 @@ narration comes from authorized recordings, preset voices, or voices designed fr
   task**, never to create a duplicate.
 - **Uncertain submissions.** The intent to send is recorded durably before the create request leaves.
   A lost response, a 5xx, a success without an id, or a crash after that point is recorded as
-  **uncertain**: never called unbilled, never resubmitted automatically, and its estimate is reserved
-  in the budget. Resolve it from Presenter → Providers & budget (Not billed, Billed, or reconcile from
-  a dashboard task id). Only a job stopped before sending is reported as unbilled. The full state
-  table is in [`RECOVERY_AND_ROLLBACK.md`](RECOVERY_AND_ROLLBACK.md).
+  **uncertain**: never called unbilled, never resubmitted automatically, and its estimate is counted as
+  unconfirmed spend (it does not block new jobs). Settle it from Presenter tools → Providers & budget
+  (Not billed, Billed, or reconcile from a dashboard task id). Only a job stopped before sending is
+  reported as unbilled. The full state table is in [`RECOVERY_AND_ROLLBACK.md`](RECOVERY_AND_ROLLBACK.md).
 - **Cost ledger.** `~/.avatar_v2/cloud_ledger.jsonl` (append-only, fsynced) records Runway's estimate
   at creation and the credits actually charged at completion. A charge counts as actual only when
   Runway reports it; failed, cancelled, timed-out or cost-less tasks keep their estimate as
-  *unconfirmed* until resolved. **Presenter → Providers & budget** shows charged, unconfirmed and
-  reserved spend.
+  *unconfirmed* until resolved. **Presenter tools → Providers & budget** shows charged, unconfirmed and
+  queued spend.
 - **Output integrity.** Every finished job (local or cloud) records the SHA-256 of each output.
   **Presenter → Output integrity** re-verifies them. Runway receipts also hash each raw download.
-- **Candidates, not acceptance.** Slot jobs, seeded master-candidate batches, and manual imports
-  register outputs as pending candidates in the vault profile. Nothing is accepted automatically.
+- **You pick.** Slot jobs, seeded master-candidate batches, and manual imports register outputs as
+  pending candidates in the vault profile; you keep or toss them (one click, with a full-size viewer).
 - **Lessons.** Talking-presenter segments are hashed by their inputs, and only new, changed,
-  failed or output-missing segments are re-queued. A stale result never overwrites a newer render.
+  failed, output-missing or charge-unconfirmed segments are re-queued when you click **Queue changed
+  segments**. A stale result never overwrites a newer render.
 
 Runway lists many more models (Veo, Kling, Seedance, Wan 3, Gemini Omni, and others). Only models
 whose request schemas were verified are registered. Add others deliberately in

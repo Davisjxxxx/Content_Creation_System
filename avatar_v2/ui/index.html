@@ -190,32 +190,233 @@ details.gpudet{margin-top:6px}
 .secondary-nav summary{cursor:pointer;color:#858591;font-size:12px;padding:4px 10px 8px}
 .advanced-panel[open]>summary{color:#fff;border-bottom:1px solid var(--line);margin-bottom:12px}
 @media(max-width:1320px){.app{grid-template-columns:190px 1fr}.right{display:none}.engines{grid-template-columns:repeat(2,1fr)}.profiles{grid-template-columns:repeat(2,1fr)}.libgrid{grid-template-columns:1fr}.grid6{grid-template-columns:repeat(3,1fr)}.grid4{grid-template-columns:repeat(2,1fr)}}
+
+
+/* ---------- full-size photo viewer ---------- */
+.viewer{position:fixed;inset:0;z-index:200;background:rgba(4,4,7,.97);display:none;grid-template-rows:auto minmax(0,1fr) auto;padding:14px 18px;gap:10px}
+.viewer.open{display:grid}
+.viewer-top{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.viewer-title{display:flex;gap:12px;align-items:baseline;min-width:0}
+.viewer-title b{font-size:16px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.viewer-title span{font-size:12px;color:#9a9aa6;white-space:nowrap}
+.viewer-stage{min-height:0;height:100%;display:grid;grid-template-columns:58px minmax(0,1fr) 58px;grid-template-rows:minmax(0,1fr);align-items:stretch;gap:10px}
+.viewer-frame{position:relative;min-height:0;min-width:0;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.viewer-frame img{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;border-radius:10px;box-shadow:0 20px 70px rgba(0,0,0,.6);cursor:zoom-in;display:block}
+.viewer-frame.zoom{overflow:auto;display:block;text-align:center}
+.viewer-frame.zoom img{max-width:none;max-height:none;cursor:zoom-out;border-radius:0;display:inline-block}
+.viewer-loading{position:absolute;inset:0;display:grid;place-items:center;color:#9a9aa6;font-size:14px;pointer-events:none}
+.viewer-nav{align-self:center;height:84px;border:1px solid var(--line);background:rgba(255,255,255,.04);color:#ddd;border-radius:14px;font-size:34px;cursor:pointer}
+.viewer-nav:hover{border-color:rgba(255,45,125,.5);color:#fff}
+.viewer-nav:disabled{opacity:.15;cursor:default}
+.viewer-bottom{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.viewer-actions{display:flex;gap:8px;flex-wrap:wrap}
+.viewer-actions .btn{padding:12px 22px;font-size:15px}
+.st-picks.two{grid-template-columns:repeat(2,1fr)}
+.st-picks.three{grid-template-columns:repeat(3,1fr)}
+.st-pick .zoomhint{position:absolute;right:6px;top:6px;font-size:11px;background:rgba(0,0,0,.65);padding:3px 7px;border-radius:6px;color:#eee;pointer-events:none}
+/* ---------- Studio (simple start screen) ---------- */
+.app.simple{grid-template-columns:220px minmax(620px,1fr)}
+.app.simple .right{display:none}
+.st-lead{color:#a9a9b5;font-size:14px;line-height:1.5;margin:-12px 0 18px;max-width:780px}
+.st-steps{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:14px}
+.st-card{border:1px solid var(--line);background:linear-gradient(160deg,rgba(255,255,255,.035),rgba(255,255,255,.01));border-radius:18px;padding:16px;display:flex;flex-direction:column;gap:11px}
+.st-card.waiting .st-body{opacity:.55}
+.st-card h3{margin:0;font-size:17px;letter-spacing:-.01em;display:flex;align-items:center;gap:10px;color:#fff}
+.st-num{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:700;background:rgba(255,45,125,.15);color:var(--pink);border:1px solid rgba(255,45,125,.35);flex:none}
+.st-sub{color:#9d9daa;font-size:13px;line-height:1.45;margin-top:-4px}
+.st-body{display:flex;flex-direction:column;gap:11px}
+.st-opt{display:grid;gap:6px}
+.st-opt>label,.st-row2 label{font-size:12px;color:#9696a2;text-transform:uppercase;letter-spacing:.09em}
+.st-opt>label span{text-transform:none;letter-spacing:0;color:#6f6f7b}
+.st-opt input,.st-opt textarea{width:100%;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.025);color:#e8e8ee;padding:10px;outline:0;font-size:15px;resize:vertical}
+.st-opt input:focus,.st-opt textarea:focus{border-color:rgba(255,45,125,.35)}
+.st-opt select,.st-row2 select{width:100%;border-radius:10px;padding:9px 10px;border:1px solid var(--line)}
+.st-row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.st-row2>div{display:grid;gap:6px;align-content:start}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chips button{border:1px solid var(--line);background:rgba(255,255,255,.03);color:#c3c3cd;border-radius:999px;padding:7px 13px;cursor:pointer;font-size:13px;text-align:left}
+.chips button:hover{color:#fff;border-color:rgba(255,255,255,.18)}
+.chips button.on{background:rgba(255,45,125,.16);border-color:rgba(255,45,125,.55);color:#fff}
+.chips button small{display:block;font-size:11px;color:#9b9ba8;margin-top:1px}
+.st-go{width:100%;padding:12px 14px;font-size:15px;margin-top:2px}
+.st-go:disabled{opacity:.5;cursor:not-allowed;box-shadow:none;background:rgba(255,255,255,.04);border-color:var(--line);color:#a9a9b5;font-weight:500}
+.st-note{font-size:13px;line-height:1.45;color:#9d9daa}
+.st-note:empty{display:none}
+.st-note.ok{color:#95d7b9}.st-note.err{color:#ff9b96}.st-note.warn{color:#d0b978}
+.st-master{display:flex;gap:12px;align-items:center;font-size:14px;line-height:1.45}
+.st-master img{width:96px;height:128px;object-fit:cover;border-radius:12px;border:1px solid rgba(255,45,125,.35);cursor:zoom-in;background:#111118}
+.st-empty{border:1px dashed rgba(255,255,255,.12);border-radius:12px;padding:12px;color:#8f8f9b;font-size:13px;line-height:1.45}
+.st-picks{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.st-pick{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0a0a0f;position:relative}
+.st-pick img{width:100%;aspect-ratio:3/4;object-fit:cover;display:block;cursor:zoom-in;background:#111118}
+.st-pick .acts{display:flex;gap:4px;padding:5px}
+.st-pick .acts button{flex:1;font-size:12px;padding:6px 4px}
+.st-pick .acts button.use{border-color:rgba(255,45,125,.45);color:#fff;background:rgba(255,45,125,.14)}
+.st-pick .tag{position:absolute;left:6px;top:6px;font-size:10px;background:rgba(0,0,0,.65);padding:3px 6px;border-radius:6px;color:#eee;max-width:calc(100% - 12px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st-checks{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.st-checks label{display:flex;gap:7px;align-items:center;font-size:13px;color:#c9c9d3;cursor:pointer}
+.st-strip{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.st-strip img{width:44px;height:58px;object-fit:cover;border-radius:7px;border:1px solid var(--line);cursor:zoom-in;background:#111118}
+.st-list{display:grid;gap:6px}
+.st-list .item{display:flex;gap:8px;align-items:center;font-size:13px;color:#c9c9d3;border:1px solid var(--line);border-radius:10px;padding:6px 8px}
+.st-list .item span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st-section{margin-top:24px}
+.st-section h3{margin:0 0 10px;color:#d6d6de;font-size:13px;text-transform:uppercase;letter-spacing:.1em}
+.st-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.st-head h3{margin:0}
+.st-jobs{display:grid;gap:7px}
+.st-job{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:rgba(255,255,255,.02);font-size:13px;color:#d6d6de}
+.st-job span{flex:1}
+.st-spin{width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,45,125,.25);border-top-color:var(--pink);animation:stspin 1s linear infinite;flex:none}
+@keyframes stspin{to{transform:rotate(360deg)}}
+.st-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.st-tile{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#0a0a0f;display:flex;flex-direction:column}
+.st-tile .pic{aspect-ratio:3/4;background:#111118;display:grid;place-items:center;color:#8a8a96;font-size:34px;cursor:pointer;position:relative;overflow:hidden}
+.st-tile .pic img{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
+.st-tile .badge{position:absolute;left:6px;top:6px;font-size:10px;background:rgba(0,0,0,.65);padding:3px 6px;border-radius:6px;color:#eee;z-index:1}
+.st-tile .meta{padding:7px 8px;font-size:12px;color:#a9a9b5;display:grid;gap:5px}
+.st-tile .meta b{color:#eee;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-tile .meta .row button{font-size:12px;padding:5px 7px}
+.st-tile.failed .pic{color:#ff9b96;font-size:12px;padding:12px;text-align:center;line-height:1.4;cursor:default;place-items:center}
+.st-connect{padding:16px;margin-bottom:16px;display:grid;gap:9px}
+.st-connect h3{margin:0;font-size:17px}
+.st-toast{margin-bottom:12px}
+.st-toast:empty{display:none}
 </style>
 </head>
 <body>
-<div class="app">
+<div class="app simple">
 <aside class="side">
   <div class="brand"><div class="heart"><svg width="36" height="36" viewBox="0 0 32 32"><defs><linearGradient id="g" x1="4" y1="3" x2="27" y2="28"><stop stop-color="#ff2d7d"/><stop offset="1" stop-color="#ff3b30"/></linearGradient></defs><path fill="url(#g)" d="M16 27.6S4.1 20.2 4.1 11.7c0-4.5 3-7.4 6.9-7.4 2.4 0 4.2 1.2 5 2.9.8-1.7 2.6-2.9 5-2.9 3.9 0 6.9 2.9 6.9 7.4 0 8.5-11.9 15.9-11.9 15.9Z"/></svg></div><div><h1>AVATAR V2</h1><small>H3 Studio</small></div></div>
-  <div class="nav-label">Workspace</div>
+  <div class="nav-label">Make</div>
   <div class="nav">
-    <button class="active" data-view="studio"><span class="dot"></span>Create</button>
+    <button class="active" data-view="start"><span class="dot"></span>Studio</button>
+  </div>
+  <details class="secondary-nav" id="proNav"><summary>Pro tools (every option)</summary><div class="nav">
+    <button data-view="studio"><span class="dot"></span>Create</button>
+    <button data-view="presenter"><span class="dot"></span>Presenter tools</button>
+    <button data-view="history"><span class="dot"></span>Results table</button>
     <button data-view="vault"><span class="dot"></span>Build Avatar</button>
     <button type="button" onclick="openBodyLibrary()"><span class="dot"></span>Body Library</button>
-    <button data-view="history"><span class="dot"></span>Results</button>
-    <button data-view="presenter"><span class="dot"></span>Presenter</button>
-    <button data-view="settings"><span class="dot"></span>Advanced</button>
-  </div>
-  <details class="secondary-nav"><summary>Motion and scene libraries</summary><div class="nav">
     <button data-view="motions"><span class="dot"></span>Motion Library</button>
     <button data-view="scenes"><span class="dot"></span>Scene Library</button>
+    <button data-view="settings"><span class="dot"></span>Settings</button>
   </div></details>
-  <div class="local"><strong>LOCAL-FIRST</strong>No prompt or reference needs to leave your machine for local ComfyUI rendering. Remote providers are separate explicit integrations.</div>
+  <div class="local"><strong>HOW STUDIO WORKS</strong>Studio sends your choices to Runway, which makes the photos and videos. Each button shows its price before you click, and everything saves to this computer. Local ComfyUI rendering lives under Pro tools.</div>
 </aside>
 
 <main class="main">
 
+<!-- ===================== STUDIO (simple start screen) ===================== -->
+<div id="view-start" class="view active">
+  <div class="top"><div><div class="eyebrow">Start here</div><h2>Studio</h2></div>
+    <div class="status">
+      <div class="pill"><span id="stKeyDot" class="s-dot"></span><span id="stKeyText">Runway: checking…</span></div>
+      <div class="pill" id="stSpend">Today: 0 credits</div>
+      <button class="mini" onclick="stRefreshBalance()">Refresh</button>
+    </div></div>
+  <div class="st-lead">Make your presenter step by step. Pick a step, choose a couple of options, and click the pink button. The button shows the price, and nothing is charged until you click it.</div>
+  <div id="stToast" class="st-toast"></div>
+
+  <div class="card st-connect" id="stConnect" style="display:none">
+    <h3>Connect Runway</h3>
+    <div class="tiny">Paste your Runway API key once. It's saved privately on this computer (never in the app's settings).</div>
+    <div class="setting-row"><input id="stKey" type="password" autocomplete="off" spellcheck="false" placeholder="Runway API key" style="border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.025);color:#e8e8ee;padding:10px;font-size:15px"><button class="btn primary" onclick="stSaveKey()">Save key</button></div>
+  </div>
+
+  <div class="st-steps">
+    <section class="st-card" id="stPresenterCard">
+      <h3><span class="st-num">1</span>Your presenter</h3>
+      <div class="st-sub">Design her face. Make a few options, then pick the one you like.</div>
+      <div class="st-body">
+        <div id="stMasterBox" class="st-master"></div>
+        <div id="stPickBox"></div>
+        <div class="st-opt"><label>Look</label><div class="chips" id="stLook"></div></div>
+        <div class="st-opt"><label for="stExtra">Anything to change? <span>(optional)</span></label><input id="stExtra" maxlength="160" placeholder="e.g. shoulder-length hair, navy blazer"></div>
+        <div class="st-opt"><label>How many options</label><div class="chips" data-chips="stCount"><button data-v="1">1</button><button data-v="2">2</button><button data-v="4" class="on">4</button></div></div>
+        <button class="btn primary st-go" id="stGoPresenter" onclick="stGo('presenter')">Make 4 options</button>
+        <div class="st-note" id="stNotePresenter"></div>
+      </div>
+    </section>
+
+    <section class="st-card" id="stAnglesCard">
+      <h3><span class="st-num">2</span>More photos of her</h3>
+      <div class="st-sub">Same face, new angles and expressions. Keep the good ones; they help her look the same everywhere.</div>
+      <div class="st-body">
+        <div class="st-checks" id="stAngles"></div>
+        <div id="stPhotoPick"></div>
+        <div id="stPhotos" class="st-strip"></div>
+        <button class="btn primary st-go" id="stGoAngles" onclick="stGo('angles')">Make photos</button>
+        <div class="st-note" id="stNoteAngles"></div>
+      </div>
+    </section>
+
+    <section class="st-card" id="stVoiceCard">
+      <h3><span class="st-num">3</span>Her voice</h3>
+      <div class="st-sub">Pick a voice and type what she says. You get a voiceover you can put on any video.</div>
+      <div class="st-body">
+        <div class="st-opt"><label for="stVoice">Voice</label><div class="setting-row"><select id="stVoice"><option value="Maya">Maya</option></select><button class="mini" id="stGoSample" onclick="stGo('sample')">Hear it · 1 credit</button></div></div>
+        <div class="st-opt"><label for="stVoScript">What she says</label><textarea id="stVoScript" rows="4" maxlength="2500" placeholder="Welcome back! In this lesson we'll…"></textarea><div class="tiny" id="stVoCount">0 / 2500</div></div>
+        <button class="btn primary st-go" id="stGoVoiceover" onclick="stGo('voiceover')">Make voiceover</button>
+        <div class="st-note" id="stNoteVoiceover"></div>
+        <div class="st-list" id="stNarrations"></div>
+      </div>
+    </section>
+
+    <section class="st-card" id="stTalkCard">
+      <h3><span class="st-num">4</span>Talking video</h3>
+      <div class="st-sub">She looks into the camera and says your words, lip-synced.</div>
+      <div class="st-body">
+        <div class="st-opt"><label>Her words</label><div class="chips" data-chips="stTalkMode"><button data-v="type" class="on">Type them</button><button data-v="voiceover">Use a voiceover</button></div></div>
+        <div class="st-opt" id="stTalkTypeBox"><textarea id="stTalkScript" rows="4" maxlength="5000" placeholder="Hi! Today I'll show you…"></textarea></div>
+        <div class="st-opt" id="stTalkVoBox" style="display:none"><select id="stTalkNarration"><option value="">Make a voiceover in step 3 first</option></select></div>
+        <div class="st-opt" id="stTalkerVoiceBox"><label for="stTalkerVoice">Her talking voice <span>(chosen once, when her talking avatar is set up)</span></label><select id="stTalkerVoice"><option value="clara">Clara</option></select></div>
+        <div class="tiny" id="stTalkerInfo"></div>
+        <button class="btn primary st-go" id="stGoTalk" onclick="stGo('talk')">Make talking video</button>
+        <div class="st-note" id="stNoteTalk"></div>
+      </div>
+    </section>
+
+    <section class="st-card" id="stActCard">
+      <h3><span class="st-num">5</span>Act it out</h3>
+      <div class="st-sub">Film yourself for 3–30 seconds and she copies your face and moves. Your own voice is removed.</div>
+      <div class="st-body">
+        <div class="st-opt"><div class="setting-row"><span class="tiny" id="stActFile" style="align-self:center">No video chosen</span><button class="btn" onclick="stPickVideo()">Choose your video</button></div></div>
+        <div class="st-row2">
+          <div><label>Copy</label><div class="chips" data-chips="stActBody"><button data-v="body" class="on">Face + body</button><button data-v="face">Face only</button></div></div>
+          <div><label>Shape</label><div class="chips" data-chips="stActShape"><button data-v="tall" class="on">Phone</button><button data-v="portrait">Like her photo</button></div></div>
+        </div>
+        <div class="st-opt"><label for="stActNarration">Sound</label><select id="stActNarration"><option value="">Silent</option></select></div>
+        <button class="btn primary st-go" id="stGoAct" onclick="stGo('act')">Make it</button>
+        <div class="st-note" id="stNoteAct"></div>
+      </div>
+    </section>
+
+    <section class="st-card" id="stMoveCard">
+      <h3><span class="st-num">6</span>Make her move</h3>
+      <div class="st-sub">Turn her photo into a short clip. Describe what happens.</div>
+      <div class="st-body">
+        <div class="st-opt"><label for="stMotion">What happens</label><textarea id="stMotion" rows="3" maxlength="600" placeholder="She smiles warmly, nods, and starts explaining something with a small hand gesture."></textarea></div>
+        <div class="st-row2">
+          <div><label>Length</label><div class="chips" data-chips="stMoveSeconds"><button data-v="5" class="on">5 s</button><button data-v="10">10 s</button></div></div>
+          <div><label>Quality</label><div class="chips" data-chips="stMoveQuality"><button data-v="best" class="on">Best</button><button data-v="fast">Cheaper</button></div></div>
+        </div>
+        <div class="st-row2">
+          <div><label>Shape</label><div class="chips" data-chips="stMoveShape"><button data-v="tall" class="on">Phone</button><button data-v="portrait">Like her photo</button></div></div>
+          <div><label for="stMoveNarration">Sound</label><select id="stMoveNarration"><option value="">Silent</option></select></div>
+        </div>
+        <button class="btn primary st-go" id="stGoMove" onclick="stGo('move')">Make clip</button>
+        <div class="st-note" id="stNoteMove"></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="st-section" id="stWorking" style="display:none"><h3>Working on it</h3><div class="st-jobs" id="stJobs"></div></section>
+  <section class="st-section"><div class="st-head"><h3>Latest results</h3><div class="row"><button class="mini" onclick="openOutput()">Open folder</button><button class="mini" onclick="view('history')">All results</button></div></div><div id="stResults" class="st-results"></div></section>
+</div>
+
 <!-- ===================== STUDIO ===================== -->
-<div id="view-studio" class="view active">
+<div id="view-studio" class="view">
   <div class="top"><div><div class="eyebrow">Choose an avatar, describe the result, create</div><h2>Create</h2></div>
     <div class="status">
       <div class="pill"><span id="comfyDot" class="s-dot"></span><span id="comfyText">ComfyUI unchecked</span></div>
@@ -231,7 +432,7 @@ details.gpudet{margin-top:6px}
     <div class="engine" data-engine="runway" onclick="setEngine('runway')"><div class="tag">CLOUD · OPT-IN</div><div class="name">Runway</div><div class="desc">Photoreal stills, image-to-video, lip-synced presenter</div></div>
   </div></section>
 
-  <section class="section" id="runwaySection" style="display:none"><div class="head"><h3>Runway cloud job</h3><span>Explicit opt-in · you confirm every upload and its cost</span></div>
+  <section class="section" id="runwaySection" style="display:none"><div class="head"><h3>Runway cloud job</h3><span>Estimate shows the cost and uploads · Queue starts it</span></div>
     <div class="card" style="padding:14px">
       <div class="grid6">
         <div class="field"><label for="rwTask">Task</label><select id="rwTask" onchange="rwTaskChanged()">
@@ -278,12 +479,12 @@ details.gpudet{margin-top:6px}
       <div class="grid3" id="rwStillRow" style="margin-top:9px">
         <div class="field"><label for="rwSlot">Reference slot (output becomes a pending candidate)</label><select id="rwSlot"></select></div>
         <div class="field"><label for="rwCandidates">Candidates (seeds counted up from Seed)</label><select id="rwCandidates"><option selected>1</option><option>2</option><option>4</option></select></div>
-        <div class="tiny" style="align-self:end">For a new master identity: no identity reference, slot "Straight-on portrait", 4 candidates. Approve one in Presenter → Review.</div>
+        <div class="tiny" style="align-self:end">For a new master identity: no identity reference, slot "Straight-on portrait", 4 candidates. Pick one in Studio or Presenter tools → Review.</div>
       </div>
       <div class="grid3" id="rwAudioRow" style="margin-top:9px;display:none">
-        <div class="field"><label for="rwOutputAudio">Output audio</label><select id="rwOutputAudio"><option value="">Keep provider audio</option><option value="mute">Mute</option><option value="voiceover">Replace with approved voiceover</option></select></div>
-        <div class="field"><label for="rwVoiceover">Approved narration</label><div class="setting-row"><select id="rwVoiceover"></select><button class="mini" onclick="prRefreshVoiceovers()">Refresh</button></div></div>
-        <div class="tiny" style="align-self:end">Narration and voiceovers come from Presenter → Voice &amp; narration and must be approved first.</div>
+        <div class="field"><label for="rwOutputAudio">Output audio</label><select id="rwOutputAudio"><option value="">Keep provider audio</option><option value="mute">Mute</option><option value="voiceover">Replace with a voiceover</option></select></div>
+        <div class="field"><label for="rwVoiceover">Voiceover</label><div class="setting-row"><select id="rwVoiceover"></select><button class="mini" onclick="prRefreshVoiceovers()">Refresh</button></div></div>
+        <div class="tiny" style="align-self:end">Voiceovers come from Studio → Her voice, or Presenter tools → Voice &amp; narration.</div>
       </div>
       <div id="rwTtsRow" style="margin-top:9px;display:none">
         <div class="grid3">
@@ -302,7 +503,7 @@ details.gpudet{margin-top:6px}
         <div class="field"><label for="rwScale">Scale</label><select id="rwScale"><option>2</option><option>4</option><option>8</option><option>16</option></select></div>
         <div class="field"><label for="rwFlavor">Flavor</label><select id="rwFlavor"><option value="photo">Photo</option><option value="photo_denoiser">Photo denoiser</option><option value="sublime">Sublime (illustration)</option></select></div>
       </div>
-      <div class="info" id="rwReceipt" style="margin-top:10px">Choose a task, then Estimate to see exactly what will be uploaded and what it costs.</div>
+      <div class="info" id="rwReceipt" style="margin-top:10px">Estimate shows the cost and what gets uploaded. Queue on Runway starts the job right away.</div>
       <div class="row" style="margin-top:10px"><button class="btn" onclick="rwEstimate()">Estimate</button><button class="btn primary" onclick="rwQueue()">Queue on Runway</button></div>
     </div></section>
 
@@ -650,10 +851,10 @@ details.gpudet{margin-top:6px}
 
   <section class="section"><div class="head"><h3>Providers &amp; budget</h3><span>Availability and cloud spend</span></div>
     <div class="card" style="padding:14px"><div id="prProviders" class="tiny">Checking…</div><div id="prSpend" class="tiny" style="margin-top:8px"></div>
-      <div class="head" style="margin-top:12px"><h3>Unresolved cloud charges</h3><span>Unknown charges count at their estimate until you resolve them; nothing is resubmitted automatically</span></div>
+      <div class="head" style="margin-top:12px"><h3>Unconfirmed cloud charges</h3><span>Jobs whose charge Runway never confirmed; for your records only, they don't block anything</span></div>
       <div id="prUnresolved" class="tiny">None.</div></div></section>
 
-  <section class="section"><div class="head"><h3>Review &amp; approval queue</h3><span>Generated and imported candidates wait here; nothing is accepted automatically</span></div>
+  <section class="section"><div class="head"><h3>Review &amp; approval queue</h3><span>Generated and imported photos wait here until you keep or reject them</span></div>
     <div class="card" style="padding:14px"><div id="prReview" class="tiny">No pending candidates.</div></div></section>
 
   <section class="section"><div class="head"><h3>Voice &amp; narration</h3><span>Voice identity stays separate from the face</span></div>
@@ -670,7 +871,7 @@ details.gpudet{margin-top:6px}
         <div class="row" style="margin-top:8px"><input id="prVoiceName" placeholder="Voice name" maxlength="100"><button class="mini" onclick="prVoicePreview()">Preview on Runway</button><button class="mini" onclick="prVoiceCreate()">Create voice on Runway</button></div>
       </details>
       <div class="head" style="margin-top:12px"><h3>Narration library</h3></div>
-      <div class="grid2"><div class="field"><label for="prVoAuth">Authorization for imported narration</label><input id="prVoAuth" placeholder="e.g. recorded by contracted voice actor, or my own voice"></div>
+      <div class="grid2"><div class="field"><label for="prVoAuth">Note about these recordings (optional)</label><input id="prVoAuth" placeholder="e.g. my own recording, or recorded by a hired voice actor"></div>
         <div class="field"><label>&nbsp;</label><div class="row"><button class="mini" onclick="prVoiceoverImport()">Import narration files</button></div></div></div>
       <div id="prVoiceovers" class="tiny" style="margin-top:8px"></div>
       <div class="field" style="margin-top:10px"><label for="prScript">Script check (timing, pronunciation, segments)</label><textarea id="prScript" rows="4"></textarea></div>
@@ -760,9 +961,8 @@ details.gpudet{margin-top:6px}
     <div class="tiny" style="margin-top:8px">Forces a safe ComfyUI /free preflight for INT8 · 12 GB, Low Memory and Low Memory · Quality profiles. Never kills arbitrary processes.</div>
   </div>
 
-  <div class="card settings-card"><div class="head"><h3>Runway cloud provider (optional)</h3><span id="rwKeyState">key: checking…</span></div>
-    <div class="toggle"><input id="sRwEnabled" type="checkbox"><div><div style="font-size:10px">Enable Runway for jobs I explicitly send to it.</div><div class="tiny" style="margin-top:4px">Off by default. Local rendering never falls back to Runway automatically.</div></div></div>
-    <div class="toggle" style="margin-top:8px"><input id="sRwConsent" type="checkbox"><div><div style="font-size:10px">I understand that Runway jobs upload the compiled prompt and the files listed in each job's receipt to Runway, a third-party cloud service, and that Runway bills credits to my account.</div><div class="tiny" style="margin-top:4px">Every job still shows its upload list and cost estimate and needs its own confirmation. Only identity, wardrobe, scene, first/last-frame, performance and narration files are ever sent.</div></div></div>
+  <div class="card settings-card"><div class="head"><h3>Runway cloud provider</h3><span id="rwKeyState">key: checking…</span></div>
+    <div class="tiny">Runway works as soon as a key is saved. There is no on/off switch or upload consent step; each job shows its price before you start it.</div>
     <div class="grid2" style="margin-top:9px">
       <div class="field"><label for="sRwKey">API key (kept in the OS keyring or a user-only file, never in settings)</label><div class="setting-row"><input id="sRwKey" type="password" autocomplete="off" spellcheck="false" placeholder="Paste a Runway API key"><button class="mini" onclick="rwSaveKey()">Save key</button><button class="mini" onclick="rwClearKey()">Remove</button></div></div>
       <div class="field"><label>Account</label><div class="setting-row"><button class="mini" onclick="rwCheck()">Check credit balance</button><span class="tiny" id="rwAccount"></span></div></div>
@@ -772,14 +972,14 @@ details.gpudet{margin-top:6px}
       <div class="field"><label for="sRwVideoModel">Default image-to-video model</label><select id="sRwVideoModel"></select></div>
     </div>
     <div class="grid2" style="margin-top:9px">
-      <div class="field"><label for="sRwCapJob">Max credits per job</label><input id="sRwCapJob" type="number" min="1" max="5000" value="150"></div>
-      <div class="field"><label for="sRwCapBatch">Max credits per variation batch</label><input id="sRwCapBatch" type="number" min="1" max="20000" value="400"></div>
+      <div class="field"><label for="sRwCapJob">Per-job limit (0 = no limit)</label><input id="sRwCapJob" type="number" min="0" max="100000" value="0"></div>
+      <div class="field"><label for="sRwCapBatch">Per-batch limit (0 = no limit)</label><input id="sRwCapBatch" type="number" min="0" max="1000000" value="0"></div>
     </div>
     <div class="grid2" style="margin-top:9px">
-      <div class="field"><label for="sRwCapDay">Daily credit budget</label><input id="sRwCapDay" type="number" min="1" max="100000" value="300"></div>
-      <div class="field"><label for="sRwCapMonth">Monthly credit budget</label><input id="sRwCapMonth" type="number" min="1" max="1000000" value="3000"></div>
+      <div class="field"><label for="sRwCapDay">Daily limit (0 = no limit)</label><input id="sRwCapDay" type="number" min="0" max="1000000" value="0"></div>
+      <div class="field"><label for="sRwCapMonth">Monthly limit (0 = no limit)</label><input id="sRwCapMonth" type="number" min="0" max="10000000" value="0"></div>
     </div>
-    <div class="tiny" style="margin-top:8px" id="rwPricingNote">1 credit = $0.01. Estimates use Runway's published prices; when a task is created, Runway's own estimate is checked against the cap and a task above it is cancelled before it runs.</div>
+    <div class="tiny" style="margin-top:8px" id="rwPricingNote">1 credit = $0.01. Spending limits are optional and off unless you set one. Estimates use Runway's published prices; with a per-job limit set, a task Runway estimates above it is cancelled right after it is created.</div>
   </div>
 
   <div class="card settings-card"><div class="head"><h3>Output</h3></div>
@@ -801,6 +1001,27 @@ details.gpudet{margin-top:6px}
   <h3 style="margin-top:16px">Activity</h3>
   <div id="log" class="log">Avatar V2 ready.</div>
 </aside>
+</div>
+
+<!-- Full-size photo viewer: judge a photo at full size, then keep or toss it -->
+<div class="viewer" id="viewer" role="dialog" aria-modal="true" aria-label="Full-size photo">
+  <div class="viewer-top">
+    <div class="viewer-title"><b id="viewerTitle">Photo</b><span id="viewerMeta"></span></div>
+    <div class="row">
+      <button class="mini" id="viewerZoomBtn" onclick="viewerToggleZoom()">Actual size</button>
+      <button class="mini" onclick="viewerExternal()">Open in its own window</button>
+      <button class="mini" onclick="viewerClose()">Close ✕</button>
+    </div>
+  </div>
+  <div class="viewer-stage">
+    <button class="viewer-nav" id="viewerPrev" onclick="viewerStep(-1)" aria-label="Previous photo">‹</button>
+    <div class="viewer-frame" id="viewerFrame"><img id="viewerImg" alt="Full-size photo"><div class="viewer-loading" id="viewerLoading">Loading full size…</div></div>
+    <button class="viewer-nav" id="viewerNext" onclick="viewerStep(1)" aria-label="Next photo">›</button>
+  </div>
+  <div class="viewer-bottom">
+    <div class="viewer-actions" id="viewerActions"></div>
+    <div class="tiny">← → compare · Enter keep/use · Delete toss · Z or click zoom · Esc close</div>
+  </div>
 </div>
 
 <!-- Emergency termination modal -->
@@ -826,7 +1047,7 @@ function fmtBytes(mb){return mb>=1024?(mb/1024).toFixed(1)+' GB':Math.round(mb)+
 function fmtTime(ts){if(!ts)return'—';const d=new Date(ts*1000);return d.toLocaleString()}
 
 /* ---------- navigation ---------- */
-function view(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='view-'+v));document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));if(v==='vault')refreshVault();if(v==='motions')refreshMotions();if(v==='scenes')refreshScenes();if(v==='history')refreshHistory();if(v==='presenter')refreshPresenter();if(v==='settings'){comfyStatus();fillBundled()}}
+function view(v){document.querySelector('.app').classList.toggle('simple',v==='start');if(v!=='start'){const pro=$('proNav');if(pro)pro.open=true}if(v==='start')stLoad();document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='view-'+v));document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));if(v==='vault')refreshVault();if(v==='motions')refreshMotions();if(v==='scenes')refreshScenes();if(v==='history')refreshHistory();if(v==='presenter')refreshPresenter();if(v==='settings'){comfyStatus();fillBundled()}}
 function openBodyLibrary(){view('vault');const panel=$('bodyLibrary');panel.open=true;panel.scrollIntoView({behavior:'smooth',block:'start'})}
 document.querySelectorAll('.nav button[data-view]').forEach(b=>b.onclick=()=>view(b.dataset.view));
 
@@ -1134,7 +1355,7 @@ function renderHistory(){const body=$('historyBody'),items=historyVisibleItems()
 async function refreshHistory(){const r=await window.pywebview.api.history();historyItems=r.items||[];renderHistory()}
 
 /* ---------- settings ---------- */
-async function saveSettings(){state.settings={comfyui_url:$('sUrl').value,comfyui_input:$('sInput').value,comfyui_output:$('sOutput').value,comfyui_dir:$('sDir').value,comfyui_python:$('sPython').value,workflow_h3_ref2va:$('sH3Ref').value,workflow_h3_fl2va:$('sH3Fl').value,workflow_wan22:$('sWan').value,workflow_custom:$('sCustom').value,workflow_ad_sd15:state.bundledWorkflows.ad_sd15,workflow_ad_sdxl:state.bundledWorkflows.ad_sdxl,timeout_s:Number($('sTimeout').value),local_h3_authorized:$('sAuth').checked,default_h3_preset:$('preset').value,default_runtime_profile:state.profile,gpu_autoclean:$('sGpuAuto').value==='true',gpu_threshold:Number($('sGpuThr').value),gpu_check_interval_s:Number($('sGpuInt').value),preferred_output_dir:$('sOutDir').value,runway_enabled:$('sRwEnabled').checked,runway_upload_consent:$('sRwConsent').checked,runway_default_image_model:$('sRwImageModel').value,runway_default_video_model:$('sRwVideoModel').value,runway_max_credits_per_job:Number($('sRwCapJob').value),runway_max_credits_per_batch:Number($('sRwCapBatch').value),runway_daily_credit_cap:Number($('sRwCapDay').value),runway_monthly_credit_cap:Number($('sRwCapMonth').value)};
+async function saveSettings(){state.settings={comfyui_url:$('sUrl').value,comfyui_input:$('sInput').value,comfyui_output:$('sOutput').value,comfyui_dir:$('sDir').value,comfyui_python:$('sPython').value,workflow_h3_ref2va:$('sH3Ref').value,workflow_h3_fl2va:$('sH3Fl').value,workflow_wan22:$('sWan').value,workflow_custom:$('sCustom').value,workflow_ad_sd15:state.bundledWorkflows.ad_sd15,workflow_ad_sdxl:state.bundledWorkflows.ad_sdxl,timeout_s:Number($('sTimeout').value),local_h3_authorized:$('sAuth').checked,default_h3_preset:$('preset').value,default_runtime_profile:state.profile,gpu_autoclean:$('sGpuAuto').value==='true',gpu_threshold:Number($('sGpuThr').value),gpu_check_interval_s:Number($('sGpuInt').value),preferred_output_dir:$('sOutDir').value,runway_default_image_model:$('sRwImageModel').value,runway_default_video_model:$('sRwVideoModel').value,runway_job_limit:Number($('sRwCapJob').value)||0,runway_batch_limit:Number($('sRwCapBatch').value)||0,runway_daily_limit:Number($('sRwCapDay').value)||0,runway_monthly_limit:Number($('sRwCapMonth').value)||0};
   const r=await window.pywebview.api.save_settings(state.settings);if(r.ok&&r.settings)state.settings=r.settings;log(r.ok?'Settings saved':'Settings save failed')}
 async function folderInto(id){const p=await window.pywebview.api.choose_folder();if(p)$(id).value=p}
 async function fileInto(id,kind){const kinds={image:'image',video:'video',audio:'audio',workflow:'workflow',all:'all'};const p=await window.pywebview.api.choose_files(kinds[kind]||kind,false);if(p&&p.length)$(id).value=p[0]}
@@ -1158,9 +1379,8 @@ function fmtBytesB(n){n=Number(n)||0;return n>=1048576?(n/1048576).toFixed(1)+' 
 function rwInit(rw){
   state.runway.status=rw;state.runway.models=rw.models||[];state.runway.variations=rw.variations||[];state.runway.voices=rw.voices||[];
   $('rwKeyState').textContent=rwKeyText(rw.key);
-  $('sRwEnabled').checked=!!state.settings.runway_enabled;$('sRwConsent').checked=!!state.settings.runway_upload_consent;
-  $('sRwCapJob').value=state.settings.runway_max_credits_per_job??150;$('sRwCapBatch').value=state.settings.runway_max_credits_per_batch??400;
-  $('sRwCapDay').value=state.settings.runway_daily_credit_cap??300;$('sRwCapMonth').value=state.settings.runway_monthly_credit_cap??3000;
+  $('sRwCapJob').value=state.settings.runway_job_limit??0;$('sRwCapBatch').value=state.settings.runway_batch_limit??0;
+  $('sRwCapDay').value=state.settings.runway_daily_limit??0;$('sRwCapMonth').value=state.settings.runway_monthly_limit??0;
   rwFill('sRwImageModel',state.runway.models.filter(m=>m.task==='text_to_image').map(m=>({value:m.id,label:`${m.label} · ${m.pricing}`})),state.settings.runway_default_image_model);
   rwFill('sRwVideoModel',state.runway.models.filter(m=>m.task==='image_to_video').map(m=>({value:m.id,label:`${m.label} · ${m.pricing}`})),state.settings.runway_default_video_model);
   $('rwVariations').innerHTML=state.runway.variations.map((v,i)=>`<label class="tiny" style="display:flex;gap:6px;align-items:center"><input type="checkbox" value="${esc(v.id)}"${i<4?' checked':''}>${esc(v.label)}</label>`).join('');
@@ -1205,12 +1425,13 @@ function rwPayload(){
   p.runway=r;return p;
 }
 function rwReceiptHtml(r){
-  const e=r.estimate;const lines=[`<b>${esc(r.model.label)}</b> · ${esc(e.basis)} · <b>${e.credits} credits</b> (≈ $${Number(e.usd).toFixed(2)})${e.upper_bound?' · upper bound':''} · cap ${r.cap}${r.within_cap?'':' · <b>over cap</b>'}`];
+  const e=r.estimate;const lines=[`<b>${esc(r.model.label)}</b> · ${esc(e.basis)} · <b>${e.credits} credits</b> (≈ $${Number(e.usd).toFixed(2)})${e.upper_bound?' · upper bound':''}${r.cap?` · your limit ${r.cap}`:''}${r.limit_error?' · <b>over your limit</b>':''}`];
   if((r.breakdown||[]).length)lines.push(r.breakdown.map(b=>`${esc(b.label)}: ${b.credits}`).join(' · '));
   lines.push('Uploads to Runway: '+((r.uploads||[]).map(u=>`${esc(u.role)} — ${esc(u.file)} (${fmtBytesB(u.bytes)}, ${esc(u.transfer)})`).join('; ')||'none'));
   if(r.prompt_receipt)lines.push(`Prompt ${r.prompt_receipt.chars}/${r.prompt_receipt.budget} characters${r.prompt_receipt.dropped_sections.length?' · trimmed to fit: '+esc(r.prompt_receipt.dropped_sections.join(', ')):''}`);
-  if(r.budget)lines.push(`Budget after this job: today ${r.budget.today_projected}/${r.budget.daily_cap} · month ${r.budget.month_projected}/${r.budget.monthly_cap} credits${r.budget.ok?'':' · <b>over budget</b>'}`);
-  if(r.unresolved&&r.unresolved.count)lines.push(`⚠ ${r.unresolved.count} earlier submission(s) have unknown charges (${r.unresolved.credits} credits reserved). See Presenter → Unresolved cloud charges.`);
+  if(r.budget)lines.push(`Spend after this job: today ${r.budget.today_projected}${r.budget.daily_cap?'/'+r.budget.daily_cap:''} · month ${r.budget.month_projected}${r.budget.monthly_cap?'/'+r.budget.monthly_cap:''} credits${r.budget.ok?'':' · <b>over your limit</b>'}`);
+  if(r.limit_error)lines.push('⚠ '+esc(r.limit_error));
+  if(r.unresolved&&r.unresolved.count)lines.push(`Note: ${r.unresolved.count} earlier job(s) never got a charge confirmation from Runway (${r.unresolved.credits} credits). See Presenter tools → Unconfirmed cloud charges.`);
   if(r.identity&&r.identity.master_sha256)lines.push(`Identity lock: master ${esc(r.identity.master_sha256.slice(0,12))}… · primary ${esc((r.identity.primary_sha256||'none').slice(0,12))}`);
   (r.warnings||[]).forEach(w=>lines.push('⚠ '+esc(w)));
   if(r.gate)lines.push('<b>Not ready:</b> '+esc(r.gate));
@@ -1224,17 +1445,8 @@ async function rwEstimate(){
   log(`Runway estimate: ${r.estimate.credits} credits (≈ $${Number(r.estimate.usd).toFixed(2)})`);return r;
 }
 async function rwQueue(){
-  const r=await rwEstimate();if(!r)return;
-  if(r.gate){log('Runway: '+r.gate);return}
-  if(!r.within_cap){log(`Runway: the estimate (${r.estimate.credits} credits) is above the cap (${r.cap}). Raise it under Advanced only if intended.`);return}
-  if(r.budget&&!r.budget.ok){log('Runway: '+r.budget.error);return}
-  const ackUnresolved=await rwAckUnresolved(r);if(!ackUnresolved){log('Runway job not sent: resolve the unknown earlier charges first.');return}
-  const files=(r.uploads||[]).map(u=>`• ${u.role}: ${u.file} (${fmtBytesB(u.bytes)})`).join('\n')||'• none';
-  const ok=confirm(`Send this job to Runway?\n\nModel: ${r.model.label}\nEstimated cost: ${r.estimate.credits} credits (≈ $${Number(r.estimate.usd).toFixed(2)})${r.estimate.upper_bound?' (upper bound)':''}\n\nFiles uploaded to Runway:\n${files}\n\nThe compiled prompt is sent as well. Outputs are downloaded to this computer.`);
-  if(!ok){log('Runway job not sent.');return}
-  const p=rwPayload();p.confirm_cloud_upload=true;p.confirmed_estimate_credits=r.estimate.credits;if(r.unresolved&&r.unresolved.count)p.acknowledge_unresolved=true;
-  const q=await window.pywebview.api.queue_runway(p);
-  if(q.ok){(q.queued||[]).forEach(x=>log(`Runway job queued ${x.queue_id}${x.variation?' · '+x.variation:''}`));refreshQueue()}else log('Runway: '+q.error);
+  log('Sending to Runway…');const q=await window.pywebview.api.queue_runway(rwPayload());
+  if(q.ok){(q.queued||[]).forEach(x=>log(`Runway job queued ${x.queue_id}${x.variation?' · '+x.variation:''}`));log(`Runway: about ${q.total_credits} credits`);refreshQueue()}else log('Runway: '+q.error);
 }
 async function rwSaveKey(){const v=$('sRwKey').value;$('sRwKey').value='';if(!v.trim()){log('Paste a Runway API key first.');return}const r=await window.pywebview.api.runway_save_key(v);$('rwKeyState').textContent=rwKeyText(r.key);log(r.ok?`Runway key saved (${r.stored_in})`:'Runway key: '+r.error)}
 async function rwClearKey(){if(!confirm('Remove the stored Runway API key from this computer?'))return;const r=await window.pywebview.api.runway_clear_key();$('rwKeyState').textContent=rwKeyText(r.key);log(r.removed?'Runway key removed':'No stored Runway key to remove');if(r.note)log(r.note)}
@@ -1243,8 +1455,7 @@ async function rwAvatarsRefresh(){const r=await window.pywebview.api.runway_avat
 async function rwAvatarCreate(){
   const ref=(state.refs.identity_refs||[])[0];if(!ref){log('Set the approved presenter still as the primary identity first.');return}
   const name=$('rwNewName').value.trim()||state.avatar.display_name||'Presenter';
-  if(!confirm(`Create the Runway avatar "${name}"?\n\nThis uploads ${base(ref)} to Runway.`))return;
-  const r=await window.pywebview.api.runway_avatar_create({avatar:{...state.avatar,identity_refs:state.refs.identity_refs},name,voice:$('rwNewVoice').value,personality:$('rwNewPersonality').value,image_processing:$('rwNewProcessing').value,confirm_cloud_upload:true});
+  const r=await window.pywebview.api.runway_avatar_create({avatar:{...state.avatar,identity_refs:state.refs.identity_refs},name,voice:$('rwNewVoice').value,personality:$('rwNewPersonality').value,image_processing:$('rwNewProcessing').value});
   if(r.ok){log(`Runway avatar created: ${r.avatar.name} (${r.avatar.status}); it can take a moment to become READY.`);rwAvatarsRefresh()}else log('Runway avatar: '+r.error);
 }
 
@@ -1262,21 +1473,25 @@ function prInit(p){
 async function refreshPresenter(){await Promise.all([prProviders(),prSpend(),prUnresolved(),prReview(),prRefreshVoiceProfiles(),prRefreshVoiceovers(),prQaList()])}
 async function prUnresolved(){const r=await window.pywebview.api.runway_unresolved();const root=$('prUnresolved');const items=r.items||[];if(!items.length){root.textContent='None.';return}root.innerHTML='';
   items.forEach(u=>{const d=document.createElement('div');d.className='row';d.style.alignItems='center';d.innerHTML=`<span><b>${esc(u.label||u.key)}</b> · ${esc(u.status)} · ${esc(u.model||'')} · ${u.reserved_credits} credits reserved${u.task_id?' · task '+esc(u.task_id.slice(0,8))+'…':' · no task id received'}</span>`;
-    const notBilled=document.createElement('button');notBilled.className='mini';notBilled.textContent='Not billed';notBilled.onclick=async()=>{if(!confirm('Confirm that your Runway usage shows no charge for this job?'))return;const x=await window.pywebview.api.runway_resolve_charge({key:u.key,resolution:'not_billed'});log(x.ok?'Charge resolved: not billed':'Resolve: '+x.error);prUnresolved();prSpend()};
+    const notBilled=document.createElement('button');notBilled.className='mini';notBilled.textContent='Not billed';notBilled.onclick=async()=>{const x=await window.pywebview.api.runway_resolve_charge({key:u.key,resolution:'not_billed'});log(x.ok?'Charge resolved: not billed':'Resolve: '+x.error);prUnresolved();prSpend()};
     const billed=document.createElement('button');billed.className='mini';billed.textContent='Billed…';billed.onclick=async()=>{const v=prompt('Credits Runway charged for this job (from your Runway usage page):');if(v===null)return;const x=await window.pywebview.api.runway_resolve_charge({key:u.key,resolution:'billed',credits:Number(v)});log(x.ok?`Charge resolved: ${x.credits_charged} credits`:'Resolve: '+x.error);prUnresolved();prSpend()};
     const rec=document.createElement('button');rec.className='mini';rec.textContent='Reconcile with task id…';rec.onclick=async()=>{const t=prompt('Paste the task id from your Runway dashboard (nothing is resubmitted):',u.task_id||'');if(!t)return;const x=await window.pywebview.api.runway_reconcile_task({key:u.key,task_id:t.trim()});log(x.ok?(x.terminal?`Reconciled: ${x.status} · ${(x.outputs||[]).length} output(s) downloaded`:x.message):'Reconcile: '+x.error);prUnresolved();prSpend()};
     d.appendChild(notBilled);d.appendChild(billed);d.appendChild(rec);root.appendChild(d)})}
-async function rwAckUnresolved(r){if(!r||!r.unresolved||!r.unresolved.count)return true;return confirm(`${r.unresolved.count} earlier Runway submission(s) have unknown charges (${r.unresolved.credits} credits reserved). Submitting new work could bill twice if one of them is the same job. Resolve them under Presenter first, or continue anyway?`)}
 async function prProviders(){const r=await window.pywebview.api.provider_status();if(!r.ok)return;$('prProviders').innerHTML=Object.values(r.providers).map(p=>`<div><span class="s-dot ${p.available?'live':'bad'}"></span> <b>${esc(p.label)}</b>: ${p.available?(p.mode?esc(p.mode):'available'):'unavailable'}${p.detail?' · '+esc(p.detail):''}</div>`).join('')}
-async function prSpend(){const r=await window.pywebview.api.runway_spend();if(!r.ok)return;const b=r.budget,s=r.summary;$('prSpend').textContent=`Runway credits · today ${b.today_charged} charged + ${b.today_reserved} reserved + ${b.pending_queued} queued, budget ${b.daily_cap} · month ${b.month_charged} charged + ${b.month_reserved} reserved, budget ${b.monthly_cap} · all-time ${s.all_time_charged} (≈ $${(s.all_time_charged*0.01).toFixed(2)})`}
+async function prSpend(){const r=await window.pywebview.api.runway_spend();if(!r.ok)return;const b=r.budget,s=r.summary;$('prSpend').textContent=`Runway credits · today ${b.today_charged} charged + ${b.today_reserved} unconfirmed + ${b.pending_queued} queued${b.daily_cap?', limit '+b.daily_cap:''} · month ${b.month_charged} charged + ${b.month_reserved} unconfirmed${b.monthly_cap?', limit '+b.monthly_cap:''} · all-time ${s.all_time_charged} (≈ $${(s.all_time_charged*0.01).toFixed(2)})`}
+function prReviewItems(items){return items.filter(c=>c.exists).map(c=>({path:c.path,title:`${c.display_name} · ${c.slot_label}`,meta:`Local QA: ${c.qa_decision}`,actions:[
+  {label:c.slot_id==='identity_front'?'Accept as master':'Accept',primary:true,run:async()=>{const d=await window.pywebview.api.avatar_candidate_decide({avatar_id:c.avatar_id,slot_id:c.slot_id,decision:'accepted',path:c.path});log(d.ok?`Candidate accepted: ${c.slot_label}`:'Review: '+d.error);prReview();return d.ok}},
+  {label:'Reject',toss:true,run:async()=>{const d=await window.pywebview.api.avatar_candidate_decide({avatar_id:c.avatar_id,slot_id:c.slot_id,decision:'rejected',path:c.path});log(d.ok?`Candidate rejected: ${c.slot_label}`:'Review: '+d.error);prReview();return d.ok}}]}))}
 async function prReview(){const r=await window.pywebview.api.review_queue();const root=$('prReview');const items=r.items||[];if(!items.length){root.textContent='No pending candidates.';return}
+  const viewable=prReviewItems(items);
   root.innerHTML='';for(const c of items){const row=document.createElement('div');row.className='qitem';row.style.display='flex';row.style.gap='10px';
-    const img=document.createElement('img');img.style.width='72px';img.style.height='96px';img.style.objectFit='cover';img.alt=c.slot_label;
-    if(c.exists){window.pywebview.api.reference_thumbnail(c.path).then(t=>{if(t.ok)img.src=t.data_url})}
+    const img=document.createElement('img');img.style.width='120px';img.style.height='160px';img.style.objectFit='cover';img.style.borderRadius='8px';img.alt=c.slot_label;
+    if(c.exists){img.style.cursor='zoom-in';img.title='Click to see it full size';img.onclick=()=>viewerOpen(viewable,Math.max(0,viewable.findIndex(x=>x.path===c.path)));window.pywebview.api.reference_thumbnail(c.path).then(t=>{if(t.ok)img.src=t.data_url})}
     const info=document.createElement('div');info.innerHTML=`<b>${esc(c.display_name)}</b> · ${esc(c.slot_label)}<br>Local QA: ${esc(c.qa_decision)}${c.reasons&&c.reasons.length?' · '+esc(c.reasons[0]):''}<br><span class="mono">${esc(base(c.path))}</span>${c.exists?'':' · <b>file missing</b>'}`;
     const buttons=document.createElement('div');buttons.className='row';
     for(const decision of ['accepted','rejected']){const b=document.createElement('button');b.className='mini';b.textContent=decision==='accepted'?'Accept':'Reject';b.disabled=!c.exists&&decision==='accepted';
-      b.onclick=async()=>{if(decision==='accepted'&&c.slot_id==='identity_front'&&!confirm('Accept this image as the MASTER identity? Cloud jobs for this profile will be locked to it.'))return;const d=await window.pywebview.api.avatar_candidate_decide({avatar_id:c.avatar_id,slot_id:c.slot_id,decision,path:c.path});log(d.ok?`Candidate ${decision}: ${c.slot_label}`:'Review: '+d.error);prReview()};buttons.appendChild(b)}
+      b.onclick=async()=>{const d=await window.pywebview.api.avatar_candidate_decide({avatar_id:c.avatar_id,slot_id:c.slot_id,decision,path:c.path});log(d.ok?`Candidate ${decision}: ${c.slot_label}`:'Review: '+d.error);prReview()};buttons.appendChild(b)}
+    if(c.exists){const big=document.createElement('button');big.className='mini';big.textContent='View full size';big.onclick=()=>viewerOpen(viewable,Math.max(0,viewable.findIndex(x=>x.path===c.path)));buttons.prepend(big)}
     info.appendChild(buttons);row.appendChild(img);row.appendChild(info);root.appendChild(row)}}
 async function prRefreshVoiceProfiles(){const r=await window.pywebview.api.voice_profiles_list();state.presenter.voiceProfiles=r.items||[];const opts=state.presenter.voiceProfiles.map(v=>({value:v.id,label:v.label}));
   rwFill('prVoiceProfile',opts.length?opts:[{value:'',label:'Load BRAND Instructor to create the default profile'}]);rwFill('rwTtsProfile',[{value:'',label:'None'},...opts],opts.length?opts[0].value:'');prVoiceProfileChanged()}
@@ -1286,7 +1501,7 @@ async function prVoiceProfileSave(){const p=state.presenter.voiceProfiles.find(v
   const voice=p.voice&&p.voice.type==='custom'&&!$('prVoicePreset').value.trim()?p.voice:{type:'runway-preset',presetId:$('prVoicePreset').value.trim()};
   const r=await window.pywebview.api.voice_profile_save({...p,voice,speed:Number($('prVoiceSpeed').value),pronunciations:pron});log(r.ok?'Voice profile saved':'Voice profile: '+r.error);prRefreshVoiceProfiles()}
 async function prRefreshVoiceovers(){const r=await window.pywebview.api.voiceover_list();const items=r.items||[];state.presenter.voiceovers=items;
-  rwFill('rwVoiceover',[{value:'',label:'None'},...items.filter(v=>v.status==='approved').map(v=>({value:v.id,label:`${v.label}${v.duration_s?' · '+Number(v.duration_s).toFixed(1)+' s':''}`}))]);
+  rwFill('rwVoiceover',[{value:'',label:'None'},...items.filter(v=>v.status!=='rejected'&&v.exists).map(v=>({value:v.id,label:`${v.label}${v.duration_s?' · '+Number(v.duration_s).toFixed(1)+' s':''}`}))]);
   const root=$('prVoiceovers');if(!items.length){root.textContent='No narration yet.';return}root.innerHTML='';
   items.forEach(v=>{const d=document.createElement('div');d.className='row';d.style.alignItems='center';d.innerHTML=`<span><b>${esc(v.label)}</b> · ${esc(v.origin)} · ${v.duration_s?Number(v.duration_s).toFixed(1)+' s':'?'} · <b>${esc(v.status)}</b>${v.exists?'':' · file missing'}</span>`;
     const play=document.createElement('button');play.className='mini';play.textContent='Play';play.onclick=()=>openLocalPath(v.path);d.appendChild(play);
@@ -1294,8 +1509,8 @@ async function prRefreshVoiceovers(){const r=await window.pywebview.api.voiceove
     root.appendChild(d)})}
 async function prVoiceoverImport(){const files=await window.pywebview.api.choose_files('audio',true);if(!files||!files.length)return;const r=await window.pywebview.api.voiceover_import({paths:files,authorization:$('prVoAuth').value,voice_profile_id:$('prVoiceProfile').value});if(!r.ok&&r.error){log('Narration: '+r.error);return}(r.errors||[]).forEach(e=>log(`Narration ${e.file}: ${e.error}`));log(`Narration imported: ${(r.imported||[]).length} (pending approval)`);prRefreshVoiceovers()}
 async function prScriptAnalyze(){const r=await window.pywebview.api.script_analyze({script:$('prScript').value,voice_profile_id:$('prVoiceProfile').value});if(!r.ok){log('Script: '+r.error);return}const s=r.stats;$('prScriptReport').innerHTML=`${s.words} words · ${s.characters} characters · ≈ ${s.estimated_seconds[0]}-${s.estimated_seconds[1]} s · ${r.segments.length} segment(s) for ${esc(r.model)} (limit ${r.limit})${r.estimate?` · ≈ ${r.estimate.credits} credits`:''}<br>${(s.flags||[]).map(f=>'⚠ '+esc(f)).join('<br>')}`}
-async function prVoicePreview(){if(!confirm('Send this voice description to Runway for a short preview?'))return;const r=await window.pywebview.api.runway_voice_preview({prompt:$('prVoiceDesign').value,confirm_cloud_upload:true});if(r.ok){log(`Voice preview saved: ${base(r.path)}`);openLocalPath(r.path)}else log('Voice preview: '+r.error)}
-async function prVoiceCreate(){if(!confirm('Create this designed voice on Runway and attach it to the selected voice profile?'))return;const r=await window.pywebview.api.runway_voice_create({name:$('prVoiceName').value||'BRAND voice',prompt:$('prVoiceDesign').value,voice_profile_id:$('prVoiceProfile').value,confirm_cloud_upload:true});log(r.ok?`Designed voice created: ${r.voice.id}`:'Voice: '+r.error);prRefreshVoiceProfiles()}
+async function prVoicePreview(){const r=await window.pywebview.api.runway_voice_preview({prompt:$('prVoiceDesign').value});if(r.ok){log(`Voice preview saved: ${base(r.path)}`);openLocalPath(r.path)}else log('Voice preview: '+r.error)}
+async function prVoiceCreate(){const r=await window.pywebview.api.runway_voice_create({name:$('prVoiceName').value||'BRAND voice',prompt:$('prVoiceDesign').value,voice_profile_id:$('prVoiceProfile').value});log(r.ok?`Designed voice created: ${r.voice.id}`:'Voice: '+r.error);prRefreshVoiceProfiles()}
 async function prImport(){const files=await window.pywebview.api.choose_files('image',true);if(!files||!files.length)return;
   const r=await window.pywebview.api.reference_import({paths:files,source:$('prImportSource').value,attested:$('prImportAttest').checked,prompt:$('prImportPrompt').value,job_reference:$('prImportJob').value,avatar_id:$('prImportSlot').value?((state.presenter.brand||{}).profile_id||''):'',slot_id:$('prImportSlot').value});
   if(!r.ok&&!r.imported){$('prImportResult').textContent=r.error;log('Import: '+r.error);return}
@@ -1313,16 +1528,12 @@ function prLessonFromForm(){const segs=$('prLessonSegments').value.split(/\n\s*\
 async function prLessonSave(){const r=await window.pywebview.api.lesson_save({lesson:prLessonFromForm()});log(r.ok?`Lesson saved: ${r.lesson.segments.length} segment(s)`:'Lesson: '+r.error);if(r.ok)prLessonPlan()}
 async function prLessonPlan(){const r=await window.pywebview.api.lesson_plan($('prLessonId').value.trim());if(!r.ok){$('prLessonPlan').textContent=r.error;return}$('prLessonPlan').innerHTML=r.rows.map(x=>`${esc(x.title)}: <b>${esc(x.state.replace(/_/g,' '))}</b>`).join('<br>')}
 async function prLessonQueue(){const id=$('prLessonId').value.trim();const basePayload=rwPayload();const dry=await window.pywebview.api.lesson_queue_changed({lesson_id:id,base:basePayload,dry_run:true});if(!dry.ok){log('Lesson: '+dry.error);return}if(!dry.to_render.length){log('Lesson: every segment is unchanged; nothing to render.');return}
-  if(!confirm(`Render ${dry.to_render.length} changed segment(s) on Runway for about ${dry.total_credits} credits? Unchanged segments: ${dry.unchanged.length}.`))return;
-  const unresolved=await window.pywebview.api.runway_unresolved();const pendingCharges=(unresolved.items||[]).length;
-  if(pendingCharges&&!confirm(`${pendingCharges} earlier Runway submission(s) have unknown charges. Continue anyway?`))return;
-  const r=await window.pywebview.api.lesson_queue_changed({lesson_id:id,base:basePayload,confirm_cloud_upload:true,confirmed_estimate_credits:dry.total_credits,acknowledge_unresolved:pendingCharges>0});log(r.ok?`Lesson segments queued: ${r.to_render.join(', ')}`:'Lesson: '+r.error);refreshQueue();prLessonPlan()}
+  const r=await window.pywebview.api.lesson_queue_changed({lesson_id:id,base:basePayload});log(r.ok?`Lesson segments queued: ${r.to_render.join(', ')} · about ${r.total_credits} credits`:'Lesson: '+r.error);refreshQueue();prLessonPlan()}
 async function prVerify(){const r=await window.pywebview.api.verify_outputs($('prVerifyId').value.trim());$('prVerifyResult').innerHTML=r.results?`${r.ok?'<b>All outputs verified</b>':'<b>Integrity problem</b>'} · verified ${r.verified}${r.changed.length?' · changed: '+r.changed.map(x=>esc(base(x))).join(', '):''}${r.missing.length?' · missing: '+r.missing.map(x=>esc(base(x))).join(', '):''}`:esc(r.error||'')}
 async function rwProfilesRefresh(){const r=await window.pywebview.api.provider_profiles_list();state.runway.profiles=r.items||[];rwFill('rwProfileSelect',state.runway.profiles.length?state.runway.profiles.map(p=>({value:p.name,label:`${p.name} · ${p.model}`})):[{value:'',label:'No saved profiles'}])}
 async function rwProfileSave(){const p=rwPayload().runway;const r=await window.pywebview.api.provider_profile_save({...p,name:$('rwProfileName').value.trim()});log(r.ok?`Provider profile saved: ${r.profile.name}`:'Profile: '+r.error);rwProfilesRefresh()}
 function rwProfileApply(){const p=(state.runway.profiles||[]).find(x=>x.name===$('rwProfileSelect').value);if(!p)return;setEngine('runway');$('rwTask').value=p.task;rwTaskChanged();$('rwModel').value=p.model;rwModelChanged();if(p.ratio)$('rwRatio').value=p.ratio;if(p.duration)$('rwDuration').value=p.duration;if(p.resolution)$('rwResolution').value=p.resolution;if(p.output_count)$('rwCount').value=p.output_count;if(p.prompt_expansion)$('rwExpansion').value=p.prompt_expansion;if(p.candidates)$('rwCandidates').value=String(p.candidates);log(`Provider profile applied: ${p.name}`)}
 async function loadBrandPreset(){
-  if(!confirm('Load BRAND_INSTRUCTOR_PHOTOREAL_V1? The profile is created in your Avatar Vault if it is missing. Nothing is generated or uploaded.'))return;
   const inst=await window.pywebview.api.brand_instructor_install();if(!inst.ok){log('BRAND: '+inst.error);return}
   const r=await window.pywebview.api.brand_instructor_preset();if(!r.ok){log('BRAND: '+r.error);return}
   const a=r.avatar;state.avatar={...state.avatar,avatar_id:a.avatar_id,display_name:a.display_name,sex:a.sex,apparent_age_years:a.apparent_age_years,subject_kind:a.subject_kind,age_verified_18_plus:a.age_verified_18_plus,consent_confirmed:a.consent_confirmed,persistent_features:a.persistent_features||[],anatomy_guides:[]};
@@ -1333,8 +1544,267 @@ async function loadBrandPreset(){
   setEngine('runway');$('rwTask').value='still';rwTaskChanged();$('rwModel').value='gen4_image';rwModelChanged();$('rwRatio').value='1080:1440';
   const hasMaster=(a.identity_refs||[]).length>0;$('rwSlot').value=hasMaster?'identity_three_quarter_left':'identity_front';$('rwCandidates').value=hasMaster?'1':'4';
   view('studio');prRefreshVoiceProfiles();
-  log(`BRAND Instructor loaded${inst.installed?' (profile created)':''}. ${hasMaster?'Master approved: generate the reference slots next.':'No master yet: Estimate, then queue 4 master candidates and approve one in Presenter → Review.'}`);
+  log(`BRAND Instructor loaded${inst.installed?' (profile created)':''}. ${hasMaster?'Master chosen: make the reference photos next.':'No master yet: queue 4 master candidates and pick one in Studio.'}`);
 }
+
+
+/* ---------- Studio (simple start screen) ---------- */
+const st={opts:{stCount:'4',stTalkMode:'type',stActBody:'body',stActShape:'tall',stMoveSeconds:'5',stMoveQuality:'best',stMoveShape:'tall'},look:'natural',data:null,thumbs:new Map(),actVideo:'',moveImage:'',priceTimer:null,sig:{},talkerTimer:null,lastJobs:0,noteUntil:{}};
+const ST_ACTIONS=['presenter','angles','voiceover','talk','act','move'];
+const ST_BTN={presenter:'stGoPresenter',angles:'stGoAngles',voiceover:'stGoVoiceover',sample:'stGoSample',talk:'stGoTalk',act:'stGoAct',move:'stGoMove'};
+const ST_NOTE={presenter:'stNotePresenter',angles:'stNoteAngles',voiceover:'stNoteVoiceover',sample:'stNoteVoiceover',talk:'stNoteTalk',act:'stNoteAct',move:'stNoteMove'};
+const ST_DEFAULT_ANGLES=['identity_three_quarter_left','identity_three_quarter_right','presenter_expression_smile'];
+const ST_VERB={presenter:o=>o.count>1?`Make ${o.count} options`:'Make 1 option',angles:o=>`Make ${o.slots.length} photo${o.slots.length===1?'':'s'}`,voiceover:()=>'Make voiceover',talk:()=>'Make talking video',act:()=>'Make it',move:()=>'Make clip'};
+function stCredits(n){n=Number(n)||0;const v=Number.isInteger(n)?n.toLocaleString():n.toFixed(1);return `${v} credit${n===1?'':'s'}`}
+function stUsd(n){return '$'+(Number(n||0)*0.01).toFixed(2)}
+function stWhen(ts){if(!ts)return'';const s=(Date.now()/1000)-Number(ts);if(s<90)return'just now';if(s<3600)return Math.round(s/60)+' min ago';if(s<86400)return Math.round(s/3600)+' h ago';return new Date(ts*1000).toLocaleDateString()}
+function stNote(action,text,kind){const el=$(ST_NOTE[action]);if(!el)return;el.className='st-note'+(kind?' '+kind:'');el.textContent=text||''}
+function stToast(text,kind){const el=$('stToast');el.className='st-toast '+(kind==='err'?'warning':'info');el.textContent=text||'';clearTimeout(stToast.t);if(text)stToast.t=setTimeout(()=>{el.textContent=''},9000)}
+function stFillSelect(id,items,fallback){const el=$(id);const keep=el.value;el.innerHTML=items.map(x=>`<option value="${esc(x.value)}">${esc(x.label)}</option>`).join('');const want=items.some(x=>String(x.value)===String(keep))?keep:fallback;if(want!==undefined&&want!==null&&items.some(x=>String(x.value)===String(want)))el.value=String(want)}
+function stSig(key,value){const s=JSON.stringify(value===undefined?null:value);if(st.sig[key]===s)return false;st.sig[key]=s;return true}
+async function stThumb(img,path){if(!img||!path)return;const hit=st.thumbs.get(path);if(hit){img.src=hit;return}try{const t=await window.pywebview.api.studio_thumb(path);if(t&&t.ok){st.thumbs.set(path,t.data_url);img.src=t.data_url}}catch(e){}}
+function stChipInit(){document.querySelectorAll('#view-start .chips[data-chips]').forEach(group=>{group.querySelectorAll('button').forEach(b=>{b.type='button';b.onclick=()=>{group.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));st.opts[group.dataset.chips]=b.dataset.v;if(group.dataset.chips==='stTalkMode'){$('stTalkTypeBox').style.display=b.dataset.v==='type'?'grid':'none';$('stTalkVoBox').style.display=b.dataset.v==='voiceover'?'grid':'none'}stPriceSoon()}})})}
+function stLookChips(){const root=$('stLook');root.innerHTML='';((st.data&&st.data.looks)||[]).forEach(l=>{const b=document.createElement('button');b.type='button';b.className=l.id===st.look?'on':'';b.innerHTML=`${esc(l.label)}<small>${esc(l.hint)}</small>`;b.onclick=()=>{st.look=l.id;stLookChips();stPriceSoon()};root.appendChild(b)})}
+function stOptions(action){
+  const o={action};
+  if(action==='presenter'){o.count=Number(st.opts.stCount);o.look=st.look;o.extra=$('stExtra').value}
+  if(action==='angles')o.slots=[...document.querySelectorAll('#stAngles input:checked')].map(x=>x.value);
+  if(action==='voiceover'||action==='sample'){o.voice=$('stVoice').value;o.script=$('stVoScript').value}
+  if(action==='talk'){if(st.opts.stTalkMode==='voiceover')o.narration_id=$('stTalkNarration').value;else o.script=$('stTalkScript').value;o.talker_voice=$('stTalkerVoice').value}
+  if(action==='act'){o.video=st.actVideo;o.body=st.opts.stActBody==='body';o.shape=st.opts.stActShape;o.narration_id=$('stActNarration').value}
+  if(action==='move'){o.motion=$('stMotion').value;o.seconds=Number(st.opts.stMoveSeconds);o.quality=st.opts.stMoveQuality;o.shape=st.opts.stMoveShape;o.narration_id=$('stMoveNarration').value;if(st.moveImage)o.image=st.moveImage}
+  return o;
+}
+function stPriceSoon(){clearTimeout(st.priceTimer);st.priceTimer=setTimeout(stPriceAll,300)}
+async function stPriceAll(){if(!st.data)return;for(const action of ST_ACTIONS){try{await stPrice(action)}catch(e){}}}
+function stHint(action,o){
+  const d=st.data;
+  if(['angles','talk','act'].includes(action)&&!d.master)return 'Pick your presenter in step 1 first';
+  if(action==='move'&&!d.master&&!st.moveImage)return 'Pick your presenter in step 1 first';
+  if(action==='angles'&&!o.slots.length)return 'Tick at least one kind of photo';
+  if(action==='voiceover'&&!o.script.trim())return 'Type what she says first';
+  if(action==='talk'&&st.opts.stTalkMode==='type'&&!o.script.trim())return 'Type what she says first';
+  if(action==='talk'&&st.opts.stTalkMode==='voiceover'&&!o.narration_id)return 'Make a voiceover in step 3 first';
+  if(action==='act'&&!o.video)return 'Choose your video first';
+  return '';
+}
+async function stPrice(action){
+  const btn=$(ST_BTN[action]);if(!btn||btn.dataset.busy==='1')return;
+  const o=stOptions(action);const hint=stHint(action,o);
+  const quiet=(st.noteUntil[action]||0)>Date.now();
+  if(hint){btn.disabled=true;btn.textContent=hint;if(!quiet)stNote(action,'');return}
+  const r=await window.pywebview.api.studio_price(o);
+  if(!r.ok){btn.disabled=true;btn.textContent=ST_VERB[action](o);if(!quiet)stNote(action,r.error,'err');return}
+  btn.disabled=false;btn.textContent=`${ST_VERB[action](o)} · ${r.upper_bound?'up to ':''}${stCredits(r.credits)} (${stUsd(r.credits)})`;
+  if(quiet)return;
+  const notes=[];
+  if(r.needs_talker)notes.push('First time only: this sets up her talking avatar on Runway (about a minute), then makes the video.');
+  if(r.limit_error)notes.push(r.limit_error);
+  (r.warnings||[]).filter(w=>!/center-crop|audio track is removed|pure text-to-image/i.test(w)).forEach(w=>notes.push(w));
+  stNote(action,notes.join(' '),r.limit_error?'warn':'');
+}
+async function stGo(action,extra){
+  const o={...stOptions(action),...(extra||{})};
+  const btn=$(ST_BTN[action]);if(btn){btn.disabled=true;btn.dataset.busy='1'}
+  const say=(text,kind)=>{if(ST_NOTE[action])stNote(action,text,kind);else stToast(text,kind)};
+  say('Sending to Runway…','');
+  let r;try{r=await window.pywebview.api.studio_go(o)}catch(e){r={ok:false,error:String(e)}}
+  if(btn)btn.dataset.busy='0';
+  if(r.ok){
+    const n=(r.queued||[]).length;st.noteUntil[action]=Date.now()+12000;
+    say(`Started${n>1?' '+n+' jobs':''} · about ${stCredits(r.total_credits)}. ${action==='sample'?'The sample appears in the list below in a few seconds.':'It shows up under Latest results when it\'s done.'}`,'ok');
+    log(`Studio: ${action} started · about ${r.total_credits} credits`);
+  }else if(r.setup_started){st.noteUntil[action]=Date.now()+600000;say(r.message,'ok');log('Studio: setting up her talking avatar');stWaitForTalker(o)}
+  else{st.noteUntil[action]=Date.now()+15000;say(r.error||'Something went wrong.','err');log('Studio: '+(r.error||'error'))}
+  await stLoad();stPriceSoon();
+}
+function stSharpen(path){stGo('sharpen',{image:path})}
+function stWaitForTalker(o){clearInterval(st.talkerTimer);let tries=0;
+  st.talkerTimer=setInterval(async()=>{tries++;let r;try{r=await window.pywebview.api.studio_talker_status()}catch(e){r={ok:false,error:String(e)}}
+    const status=r.ok&&r.talker?String(r.talker.status||'').toUpperCase():'';
+    if(status==='READY'){clearInterval(st.talkerTimer);st.noteUntil.talk=0;stNote('talk','Her talking avatar is ready. Starting your video…','ok');stGo('talk',o)}
+    else if(status==='FAILED'||(!r.ok&&tries>3)){clearInterval(st.talkerTimer);st.noteUntil.talk=0;stNote('talk','Setting up her talking avatar failed: '+((r.talker&&r.talker.failure_reason)||r.error||'no reason given'),'err')}
+    else if(tries>60){clearInterval(st.talkerTimer);st.noteUntil.talk=0;stNote('talk','Runway is still setting her up. Click the button again in a minute.','warn')}
+  },6000)}
+async function stPick(path,slot,keep){
+  const action=slot==='identity_front'?'presenter':'angles';
+  const r=await window.pywebview.api.studio_pick({path,slot_id:slot,keep});
+  if(!r.ok){stNote(action,r.error||'Could not save that.','err');log('Studio: '+r.error);return}
+  st.noteUntil[action]=Date.now()+8000;
+  stNote(action,keep?(slot==='identity_front'?'Saved. This is her master photo now.':'Kept. It helps her look the same everywhere.'):'Hidden.',keep?'ok':'');
+  await stLoad();stPriceSoon();
+}
+async function stPickVideo(){const files=await window.pywebview.api.choose_files('video',false);if(!files||!files.length)return;st.actVideo=files[0];$('stActFile').textContent=base(files[0]);stPriceSoon()}
+async function stSaveKey(){const v=$('stKey').value;$('stKey').value='';if(!v.trim()){stToast('Paste your Runway API key first.','err');return}const r=await window.pywebview.api.runway_save_key(v);if(!r.ok){stToast(r.error,'err');return}stToast('Key saved. Runway is connected.','ok');$('rwKeyState').textContent=rwKeyText(r.key);await stLoad();stRefreshBalance()}
+async function stRefreshBalance(){
+  const d=st.data;if(!d)return;
+  if(!(d.key&&d.key.configured)){$('stKeyDot').className='s-dot bad';$('stKeyText').textContent='Runway not connected';return}
+  $('stKeyText').textContent='Runway: checking balance…';
+  const r=await window.pywebview.api.runway_check();
+  if(r.ok){$('stKeyDot').className='s-dot live';$('stKeyText').textContent=`Runway connected · ${stCredits(r.credit_balance)} (${stUsd(r.credit_balance)})`}
+  else{$('stKeyDot').className='s-dot warn';$('stKeyText').textContent='Runway: '+r.error}
+}
+function stRenderMaster(){
+  const d=st.data,box=$('stMasterBox'),picks=$('stPickBox');
+  if(d.master){box.innerHTML='<img alt="Her master photo" id="stMasterImg"><div><b>This is her.</b><div class="tiny" style="margin-top:4px">Every photo and video uses this face. To change her, make new options and pick one.</div></div>';stThumb($('stMasterImg'),d.master);$('stMasterImg').onclick=()=>viewerOpen(stKeptItems(),0)}
+  else box.innerHTML='<div class="st-empty" style="flex:1">No presenter yet. Choose a look, make a few options, then pick your favourite.</div>';
+  if(!d.pending_master.length){picks.innerHTML='';return}
+  picks.innerHTML=`<div class="tiny" style="margin-bottom:6px">${d.master?'New options. Click one to see it full size, or pick one to switch to it:':'Click a photo to see it full size, then pick the one you like best:'}</div><div class="st-picks two"></div>`;
+  const grid=picks.querySelector('.st-picks');
+  d.pending_master.slice(0,8).forEach((c,i)=>{const cell=document.createElement('div');cell.className='st-pick';cell.innerHTML='<span class="zoomhint">🔍 full size</span><img alt="Presenter option" title="Click to see it full size"><div class="acts"><button class="mini use">Use</button><button class="mini" title="Toss this option">✕</button></div>';
+    const img=cell.querySelector('img');stThumb(img,c.path);img.onclick=()=>viewerOpen(stMasterItems(),i);
+    const [use,toss]=cell.querySelectorAll('button');use.onclick=()=>stPick(c.path,'identity_front',true);toss.onclick=()=>stPick(c.path,'identity_front',false);grid.appendChild(cell)});
+}
+function stRenderPhotos(){
+  const d=st.data,pick=$('stPhotoPick'),strip=$('stPhotos');
+  if(d.pending_photos.length){pick.innerHTML='<div class="tiny" style="margin-bottom:6px">New photos. Click one to see it full size; keep the ones that look like her:</div><div class="st-picks three"></div>';const grid=pick.querySelector('.st-picks');
+    d.pending_photos.slice(0,8).forEach((c,i)=>{const cell=document.createElement('div');cell.className='st-pick';cell.innerHTML=`<span class="tag">${esc(c.label)}</span><img alt="${esc(c.label)}" title="Click to see it full size"><div class="acts"><button class="mini use">Keep</button><button class="mini" title="Toss this one">✕</button></div>`;
+      const img=cell.querySelector('img');stThumb(img,c.path);img.onclick=()=>viewerOpen(stPhotoItems(),i);
+      const [keep,toss]=cell.querySelectorAll('button');keep.onclick=()=>stPick(c.path,c.slot_id,true);toss.onclick=()=>stPick(c.path,c.slot_id,false);grid.appendChild(cell)})}
+  else pick.innerHTML='';
+  strip.innerHTML=d.photos.length?'<span class="tiny">Kept:</span>':'';
+  d.photos.forEach((p,i)=>{const img=document.createElement('img');img.alt=p.label;img.title=p.label+' (click for full size)';stThumb(img,p.path);img.onclick=()=>viewerOpen(stKeptItems(),d.master?i+1:i);strip.appendChild(img)});
+}
+function stRenderNarrations(){
+  const d=st.data,list=$('stNarrations'),items=d.narrations||[];
+  list.innerHTML=items.length?'':'<div class="tiny">Your voiceovers will appear here.</div>';
+  items.slice(0,6).forEach(v=>{const row=document.createElement('div');row.className='item';row.innerHTML=`<span title="${esc(v.script||v.label)}">♪ ${esc(v.label)}${v.duration_s?' · '+Number(v.duration_s).toFixed(1)+' s':''}</span>`;const play=document.createElement('button');play.className='mini';play.textContent='Play';play.onclick=()=>openLocalPath(v.path);row.appendChild(play);list.appendChild(row)});
+  const opts=items.map(v=>({value:v.id,label:`${v.label}${v.duration_s?' · '+Number(v.duration_s).toFixed(1)+' s':''}`}));
+  stFillSelect('stTalkNarration',opts.length?opts:[{value:'',label:'Make a voiceover in step 3 first'}],opts.length?opts[0].value:'');
+  stFillSelect('stActNarration',[{value:'',label:'Silent (your voice is removed)'},...opts.map(x=>({value:x.value,label:'Her voiceover: '+x.label}))],'');
+  stFillSelect('stMoveNarration',[{value:'',label:'Silent'},...opts.map(x=>({value:x.value,label:'Her voiceover: '+x.label}))],'');
+}
+function stRenderTalker(){
+  const d=st.data;const voices=(d.talker_voices||[]).map(v=>({value:v,label:v[0].toUpperCase()+v.slice(1)}));
+  stFillSelect('stTalkerVoice',voices,d.default_talker_voice);
+  $('stTalkerVoiceBox').style.display=d.talker?'none':'grid';
+  $('stTalkerInfo').textContent=d.talker?`Her talking avatar is set up (voice: ${d.talker.voice||'chosen earlier'}). To get her step-3 voice instead, choose "Use a voiceover".`:'';
+}
+function stRenderJobs(){
+  const jobs=st.data.jobs||[];$('stWorking').style.display=jobs.length?'block':'none';
+  $('stJobs').innerHTML=jobs.map(j=>{const p=typeof j.progress==='number'?` · ${Math.round(j.progress*100)}%`:'';return `<div class="st-job"><div class="st-spin"></div><span>${esc(j.label||'Runway job')}</span><b class="tiny">${j.status==='running'?'making it'+p:'waiting in line'}</b></div>`}).join('');
+}
+function stRenderResults(){
+  const root=$('stResults'),items=st.data.results||[];
+  if(!items.length){root.innerHTML='<div class="st-empty">Nothing yet. Your photos, voiceovers and videos will show up here.</div>';return}
+  root.innerHTML='';let count=0;
+  for(const r of items){if(count>=24)break;
+    if(r.status!=='done'){count++;const t=document.createElement('div');t.className='st-tile failed';t.innerHTML=`<div class="pic">${esc(r.error||'It did not finish.')}</div><div class="meta"><b title="${esc(r.label)}">${esc(r.label)}</b><span>${esc(stWhen(r.finished_at))}${r.charge_status==='none'?' · not charged':''}</span></div>`;root.appendChild(t);continue}
+    for(const o of r.outputs){if(count>=24)break;count++;
+      const t=document.createElement('div');t.className='st-tile';
+      const badge=o.kind==='video'?'▶ video':o.kind==='audio'?'♪ voice':'photo';
+      t.innerHTML=`<div class="pic"><span class="badge">${badge}</span>${o.kind==='image'||o.kind==='video'?'<img alt="">':'<span>♪</span>'}</div><div class="meta"><b title="${esc(r.label)}">${esc(r.label)}</b><span>${esc(stWhen(r.finished_at))}${r.credits!==null&&r.credits!==undefined?' · '+stCredits(r.credits):''}</span><div class="row"></div></div>`;
+      t.querySelector('.pic').onclick=()=>{if(o.kind==='image'){const items=stResultImageItems();viewerOpen(items,Math.max(0,items.findIndex(x=>x.path===o.path)))}else openLocalPath(o.path)};
+      const img=t.querySelector('img');if(img)stThumb(img,o.path);
+      const row=t.querySelector('.row');
+      const open=document.createElement('button');open.className='mini';open.textContent=o.kind==='audio'?'Play':'Open';open.onclick=()=>openLocalPath(o.path);row.appendChild(open);
+      if(o.kind==='image'){
+        const anim=document.createElement('button');anim.className='mini';anim.textContent='Animate';anim.title='Use this photo as the start of "Make her move"';anim.onclick=()=>{st.moveImage=o.path;st.noteUntil.move=Date.now()+10000;stNote('move','Starting from '+o.name+'.','ok');$('stMoveCard').scrollIntoView({behavior:'smooth',block:'center'});stPriceSoon()};row.appendChild(anim);
+        const sharp=document.createElement('button');sharp.className='mini';sharp.textContent='Sharpen';sharp.title='Make a 2x sharper copy (25 credits)';sharp.onclick=()=>stSharpen(o.path);row.appendChild(sharp);
+      }
+      root.appendChild(t)}}
+}
+function stRender(first){
+  const d=st.data;const connected=!!(d.key&&d.key.configured);
+  $('stConnect').style.display=connected?'none':'grid';
+  if(!connected){$('stKeyDot').className='s-dot bad';$('stKeyText').textContent='Runway not connected'}
+  $('stSpend').textContent=`Today: ${stCredits(d.spend.today)} (${stUsd(d.spend.today)})`;
+  if(stSig('looks',d.looks))stLookChips();
+  if(stSig('master',[d.master,d.pending_master]))stRenderMaster();
+  if(stSig('angles',d.angles))$('stAngles').innerHTML=d.angles.map(a=>`<label><input type="checkbox" value="${esc(a.id)}"${ST_DEFAULT_ANGLES.includes(a.id)?' checked':''}>${esc(a.label)}</label>`).join('');
+  if(stSig('photos',[d.photos,d.pending_photos]))stRenderPhotos();
+  if(stSig('voices',[d.voices,d.voice]))stFillSelect('stVoice',d.voices.map(v=>({value:v,label:v})),d.voice);
+  if(stSig('narrations',d.narrations))stRenderNarrations();
+  if(stSig('talker',[d.talker,d.talker_voices]))stRenderTalker();
+  if(stSig('jobs',d.jobs))stRenderJobs();
+  if(stSig('results',d.results))stRenderResults();
+  ['stAnglesCard','stTalkCard','stActCard','stMoveCard'].forEach(id=>$(id).classList.toggle('waiting',!d.master));
+  if(first||stSig('price_inputs',[d.master,d.talker,d.narrations.length]))stPriceSoon();
+}
+async function stLoad(){
+  let d;try{d=await window.pywebview.api.studio_state()}catch(e){return}
+  if(!d||!d.ok)return;
+  const first=!st.data;st.data=d;
+  if(first){st.look=d.look||'natural';$('stExtra').value=d.extra||''}
+  stRender(first);
+  const active=(d.jobs||[]).length;if(st.lastJobs>0&&active===0)stRefreshBalance();st.lastJobs=active;
+}
+function stInit(){
+  stChipInit();
+  $('stAngles').addEventListener('change',stPriceSoon);
+  ['stExtra','stTalkScript','stMotion'].forEach(id=>$(id).addEventListener('input',stPriceSoon));
+  $('stVoScript').addEventListener('input',()=>{$('stVoCount').textContent=`${$('stVoScript').value.length} / 2500`;stPriceSoon()});
+  ['stVoice','stTalkNarration','stActNarration','stMoveNarration','stTalkerVoice'].forEach(id=>$(id).addEventListener('change',stPriceSoon));
+  stLoad().then(stRefreshBalance);
+  setInterval(()=>{if($('view-start').classList.contains('active'))stLoad()},4000);
+}
+
+
+/* ---------- full-size photo viewer ---------- */
+// Item: {path, title, meta, actions:[{label, primary, toss, run: async () => true (done: drop it) | 'close' | false}]}
+const viewer={items:[],index:0,zoom:false,big:new Map(),busy:false};
+function viewerOpen(items,index){
+  viewer.items=(items||[]).filter(x=>x&&x.path);if(!viewer.items.length)return;
+  viewer.index=Math.max(0,Math.min(Number(index)||0,viewer.items.length-1));viewer.zoom=false;
+  if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();
+  $('viewer').classList.add('open');viewerShow();
+}
+function viewerClose(){$('viewer').classList.remove('open');$('viewerImg').removeAttribute('src');viewer.items=[]}
+function viewerApplyZoom(){$('viewerFrame').classList.toggle('zoom',viewer.zoom);$('viewerZoomBtn').textContent=viewer.zoom?'Fit to window':'Actual size'}
+async function viewerShow(){
+  const it=viewer.items[viewer.index];if(!it){viewerClose();return}
+  const n=viewer.items.length;
+  $('viewerTitle').textContent=it.title||base(it.path);
+  $('viewerPrev').disabled=n<2;$('viewerNext').disabled=n<2;viewerApplyZoom();
+  const img=$('viewerImg'),loading=$('viewerLoading');img.style.visibility='hidden';loading.textContent='Loading full size…';loading.style.display='grid';
+  $('viewerMeta').textContent=[n>1?`${viewer.index+1} of ${n}`:'',it.meta||''].filter(Boolean).join(' · ');
+  const root=$('viewerActions');root.innerHTML='';
+  (it.actions||[]).forEach(a=>{const b=document.createElement('button');b.className='btn'+(a.primary?' primary':'')+(a.toss?' danger':'');b.textContent=a.label;b.onclick=()=>viewerAct(a);root.appendChild(b)});
+  let data=viewer.big.get(it.path);
+  if(!data){
+    let r;try{r=await window.pywebview.api.studio_image(it.path)}catch(e){r={ok:false,error:String(e)}}
+    if(viewer.items[viewer.index]!==it)return;
+    if(!r.ok){loading.textContent=r.error||'Could not open this photo.';return}
+    data=r;viewer.big.set(it.path,r);if(viewer.big.size>24)viewer.big.delete(viewer.big.keys().next().value);
+  }
+  img.src=data.data_url;img.style.visibility='visible';loading.style.display='none';
+  $('viewerMeta').textContent=[n>1?`${viewer.index+1} of ${n}`:'',`${data.width} × ${data.height}`,it.meta||''].filter(Boolean).join(' · ');
+  const next=viewer.items[(viewer.index+1)%n];
+  if(n>1&&next&&!viewer.big.has(next.path))window.pywebview.api.studio_image(next.path).then(r=>{if(r&&r.ok)viewer.big.set(next.path,r)}).catch(()=>{});
+}
+async function viewerAct(a){
+  if(viewer.busy)return;viewer.busy=true;
+  try{const done=await a.run();
+    if(done==='close'){viewerClose();return}
+    if(done){viewer.items.splice(viewer.index,1);if(!viewer.items.length){viewerClose();return}if(viewer.index>=viewer.items.length)viewer.index=0;viewerShow()}
+  }finally{viewer.busy=false}
+}
+function viewerStep(d){const n=viewer.items.length;if(n<2)return;viewer.index=(viewer.index+d+n)%n;viewer.zoom=false;viewerShow()}
+function viewerToggleZoom(){viewer.zoom=!viewer.zoom;viewerApplyZoom()}
+function viewerExternal(){const it=viewer.items[viewer.index];if(it)openLocalPath(it.path)}
+$('viewerImg').addEventListener('click',viewerToggleZoom);
+document.addEventListener('keydown',ev=>{
+  if(!$('viewer').classList.contains('open'))return;
+  const acts=(viewer.items[viewer.index]||{}).actions||[];const onButton=ev.target&&ev.target.tagName==='BUTTON';
+  if(ev.key==='Escape')viewerClose();
+  else if(ev.key==='ArrowRight')viewerStep(1);
+  else if(ev.key==='ArrowLeft')viewerStep(-1);
+  else if(ev.key==='z'||ev.key==='Z')viewerToggleZoom();
+  else if(ev.key==='Enter'&&!onButton){const a=acts.find(x=>x.primary);if(a)viewerAct(a);else return}
+  else if(ev.key==='Delete'){const a=acts.find(x=>x.toss);if(a)viewerAct(a);else return}
+  else return;
+  ev.preventDefault();
+});
+function stMasterItems(){const d=st.data;return d.pending_master.slice(0,8).map(c=>({path:c.path,title:d.master?'New option for her face':'Presenter option',meta:'"Use this one" makes it her master photo',actions:[
+  {label:'Use this one',primary:true,run:async()=>{await stPick(c.path,'identity_front',true);return 'close'}},
+  {label:'Toss',toss:true,run:async()=>{await stPick(c.path,'identity_front',false);return true}}]}))}
+function stPhotoItems(){return st.data.pending_photos.slice(0,8).map(c=>({path:c.path,title:c.label,meta:'Keep it if it looks like her',actions:[
+  {label:'Keep',primary:true,run:async()=>{await stPick(c.path,c.slot_id,true);return true}},
+  {label:'Toss',toss:true,run:async()=>{await stPick(c.path,c.slot_id,false);return true}}]}))}
+function stKeptItems(){const d=st.data;return [...(d.master?[{path:d.master,title:'Her master photo'}]:[]),...d.photos.map(p=>({path:p.path,title:p.label}))]}
+function stResultImageItems(){const out=[];(st.data.results||[]).forEach(r=>{if(r.status!=='done')return;r.outputs.forEach(o=>{if(o.kind!=='image')return;out.push({path:o.path,title:r.label,meta:stWhen(r.finished_at),actions:[
+  {label:'Animate this photo',run:async()=>{st.moveImage=o.path;st.noteUntil.move=Date.now()+10000;stNote('move','Starting from '+o.name+'.','ok');$('stMoveCard').scrollIntoView({behavior:'smooth',block:'center'});stPriceSoon();return 'close'}},
+  {label:'Sharpen · 25 credits',run:async()=>{stSharpen(o.path);return 'close'}}]})})});return out}
 
 /* ---------- init ---------- */
 window.addEventListener('pywebviewready',async()=>{
@@ -1353,7 +1823,7 @@ window.addEventListener('pywebviewready',async()=>{
     $('sTimeout').value=state.settings.timeout_s||1800;$('sAuth').checked=!!state.settings.local_h3_authorized;
     $('sGpuAuto').value=state.settings.gpu_autoclean===false?'false':'true';$('sGpuThr').value=state.settings.gpu_threshold??0.85;$('sGpuInt').value=state.settings.gpu_check_interval_s||5;
     $('sOutDir').value=state.settings.preferred_output_dir||'';$('designerVisionModel').value=state.settings.vision_classifier_model||'qwen3-vl:8b-instruct';
-    rwInit(s.runway||{});prInit(s.presenter||{});
+    rwInit(s.runway||{});prInit(s.presenter||{});stInit();
     const cats=$('mCategory');(s.motion_categories||[]).forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;cats.appendChild(o)});
     ['vKind','vSex','vAdultAuth','vNude'].forEach(id=>$(id).addEventListener('change',renderDesigner));['vId','vName','vApparentAge'].forEach(id=>$(id).addEventListener('input',renderDesigner));$('designerRenderMode').addEventListener('change',designerRendererStatus);['gId','gLabel','gPath','gProvenance','gAdult','gRights','gConsent'].forEach(id=>{const event=$(id).tagName==='SELECT'?'change':'input';$(id).addEventListener(event,()=>$(id).classList.remove('invalid'))});
     await refreshAppearanceComponents();refreshQueue();refreshGpu();comfyStatus();doctor();
@@ -1374,7 +1844,7 @@ async function runUiTest(){
   const wait=ms=>new Promise(r=>setTimeout(r,ms));
   try{
     report.consolidation_check=designerPlanSelfTest();if(!report.consolidation_check.ok)uiErrors.push('consolidated validation planner self-test failed');
-    for(const v of ['studio','vault','motions','scenes','history','presenter','settings']){
+    for(const v of ['start','studio','vault','motions','scenes','history','presenter','settings']){
       view(v);await wait(600);
       const el=document.getElementById('view-'+v);
       report.view_checks[v]=el&&el.classList.contains('active');
@@ -1420,6 +1890,20 @@ async function runUiTest(){
     const originalRefs=JSON.parse(JSON.stringify(state.refs));setEngine('h3_ref2va');$('h3ReferenceMode').value='exact_primary';state.refs.identity_refs=['/tmp/avatar_v2_ui_test_primary.png'];state.refs.init_image=state.refs.identity_refs[0];
     const exact=await api.dry_run(payload());report.reference_checks={ok:exact.ok===true,engine:exact.engine,primary_bound:exact.reference_bindings&&exact.reference_bindings.primary_identity_bound,first_frame_bound:exact.reference_bindings&&exact.reference_bindings.resolved&&exact.reference_bindings.resolved.first_frame_bound};state.refs=originalRefs;refreshRefs();
     await probe('gpu_free_idle',()=>api.gpu_free());
+    // Studio: local state and prices only. No network calls, no uploads, nothing queued.
+    await probe('studio_state',()=>api.studio_state());
+    const sState=await api.studio_state(),sPrice=await api.studio_price({action:'presenter',count:4,look:'natural'}),sMove=await api.studio_price({action:'move'}),sVoice=await api.studio_price({action:'voiceover',script:'Hello and welcome.'});
+    view('start');await wait(500);
+    report.studio_checks={state_ok:sState.ok===true,cards:document.querySelectorAll('#view-start .st-card').length,looks:(sState.looks||[]).length,angles:(sState.angles||[]).length,look_chips:$('stLook').querySelectorAll('button').length,angle_boxes:$('stAngles').querySelectorAll('input').length,presenter_price:sPrice.ok?sPrice.credits:'error '+sPrice.error,voiceover_price:sVoice.ok?sVoice.credits:'error '+sVoice.error,move_without_master_explains:sMove.ok===false&&/presenter/i.test(sMove.error||''),connect_card_shown_without_key:$('stConnect').style.display!=='none',presenter_button:$('stGoPresenter').textContent,simple_layout:document.querySelector('.app').classList.contains('simple'),right_panel_hidden:getComputedStyle(document.querySelector('.right')).display==='none'};
+    await probe('studio_image_missing',async()=>{const x=await api.studio_image('/definitely/not/here.png');return {ok:x.ok===false}});
+    let viewerRan=false;viewerOpen([{path:'/definitely/not/here.png',title:'UI test photo',actions:[{label:'Use this one',primary:true,run:async()=>{viewerRan=true;return 'close'}},{label:'Toss',toss:true,run:async()=>true}]}],0);await wait(400);
+    report.viewer_checks={opens:$('viewer').classList.contains('open'),covers_window:getComputedStyle($('viewer')).position==='fixed',action_buttons:$('viewerActions').querySelectorAll('button').length,missing_file_explained:/no longer/i.test($('viewerLoading').textContent)};
+    document.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await wait(150);
+    report.viewer_checks.enter_runs_primary=viewerRan;report.viewer_checks.closed_after_use=!$('viewer').classList.contains('open');
+    viewerOpen([{path:'/definitely/not/a.png',title:'a'},{path:'/definitely/not/b.png',title:'b'}],0);await wait(150);viewerStep(1);await wait(150);
+    report.viewer_checks.next_moves=$('viewerTitle').textContent==='b';
+    document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await wait(150);report.viewer_checks.escape_closes=!$('viewer').classList.contains('open');
+    view('studio');await wait(300);
     // Runway panel: local estimates only. No network calls, no uploads, nothing queued.
     await probe('runway_status',()=>api.runway_status());
     setEngine('runway');await wait(200);
@@ -1438,7 +1922,7 @@ async function runUiTest(){
     report.presenter_checks={slots:$('rwSlot').options.length,import_sources:$('prImportSource').options.length,still_row_visible:(()=>{setEngine('runway');$('rwTask').value='still';rwTaskChanged();return $('rwStillRow').style.display!=='none'})(),tts_row_hidden_for_still:$('rwTtsRow').style.display==='none',tts_row_for_narration:(()=>{$('rwTask').value='narration';rwTaskChanged();return $('rwTtsRow').style.display!=='none'})(),audio_row_for_performance:(()=>{$('rwTask').value='performance';rwTaskChanged();return $('rwAudioRow').style.display!=='none'&&$('rwOutputAudio').value==='mute'})()};
     $('rwTask').value='still';rwTaskChanged();
     setEngine(originalEngine);setProfile(originalProfile);
-    await wait(400);
+    view('start');await wait(400);
     report.js_errors=uiErrors.slice();
     await api.ui_test_report(report);
     log('UI TEST COMPLETE: '+JSON.stringify(report));

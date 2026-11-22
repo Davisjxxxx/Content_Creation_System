@@ -313,6 +313,7 @@ VOICE_PRESETS = (
     "summer", "ruby", "aurora", "jasper", "leo", "adrian", "nina", "emma", "blake", "david",
     "maya", "nathan", "sam", "georgia", "petra", "adam", "zach", "violet", "roman", "luna",
 )
+DEFAULT_AVATAR_VOICE = "clara"
 
 
 @dataclass(frozen=True)

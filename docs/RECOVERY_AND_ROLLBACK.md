@@ -36,6 +36,8 @@ set, no paid job was submitted, nothing was deleted, and no model was downloaded
 | The interpreter | `AVATAR_V2_PYTHON=/home/jd/avatar_project/.venv/bin/python scripts/launch_avatar_v2.sh` (CLI and tests only on 3.12). |
 | The launcher | Revert `scripts/launch_avatar_v2.sh`, or force source with `AVATAR_V2_FROM_SOURCE=1`. |
 | The package | `mv dist/AvatarV2 dist/AvatarV2-py314 && mv dist/AvatarV2-20260903-py312 dist/AvatarV2`. It only launches if the system WebKitGTK is downgraded, so prefer the source rollback above. |
+| The Studio build (2026-11-22) | New builds are staged as `dist/AvatarV2.next` and switched in by the launcher on the next launch while the app is closed. The build it replaced is renamed `dist/AvatarV2-prev-<timestamp>`. To go back: `mv dist/AvatarV2 dist/AvatarV2-studio && mv dist/AvatarV2-prev-<timestamp> dist/AvatarV2`. |
+| The Studio behaviour | `git revert` the Studio commit, or check out `2456bde` (the last commit with confirmations, upload consent and default caps). Old cap settings stay in `desktop.json` and are honoured again by that code. |
 | The legacy location | `mv -nT /home/jd/avatar_project_legacy /home/jd/avatar_project/avatar_project_legacy`. Not recommended, since it breaks the 35 symlinks again. |
 
 ## 3. Runway submission and billing hardening

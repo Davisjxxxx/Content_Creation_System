@@ -34,7 +34,10 @@ JS_API_METHODS: tuple[str, ...] = (
     "runway_reconcile_task", "runway_resolve_charge", "runway_save_key", "runway_spend", "runway_status",
     "runway_unresolved", "runway_voice_create", "runway_voice_preview",
     "save_adult_prompt_option", "save_settings", "scenes_delete", "scenes_list", "scenes_save",
-    "script_analyze", "ui_test_report", "vault_apply", "vault_delete", "vault_list", "vault_save",
+    "script_analyze",
+    "studio_go", "studio_image", "studio_pick", "studio_price", "studio_state", "studio_talker_status",
+    "studio_thumb",
+    "ui_test_report", "vault_apply", "vault_delete", "vault_list", "vault_save",
     "verify_outputs", "voice_profile_save", "voice_profiles_list", "voiceover_decide", "voiceover_import",
     "voiceover_list",
 )

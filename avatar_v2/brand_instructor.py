@@ -54,6 +54,49 @@ IDENTITY_PROMPT_COMPACT = (
     "natural studio light, neutral background, direct eye contact, calm and confident."
 )
 
+# Studio "looks": alternative identity descriptions for designing the master photo. "natural" is
+# the default because the brief asks for subtle makeup and real skin; "original" is the text above.
+LOOKS: dict[str, dict[str, str]] = {
+    "natural": {
+        "label": "Natural",
+        "hint": "Everyday look, very little makeup",
+        "prompt": (
+            "Fictional 26-year-old woman: approachable, intelligent and natural, attractive in an everyday way. "
+            "Natural brunette hair without highlights, realistic strands, brown eyes, believable proportions with "
+            "subtle asymmetry, matte skin with visible pores, minimal makeup and no eyeliner, natural brows and lip "
+            "colour, smart-casual professional clothing. Soft natural studio light, neutral background, calm and "
+            "confident."
+        ),
+    },
+    "polished": {
+        "label": "Polished",
+        "hint": "Camera-ready, soft makeup",
+        "prompt": (
+            "Fictional 26-year-old woman: polished, intelligent, approachable and professional. Neatly styled natural "
+            "brunette hair with realistic strands, brown eyes, believable proportions with subtle asymmetry, real skin "
+            "texture with visible pores, soft professional makeup, natural lips, tailored smart-casual clothing. Soft "
+            "natural studio light, neutral background, calm and confident."
+        ),
+    },
+    "original": {
+        "label": "Original",
+        "hint": "The BRAND description as written",
+        "prompt": IDENTITY_PROMPT_COMPACT,
+    },
+}
+DEFAULT_LOOK = "natural"
+LOOK_EXTRA_MAX = 160
+
+
+def look_prompt(look: str, extra: str = "") -> str:
+    """Identity description for a Studio look, plus the user's optional extra details."""
+    base = LOOKS.get(str(look), LOOKS[DEFAULT_LOOK])["prompt"]
+    extra = " ".join(str(extra or "").split())[:LOOK_EXTRA_MAX].strip()
+    if not extra:
+        return base
+    return f"{base} {extra if extra[-1] in '.!?' else extra + '.'}"
+
+
 # Positive restatement of the exclusions for providers without negative prompts.
 REALISM_GUARDS = (
     "Skin keeps its real texture with a natural matte sheen rather than an airbrushed finish; the face keeps subtle "

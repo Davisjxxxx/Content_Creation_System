@@ -21,6 +21,7 @@ from .candidate_qa import compare_candidate_to_reference
 from .composer import build_job
 from . import brand_instructor
 from .desktop_presenter import PresenterMixin
+from .desktop_studio import StudioMixin
 from .integrity import sha256_file
 from .voiceover import apply_pronunciations
 from .avatar_designer import build_designer_prompt, coverage_report, designer_spec, slot_by_id
@@ -100,39 +101,35 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "adult_prompt_custom": {},
     "vision_classifier_url": "http://127.0.0.1:11434",
     "vision_classifier_model": "qwen3-vl:8b-instruct",
-    # Runway cloud provider: off until the user enables it AND consents to uploads.
-    "runway_enabled": False,
-    "runway_upload_consent": False,
+    # Runway cloud provider: ready as soon as an API key is saved. Spending limits are optional
+    # and off by default (0 = no limit); they only apply when the owner sets one.
     "runway_default_image_model": "gen4_image",
     "runway_default_video_model": "gen4.5",
-    "runway_max_credits_per_job": 150,
-    "runway_max_credits_per_batch": 400,
+    "runway_job_limit": 0,
+    "runway_batch_limit": 0,
+    "runway_daily_limit": 0,
+    "runway_monthly_limit": 0,
     "runway_poll_interval_s": 6,
     "runway_timeout_s": 1800,
-    "runway_daily_credit_cap": 300,
-    "runway_monthly_credit_cap": 3000,
 }
 
 _RUNWAY_NUMERIC_SETTINGS = (
-    ("runway_max_credits_per_job", 1, 5000),
-    ("runway_max_credits_per_batch", 1, 20000),
+    ("runway_job_limit", 0, 100000),
+    ("runway_batch_limit", 0, 1000000),
     ("runway_poll_interval_s", 5, 60),
     ("runway_timeout_s", 60, 7200),
-    ("runway_daily_credit_cap", 1, 100000),
-    ("runway_monthly_credit_cap", 1, 1000000),
+    ("runway_daily_limit", 0, 1000000),
+    ("runway_monthly_limit", 0, 10000000),
 )
 
 
 def _sanitize_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
-    """Drop credential-like keys and coerce Runway settings to safe, documented values."""
+    """Drop credential-like keys and coerce Runway settings to documented values."""
     clean = {
         str(key): value
         for key, value in (settings or {}).items()
         if not SECRET_SETTING_PATTERN.search(str(key))
     }
-    for key in ("runway_enabled", "runway_upload_consent"):
-        if key in clean:
-            clean[key] = clean[key] is True
     for key, low, high in _RUNWAY_NUMERIC_SETTINGS:
         if key in clean:
             try:
@@ -234,7 +231,7 @@ def _reference_bindings(job: RenderJob, resolved: dict[str, Any] | None = None) 
     return summary
 
 
-class DesktopAPI(PresenterMixin):
+class DesktopAPI(StudioMixin, PresenterMixin):
     def __init__(self) -> None:
         self._self_window = None
         APP_HOME.mkdir(parents=True, exist_ok=True)
@@ -1720,24 +1717,34 @@ class DesktopAPI(PresenterMixin):
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    # ------------------------------------------------------------------ Runway (cloud, explicit opt-in)
+    # ------------------------------------------------------------------ Runway (cloud)
     #
-    # Every gate below reads the *persisted* settings only. UI payloads may carry a settings
-    # override for local rendering, but they can never enable Runway, grant upload consent, or
-    # raise a credit cap for a cloud job.
+    # Runway is ready as soon as an API key is saved. Jobs queue on one click; the cost is shown
+    # before you click and recorded afterwards. Spending limits apply only when the owner sets one
+    # (read from the *persisted* settings, never from a UI payload). The app never resubmits a
+    # paid job on its own.
+
+    @staticmethod
+    def _runway_limit(settings: dict[str, Any], key: str) -> int:
+        try:
+            return max(int(settings.get(key) or 0), 0)
+        except (TypeError, ValueError):
+            return 0
 
     def _runway_public_status(self, settings: dict[str, Any]) -> dict[str, Any]:
+        key = secret_status("runway")
         return {
-            "enabled": bool(settings.get("runway_enabled")),
-            "upload_consent": bool(settings.get("runway_upload_consent")),
-            "key": secret_status("runway"),
+            "ready": bool(key.get("configured")),
+            "key": key,
             "models": runway_api.models_payload(),
             "variations": variations_payload(),
             "voices": list(runway_api.VOICE_PRESETS),
             "avatar_presets": list(runway_api.AVATAR_PRESETS),
             "limits": {
-                "max_credits_per_job": int(settings.get("runway_max_credits_per_job") or 150),
-                "max_credits_per_batch": int(settings.get("runway_max_credits_per_batch") or 400),
+                "job": self._runway_limit(settings, "runway_job_limit"),
+                "batch": self._runway_limit(settings, "runway_batch_limit"),
+                "daily": self._runway_limit(settings, "runway_daily_limit"),
+                "monthly": self._runway_limit(settings, "runway_monthly_limit"),
             },
             "default_personality": DEFAULT_PRESENTER_PERSONALITY,
             "api_version": runway_api.RUNWAY_API_VERSION,
@@ -1766,18 +1773,12 @@ class DesktopAPI(PresenterMixin):
         return {"ok": True, "removed": removed, "key": status, "note": note}
 
     @staticmethod
-    def _runway_gate(settings: dict[str, Any], *, uploads: bool) -> str | None:
-        if not settings.get("runway_enabled"):
-            return "Runway is disabled. Enable it under Advanced → Runway cloud provider."
-        if uploads and not settings.get("runway_upload_consent"):
-            return (
-                "Runway jobs upload the compiled prompt and the selected reference files to Runway. "
-                "Confirm that under Advanced → Runway cloud provider first."
-            )
+    def _runway_gate(settings: dict[str, Any] | None = None, *, uploads: bool = False) -> str | None:
+        """The only thing a Runway call needs is an API key; there is no enable or consent switch."""
         if not secret_status("runway")["configured"]:
             return (
-                "No Runway API key is configured. Add one under Advanced → Runway cloud provider, "
-                "or set RUNWAYML_API_SECRET."
+                "Add your Runway API key first: Studio → Connect Runway, or run scripts/set_runway_key.sh "
+                "(or set RUNWAYML_API_SECRET)."
             )
         return None
 
@@ -1893,7 +1894,9 @@ class DesktopAPI(PresenterMixin):
             human_subject = "human" if model.max_human_refs else None
             if avatar.identity_refs:
                 identity_tag = "presenter"
-                self._enforce_identity_lock(lock, job.asset_map.get("IDENTITY_REF_1"), role="primary identity reference")
+                drift = self._identity_drift_warning(lock, job.asset_map.get("IDENTITY_REF_1"), role="primary identity reference")
+                if drift:
+                    warnings.append(drift)
                 references.append(
                     {"asset": "IDENTITY_REF_1", "tag": identity_tag, "subject": human_subject, "role": "primary identity"}
                 )
@@ -1972,7 +1975,9 @@ class DesktopAPI(PresenterMixin):
                 raise runway_api.RunwayValidationError("Set the presenter still (primary identity) as the Act-Two character.")
             if not job.asset_map.get("MOTION_VIDEO"):
                 raise runway_api.RunwayValidationError("Select a 3-30 s performance video in the Motion video slot.")
-            self._enforce_identity_lock(lock, job.asset_map.get("INIT_IMAGE"), role="Act-Two character image", any_approved=True)
+            drift = self._identity_drift_warning(lock, job.asset_map.get("INIT_IMAGE"), role="Act-Two character image", any_approved=True)
+            if drift:
+                warnings.append(drift)
             output_audio = str(options.get("output_audio") or ("voiceover" if options.get("voiceover_id") else "mute"))
             params = {
                 "ratio": ratio,
@@ -2004,8 +2009,8 @@ class DesktopAPI(PresenterMixin):
                 )
             if options.get("speech") == "audio":
                 speech: dict[str, Any] = {"type": "audio"}
-                job.asset_map["RUNWAY_NARRATION"] = self._approved_narration(options, job)
-                media = {"speech_audio": {"asset": "RUNWAY_NARRATION", "role": "approved narration audio"}}
+                job.asset_map["RUNWAY_NARRATION"] = self._narration_file(options, job)
+                media = {"speech_audio": {"asset": "RUNWAY_NARRATION", "role": "narration audio"}}
             else:
                 speech = {"type": "text", "text": str(options.get("script") or "").strip()}
                 voice = str(options.get("voice") or "").strip()
@@ -2064,9 +2069,9 @@ class DesktopAPI(PresenterMixin):
                 f"The performance video is {reference_seconds:.1f} s; Act-Two needs 3-30 s."
             )
         estimate = runway_api.estimate_credits(model.id, params, facts)
-        cap = int(settings.get("runway_max_credits_per_job") or 150)
+        cap = self._runway_limit(settings, "runway_job_limit")  # 0 = no limit (the default)
         spec["estimate"] = estimate
-        spec["max_credits"] = cap
+        spec["max_credits"] = cap or None
 
         spoken = str((params.get("speech") or {}).get("text") or "")
         job.prompt = prompt or spoken or f"Runway {model.label}"
@@ -2079,11 +2084,13 @@ class DesktopAPI(PresenterMixin):
             "model": model.id,
             "task": task,
             "estimate_credits": estimate["credits"],
-            "reason": f"Explicit Runway cloud job · {model.label}",
+            "reason": f"Runway cloud job · {model.label}",
         }
         if post:
             runtime.update(post)
             runtime["candidate_qa"] = True  # routes the finished job through _runway_postprocess
+        if payload.get("studio_action"):
+            runtime["studio_action"] = str(payload["studio_action"])[:32]
         return {
             "job": job,
             "spec": spec,
@@ -2124,32 +2131,36 @@ class DesktopAPI(PresenterMixin):
             return builds
         return [{"key": None, "label": None, "build": self._runway_build(payload)}]
 
-    @staticmethod
-    def _runway_confirmation_error(payload: dict[str, Any], credits: int) -> str | None:
-        if payload.get("confirm_cloud_upload") is not True:
-            return "Confirm the Runway upload and cost in the confirmation dialog before queueing."
-        try:
-            confirmed = float(payload.get("confirmed_estimate_credits"))
-        except (TypeError, ValueError):
-            return "Run Estimate first so the cost you confirm matches this job."
-        if confirmed + 1e-9 < credits:
-            return f"The estimate is now {credits} credits (you confirmed {confirmed:g}). Estimate again and re-confirm."
-        return None
+    def _runway_limit_error(self, builds: list[dict[str, Any]], settings: dict[str, Any], total: float) -> str | None:
+        """Only limits the owner set themselves can stop a job (all are off by default)."""
+        job_limit = self._runway_limit(settings, "runway_job_limit")
+        if job_limit:
+            for entry in builds:
+                credits = entry["build"]["estimate"]["credits"]
+                if credits > job_limit:
+                    return (
+                        f"This job is about {credits:g} credits, above the per-job limit you set ({job_limit}). "
+                        "Change or clear it under Advanced → Runway."
+                    )
+        batch_limit = self._runway_limit(settings, "runway_batch_limit")
+        if batch_limit and len(builds) > 1 and total > batch_limit:
+            return (
+                f"This batch is about {total:g} credits, above the batch limit you set ({batch_limit}). "
+                "Change or clear it under Advanced → Runway."
+            )
+        budget = self._budget_status(settings, total)
+        return budget["error"]
 
     def runway_estimate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Local preview of a Runway job: model, cost, uploads, compiled prompt, readiness. No network."""
+        """Local preview of a Runway job: model, cost, uploads, compiled prompt. No network."""
         try:
             builds = self._runway_builds(payload)
         except (runway_api.RunwayError, PolicyError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
         first = builds[0]["build"]
+        settings = first["settings"]
         total = sum(entry["build"]["estimate"]["credits"] for entry in builds)
         batch = len(builds) > 1 or bool(builds[0]["key"])
-        cap = first["cap"]
-        batch_cap = int(first["settings"].get("runway_max_credits_per_batch") or 400)
-        within_cap = all(entry["build"]["estimate"]["credits"] <= entry["build"]["cap"] for entry in builds) and (
-            not batch or total <= batch_cap
-        )
         estimate = dict(first["estimate"])
         if batch:
             estimate.update(
@@ -2164,6 +2175,7 @@ class DesktopAPI(PresenterMixin):
             for item in entry["build"]["uploads"]:
                 if item not in uploads:
                     uploads.append(item)
+        limit_error = self._runway_limit_error(builds, settings, total)
         return {
             "ok": True,
             "model": first["model"].public(),
@@ -2174,16 +2186,18 @@ class DesktopAPI(PresenterMixin):
                 for entry in builds
                 if entry["label"]
             ],
-            "cap": batch_cap if batch else cap,
-            "within_cap": within_cap,
-            "budget": self._budget_status(first["settings"], total),
+            # Limits are optional; 0 means none is set.
+            "cap": self._runway_limit(settings, "runway_batch_limit" if batch else "runway_job_limit"),
+            "within_cap": limit_error is None,
+            "limit_error": limit_error,
+            "budget": self._budget_status(settings, total),
             "unresolved": self._unresolved_summary(),
             "uploads": uploads,
             "warnings": first["warnings"],
             "prompt": first["prompt"],
             "prompt_receipt": first["prompt_receipt"],
             "identity": first["spec"].get("identity"),
-            "gate": self._runway_gate(first["settings"], uploads=True),
+            "gate": self._runway_gate(settings),
         }
 
     def _runway_queue_item(self, build: dict[str, Any], payload: dict[str, Any], label: str) -> QueuedRender:
@@ -2207,39 +2221,20 @@ class DesktopAPI(PresenterMixin):
         )
 
     def queue_runway(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Queue a confirmed Runway job, slot-variation batch, or seeded candidate batch."""
+        """Queue a Runway job, slot-variation batch, or seeded candidate batch on one click."""
         try:
             builds = self._runway_builds(payload)
         except (runway_api.RunwayError, PolicyError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
         settings = builds[0]["build"]["settings"]
-        blocked = self._runway_gate(settings, uploads=True)
-        if blocked:
-            return {"ok": False, "error": blocked}
+        missing_key = self._runway_gate(settings)
+        if missing_key:
+            return {"ok": False, "error": missing_key}
         total = sum(entry["build"]["estimate"]["credits"] for entry in builds)
-        confirmation = self._runway_confirmation_error(payload, total)
-        if confirmation:
-            return {"ok": False, "error": confirmation}
-        for entry in builds:
-            build = entry["build"]
-            if build["estimate"]["credits"] > build["cap"]:
-                return {
-                    "ok": False,
-                    "error": f"Estimated {build['estimate']['credits']} credits exceeds the per-job cap of "
-                    f"{build['cap']}. Raise the cap under Advanced → Runway only if that cost is intended.",
-                }
-        batch_cap = int(settings.get("runway_max_credits_per_batch") or 400)
-        if len(builds) > 1 and total > batch_cap:
-            return {
-                "ok": False,
-                "error": f"The batch would use {total} credits, above the {batch_cap}-credit batch cap.",
-            }
+        limit_error = self._runway_limit_error(builds, settings, total)
+        if limit_error:
+            return {"ok": False, "error": limit_error, "budget": self._budget_status(settings, total)}
         budget = self._budget_status(settings, total)
-        if not budget["ok"]:
-            return {"ok": False, "error": budget["error"], "budget": budget}
-        guard = self._unresolved_guard(payload)
-        if guard:
-            return {"ok": False, "error": guard, "unresolved": self._unresolved_summary()}
         base_label = str(payload.get("label") or "").strip()
         items = []
         for entry in builds:
@@ -2258,6 +2253,7 @@ class DesktopAPI(PresenterMixin):
             ],
             "total_credits": total,
             "budget": budget,
+            "unresolved": self._unresolved_summary(),
             "runtime": builds[0]["build"]["runtime"],
             "warnings": builds[0]["build"]["warnings"],
         }
@@ -2295,11 +2291,9 @@ class DesktopAPI(PresenterMixin):
 
     def runway_avatar_create(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Upload the approved presenter still and create a Runway custom avatar for lip-synced videos."""
-        blocked = self._runway_gate(self._settings(), uploads=True)
+        blocked = self._runway_gate()
         if blocked:
             return {"ok": False, "error": blocked}
-        if payload.get("confirm_cloud_upload") is not True:
-            return {"ok": False, "error": "Confirm that the presenter image will be uploaded to Runway."}
         try:
             avatar, shot = self._models_from_payload(
                 {
@@ -2316,9 +2310,9 @@ class DesktopAPI(PresenterMixin):
         if not reference:
             return {"ok": False, "error": "Set the approved presenter still as the primary identity first."}
         name = (str(payload.get("name") or avatar.display_name or "Presenter").strip() or "Presenter")[:50]
-        voice = str(payload.get("voice") or "").strip()
+        voice = str(payload.get("voice") or "").strip() or runway_api.DEFAULT_AVATAR_VOICE
         if voice not in runway_api.VOICE_PRESETS:
-            return {"ok": False, "error": "Choose one of Runway's preset voices for the avatar."}
+            return {"ok": False, "error": f"'{voice}' is not one of Runway's avatar voices: {', '.join(runway_api.VOICE_PRESETS)}."}
         personality = (
             str(payload.get("personality") or "").strip() or DEFAULT_PRESENTER_PERSONALITY.format(name=name)
         )[:10000]
@@ -2349,6 +2343,7 @@ class DesktopAPI(PresenterMixin):
                 "voice": voice,
                 "reference_file": Path(reference).name,
                 "reference_sha256": prepared.sha256[:16],
+                "source_sha256": sha256_file(reference),
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             _write_json(RUNWAY_AVATARS_PATH, index)

@@ -11,6 +11,7 @@ import pytest
 from PIL import Image
 
 from avatar_v2 import desktop, render_queue, secret_store
+from avatar_v2.integrity import sha256_file
 from avatar_v2.composer import build_job
 from avatar_v2.desktop import DesktopAPI
 from avatar_v2.models import AvatarManifest, ProviderConfig, ShotSpec
@@ -74,8 +75,10 @@ def api(tmp_path, monkeypatch):
     return instance
 
 
-def _enable(api, *, consent=True, key=True, **extra):
-    api.save_settings({"runway_enabled": True, "runway_upload_consent": consent, **extra})
+def _enable(api, *, key=True, **extra):
+    """Runway needs only a saved key; ``extra`` sets optional owner limits."""
+    if extra:
+        api.save_settings(extra)
     if key:
         assert api.runway_save_key(KEY)["ok"] is True
 
@@ -115,6 +118,7 @@ def _payload(tmp_path, *, task="still", kind="synthetic", content="general", ref
 
 
 def _confirm(payload, credits):
+    """Legacy confirmation fields: still accepted, no longer required."""
     return {**payload, "confirm_cloud_upload": True, "confirmed_estimate_credits": credits}
 
 
@@ -126,16 +130,17 @@ def test_settings_never_persist_or_expose_credentials(api, tmp_path):
         {
             "runway_api_key": "x" * 32,
             "RUNWAY_SECRET": "y" * 32,
-            "runway_enabled": "yes",
-            "runway_max_credits_per_job": 999999,
+            "runway_job_limit": 999999,
+            "runway_daily_limit": -5,
             "runway_default_video_model": "gen4_image",
         }
     )["settings"]
     stored = json.loads((tmp_path / "desktop.json").read_text())
     for blob in (saved, stored):
         assert "runway_api_key" not in blob and "RUNWAY_SECRET" not in blob
-    assert stored["runway_enabled"] is False  # only a real boolean true enables it
-    assert stored["runway_max_credits_per_job"] == 5000
+    assert stored["runway_job_limit"] == 100000  # clamped to the documented range
+    assert stored["runway_daily_limit"] == 0  # 0 means no limit
+    assert stored["runway_monthly_limit"] == 0 and stored["runway_batch_limit"] == 0  # off by default
     assert stored["runway_default_video_model"] == "gen4.5"
 
     (tmp_path / "desktop.json").write_text(json.dumps({"legacy_api_key": "z" * 32}))
@@ -143,7 +148,8 @@ def test_settings_never_persist_or_expose_credentials(api, tmp_path):
     assert "legacy_api_key" not in state["settings"]
     assert "z" * 32 not in json.dumps(state)
     assert {engine["id"] for engine in state["engines"]} >= {"h3_ref2va", "runway"}
-    assert state["runway"]["enabled"] is False and state["runway"]["key"]["configured"] is False
+    assert state["runway"]["ready"] is False and state["runway"]["key"]["configured"] is False
+    assert state["runway"]["limits"] == {"job": 0, "batch": 0, "daily": 0, "monthly": 0}
 
 
 def test_key_management_never_echoes_the_key(api):
@@ -171,42 +177,39 @@ def test_local_queue_render_refuses_cloud_engine(api, tmp_path):
 # --------------------------------------------------------------------------- gates
 
 
-def test_queue_runway_requires_enable_consent_key_confirmation_and_matching_estimate(api, tmp_path):
+def test_queue_runway_needs_only_a_key_and_no_confirmation(api, tmp_path):
     payload = _payload(tmp_path, ratio="1080:1440")
     estimate = api.runway_estimate(payload)
-    assert estimate["ok"] is True and "disabled" in estimate["gate"]
+    assert estimate["ok"] is True and "API key" in estimate["gate"]
     credits = estimate["estimate"]["credits"]
-    assert credits == 8
+    assert credits == 8 and estimate["within_cap"] is True and estimate["cap"] == 0
 
-    assert "disabled" in api.queue_runway(_confirm(payload, credits))["error"]
-    _enable(api, consent=False, key=False)
-    assert "Confirm that under Advanced" in api.queue_runway(_confirm(payload, credits))["error"]
-    api.save_settings({"runway_upload_consent": True})
-    assert "No Runway API key" in api.queue_runway(_confirm(payload, credits))["error"]
-    api.runway_save_key(KEY)
-    assert "confirmation dialog" in api.queue_runway(payload)["error"]
-    assert "Estimate again" in api.queue_runway(_confirm(payload, 2))["error"]
+    missing = api.queue_runway(payload)
+    assert missing["ok"] is False and "API key" in missing["error"]
     assert api.queue.items == []
+    api.runway_save_key(KEY)
+    assert api.runway_estimate(payload)["gate"] is None
 
-    result = api.queue_runway(_confirm(payload, credits))
-    assert result["ok"] is True
+    result = api.queue_runway(payload)  # no enable switch, consent box, confirmation or estimate echo
+    assert result["ok"] is True and result["total_credits"] == 8
     item = api.queue.items[0]
     assert item.provider_config.provider == "runway"
     assert item.provider_config.base_url == runway_api.RUNWAY_API_BASE
     assert item.profile == "cloud_runway" and item.workflow == "runway:still:gen4_image"
     assert item.job.shot.local_only is False and item.job.selected_engine == "runway"
     spec = json.loads(item.job.asset_map["RUNWAY_SPEC"])
-    assert spec["max_credits"] == 150 and spec["estimate"]["credits"] == 8
+    assert spec["max_credits"] is None and spec["estimate"]["credits"] == 8  # no per-job limit by default
     assert spec["media"]["references"] == [{"asset": "IDENTITY_REF_1", "tag": "presenter", "role": "primary identity"}]
     assert "@presenter" in spec["params"]["prompt"]
 
 
-def test_payload_settings_cannot_enable_runway_or_grant_consent(api, tmp_path):
-    api.runway_save_key(KEY)
+def test_payload_settings_cannot_change_the_owners_limits(api, tmp_path):
+    _enable(api, runway_job_limit=5)
     payload = _payload(tmp_path)
-    payload["settings"] = {"runway_enabled": True, "runway_upload_consent": True, "runway_max_credits_per_job": 99999}
-    credits = api.runway_estimate(payload)["estimate"]["credits"]
-    assert "disabled" in api.queue_runway(_confirm(payload, credits))["error"]
+    payload["settings"] = {"runway_job_limit": 0, "runway_daily_limit": 0}
+    blocked = api.queue_runway(payload)
+    assert blocked["ok"] is False and "limit you set" in blocked["error"]
+    assert api.queue.items == []
 
 
 def test_cloud_policy_blocks_adult_classes_and_unknown_provenance(api, tmp_path):
@@ -226,14 +229,22 @@ def test_cloud_policy_blocks_adult_classes_and_unknown_provenance(api, tmp_path)
     assert evaluate_cloud_policy(avatar, shot).allowed is False
 
 
-def test_per_job_cap_blocks_expensive_jobs_before_anything_is_sent(api, tmp_path):
-    _enable(api, runway_max_credits_per_job=10)
+def test_per_job_limit_applies_only_when_the_owner_sets_one(api, tmp_path):
     payload = _payload(tmp_path, task="image_to_video", model="gen4.5", ratio="720:1280", duration=5)
+    _enable(api)
+    unlimited = api.runway_estimate(payload)
+    assert unlimited["estimate"]["credits"] == 60 and unlimited["within_cap"] is True
+    assert api.queue_runway(payload)["ok"] is True
+
+    api.queue.items.clear()
+    api.save_settings({"runway_job_limit": 10})
     estimate = api.runway_estimate(payload)
-    assert estimate["estimate"]["credits"] == 60 and estimate["within_cap"] is False
-    result = api.queue_runway(_confirm(payload, 60))
-    assert result["ok"] is False and "per-job cap" in result["error"]
+    assert estimate["within_cap"] is False and "per-job limit you set (10)" in estimate["limit_error"]
+    result = api.queue_runway(payload)
+    assert result["ok"] is False and "per-job limit you set" in result["error"]
     assert api.queue.items == []
+    spec_limit = api._runway_build(payload)["spec"]["max_credits"]
+    assert spec_limit == 10  # the provider cancels a task Runway estimates above it
 
 
 # --------------------------------------------------------------------------- task builds
@@ -340,13 +351,13 @@ def test_upscale_prices_from_the_real_image_size(api, tmp_path):
     assert [item["file"] for item in explicit["uploads"]] == ["s.png"]
 
 
-def test_variation_batch_reuses_identity_and_seed_and_respects_batch_cap(api, tmp_path):
+def test_variation_batch_reuses_identity_and_seed_and_respects_a_set_batch_limit(api, tmp_path):
     ids = [item["id"] for item in PRESENTER_VARIATIONS[:3]]
     payload = _payload(tmp_path, task="variations", ratio="1080:1440", variations=ids)
     _enable(api)
     estimate = api.runway_estimate(payload)
     assert estimate["estimate"]["credits"] == 24 and len(estimate["breakdown"]) == 3
-    result = api.queue_runway(_confirm(payload, 24))
+    result = api.queue_runway(payload)
     assert result["ok"] is True and [entry["variation"] for entry in result["queued"]] == ids
     specs = [json.loads(item.job.asset_map["RUNWAY_SPEC"]) for item in api.queue.items]
     assert {spec["params"]["seed"] for spec in specs} == {41001}
@@ -356,9 +367,9 @@ def test_variation_batch_reuses_identity_and_seed_and_respects_batch_cap(api, tm
     assert "presenter variation" in api.queue.items[0].label
 
     api.queue.items.clear()
-    api.save_settings({"runway_max_credits_per_batch": 10})
-    blocked = api.queue_runway(_confirm(payload, 24))
-    assert blocked["ok"] is False and "batch cap" in blocked["error"]
+    api.save_settings({"runway_batch_limit": 10})
+    blocked = api.queue_runway(payload)
+    assert blocked["ok"] is False and "batch limit you set" in blocked["error"]
     assert "Choose at least one" in api.runway_estimate(_payload(tmp_path, task="variations", variations=[]))["error"]
 
 
@@ -394,11 +405,11 @@ class FakeClient:
         self.calls.append(("delete_avatar", avatar_id))
 
 
-def test_account_check_requires_enable_and_reports_balance(api, monkeypatch):
+def test_account_check_needs_only_a_key_and_reports_balance(api, monkeypatch):
     fake = FakeClient()
     monkeypatch.setattr(runway_api, "client_from_store", lambda **_kw: fake)
-    assert "disabled" in api.runway_check()["error"]
-    _enable(api, consent=False)
+    assert "API key" in api.runway_check()["error"]
+    _enable(api)
     result = api.runway_check()
     assert result == {"ok": True, "credit_balance": 1234, "max_monthly_credit_spend": 50000, "models_with_limits": ["gen4.5"]}
 
@@ -408,14 +419,13 @@ def test_avatar_creation_uploads_primary_identity_and_links_the_vault_profile(ap
     monkeypatch.setattr(runway_api, "client_from_store", lambda **_kw: fake)
     payload = _payload(tmp_path)
     request = {"avatar": payload["avatar"], "name": "Course Presenter", "voice": "clara"}
-    assert "disabled" in api.runway_avatar_create(request)["error"]
+    assert "API key" in api.runway_avatar_create(request)["error"]
     _enable(api)
-    assert "uploaded to Runway" in api.runway_avatar_create(request)["error"]
-    assert "preset voices" in api.runway_avatar_create({**request, "voice": "robot", "confirm_cloud_upload": True})["error"]
-    unknown = {**request, "confirm_cloud_upload": True, "avatar": {**payload["avatar"], "subject_kind": "unknown"}}
-    assert "declared provenance" in api.runway_avatar_create(unknown)["error"]
+    assert "avatar voices" in api.runway_avatar_create({**request, "voice": "robot"})["error"]
+    unknown = {**request, "avatar": {**payload["avatar"], "subject_kind": "unknown"}}
+    assert "declared provenance" in api.runway_avatar_create(unknown)["error"]  # third-party likeness rule stays
 
-    created = api.runway_avatar_create({**request, "confirm_cloud_upload": True})
+    created = api.runway_avatar_create(request)  # no confirmation step
     assert created["ok"] is True and created["avatar"]["id"] == AVATAR_UUID
     body = next(call[1] for call in fake.calls if call[0] == "create_avatar")
     assert body["voice"] == {"type": "runway-live-preset", "presetId": "clara"}
@@ -424,6 +434,7 @@ def test_avatar_creation_uploads_primary_identity_and_links_the_vault_profile(ap
     index = json.loads((tmp_path / "runway_avatars.json").read_text())
     assert index[AVATAR_UUID]["vault_avatar_id"] == "brand-presenter"
     assert index[AVATAR_UUID]["reference_file"] == "front.png"
+    assert index[AVATAR_UUID]["source_sha256"] == sha256_file(tmp_path / "front.png")
 
     listed = api.runway_avatars_list()
     assert listed["items"][0]["vault_avatar_id"] == "brand-presenter"

@@ -69,36 +69,39 @@ class PresenterMixin:
         return lock
 
     @staticmethod
-    def _enforce_identity_lock(lock: dict[str, Any], path: Any, *, role: str, any_approved: bool = False) -> None:
-        """Refuse to switch the character silently: identity uploads must match approved references."""
+    def _identity_drift_warning(lock: dict[str, Any], path: Any, *, role: str, any_approved: bool = False) -> str | None:
+        """Note (never block) when an identity image is not one of the profile's chosen references."""
         approved = lock.get("approved") or {}
         if not approved or not path:
-            return
-        digest = sha256_file(path)
-        allowed = set(approved.values()) if any_approved else {approved.get("front")}
+            return None
         if lock.get("master_sha256") is None and not any_approved:
-            return
-        if digest not in allowed:
-            raise runway_api.RunwayValidationError(
-                f"The {role} is not the approved {'reference set' if any_approved else 'master identity'} for this "
-                "profile (its content hash differs). Apply the profile from Build Avatar or approve the new image "
-                "first, so the character never changes silently."
-            )
-
-    def _approved_narration(self, options: dict[str, Any], job: Any) -> str:
-        store = self._voiceovers()
-        if options.get("voiceover_id"):
-            return store.approved_path(str(options["voiceover_id"]))
-        audio = job.asset_map.get("AUDIO")
-        if audio and store.approved_by_hash(audio):
-            return str(audio)
-        raise runway_api.RunwayValidationError(
-            "Talking-head audio must be an approved narration. Import or generate it under Voice & narration and "
-            "approve it first."
+            return None
+        allowed = set(approved.values()) if any_approved else {approved.get("front")}
+        if sha256_file(path) in allowed:
+            return None
+        return (
+            f"The {role} is not the chosen {'reference set' if any_approved else 'master photo'} for this profile, "
+            "so her face may come out different."
         )
 
+    def _narration_file(self, options: dict[str, Any], job: Any) -> str:
+        """Any narration from the library (or an audio file you picked); no approval step."""
+        if options.get("voiceover_id"):
+            record = self._voiceovers().get(str(options["voiceover_id"]))
+            if not record:
+                raise runway_api.RunwayValidationError("That voiceover is no longer in the library.")
+            if not Path(str(record.get("path") or "")).is_file():
+                raise runway_api.RunwayValidationError(
+                    f"The voiceover file for '{record.get('label') or record['id']}' is missing; make or import it again."
+                )
+            return str(record["path"])
+        audio = job.asset_map.get("AUDIO")
+        if audio and Path(str(audio)).is_file():
+            return str(audio)
+        raise runway_api.RunwayValidationError("Pick a voiceover (or an audio file) for her to speak.")
+
     def _attach_voiceover(self, options: dict[str, Any], job: Any, local_media: dict[str, Any]) -> None:
-        job.asset_map["RUNWAY_VOICEOVER"] = self._approved_narration(options, job)
+        job.asset_map["RUNWAY_VOICEOVER"] = self._narration_file(options, job)
         local_media["voiceover"] = {"asset": "RUNWAY_VOICEOVER"}
 
     # ------------------------------------------------------------------ budgets and cost accounting
@@ -115,17 +118,24 @@ class PresenterMixin:
         return total
 
     def _budget_status(self, settings: dict[str, Any], credits: float) -> dict[str, Any]:
+        """Spend so far plus this job. Daily/monthly limits are optional (0 = none, the default)."""
         summary = cloud_ledger.spend_summary(_desktop().CLOUD_LEDGER_PATH)
         pending = self._pending_cloud_estimates()
-        daily_cap = int(settings.get("runway_daily_credit_cap") or 300)
-        monthly_cap = int(settings.get("runway_monthly_credit_cap") or 3000)
+        daily_cap = self._runway_limit(settings, "runway_daily_limit")
+        monthly_cap = self._runway_limit(settings, "runway_monthly_limit")
         today = summary["today_total"] + pending + float(credits)
         month = summary["month_total"] + pending + float(credits)
         error = None
-        if today > daily_cap:
-            error = f"This would bring today's Runway spend to {today:g} credits, above the daily cap of {daily_cap}."
-        elif month > monthly_cap:
-            error = f"This would bring this month's Runway spend to {month:g} credits, above the monthly cap of {monthly_cap}."
+        if daily_cap and today > daily_cap:
+            error = (
+                f"This would bring today's Runway spend to {today:g} credits, above the daily limit you set "
+                f"({daily_cap}). Change or clear it under Advanced → Runway."
+            )
+        elif monthly_cap and month > monthly_cap:
+            error = (
+                f"This would bring this month's Runway spend to {month:g} credits, above the monthly limit you set "
+                f"({monthly_cap}). Change or clear it under Advanced → Runway."
+            )
         return {
             "ok": error is None,
             "error": error,
@@ -227,17 +237,6 @@ class PresenterMixin:
         return {"ok": True, "terminal": True, "status": result["status"], "outputs": outputs,
                 "output_hashes": {path: sha256_file(path) for path in outputs}, "charge_status": charge,
                 "credits_charged": receipt.get("credits_charged")}
-
-    def _unresolved_guard(self, payload: dict[str, Any]) -> str | None:
-        """Unknown earlier charges require an explicit acknowledgement before any new paid job."""
-        unresolved = self._unresolved_summary()
-        if unresolved["count"] and payload.get("acknowledge_unresolved") is not True:
-            return (
-                f"{unresolved['count']} earlier Runway submission(s) have unknown charges ({unresolved['credits']:g} "
-                "credits reserved). Resolve them under Presenter → Providers & budget, or confirm that you are "
-                "deliberately submitting new work anyway."
-            )
-        return None
 
     def runway_spend(self) -> dict[str, Any]:
         settings = self._settings()
@@ -419,14 +418,8 @@ class PresenterMixin:
             return {"ok": False, "error": str(exc)}
 
     def voiceover_import(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Copy prerecorded narration into the library (pending approval). Authorization is required."""
-        authorization = str(payload.get("authorization") or "").strip()
-        if len(authorization) < 10:
-            return {
-                "ok": False,
-                "error": "Describe your authorization for this narration (for example: recorded by the hired voice "
-                "actor under contract, or my own voice). Real people's voices need their permission.",
-            }
+        """Copy prerecorded narration into the library. It is usable right away; the note is optional."""
+        authorization = str(payload.get("authorization") or "").strip() or "Imported by the owner (no note)"
         imported, errors = [], []
         for path in payload.get("paths") or []:
             try:
@@ -473,11 +466,9 @@ class PresenterMixin:
 
     def runway_voice_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Audition a voice designed from a text description (no real person's voice involved)."""
-        blocked = self._runway_gate(self._settings(), uploads=True)
+        blocked = self._runway_gate()
         if blocked:
             return {"ok": False, "error": blocked}
-        if payload.get("confirm_cloud_upload") is not True:
-            return {"ok": False, "error": "Confirm that the voice description will be sent to Runway."}
         prompt, model = str(payload.get("prompt") or "").strip(), str(payload.get("model") or "eleven_ttv_v3")
         try:
             with runway_api.client_from_store(timeout_s=120) as client:
@@ -490,11 +481,9 @@ class PresenterMixin:
         return {"ok": True, "path": str(local), "duration_s": preview.get("durationSecs")}
 
     def runway_voice_create(self, payload: dict[str, Any]) -> dict[str, Any]:
-        blocked = self._runway_gate(self._settings(), uploads=True)
+        blocked = self._runway_gate()
         if blocked:
             return {"ok": False, "error": blocked}
-        if payload.get("confirm_cloud_upload") is not True:
-            return {"ok": False, "error": "Confirm that the voice description will be sent to Runway."}
         try:
             with runway_api.client_from_store(timeout_s=60) as client:
                 created = client.create_designed_voice(
@@ -651,12 +640,13 @@ class PresenterMixin:
                 if history.is_file():
                     record = json.loads(history.read_text(encoding="utf-8"))
                     if record.get("error_category") in {"cloud_submission_uncertain", "cloud_persistence"}:
-                        # The earlier submission may have been billed: never re-queue it automatically.
+                        # The earlier submission may have been billed. Nothing re-sends it in the background;
+                        # it is only rendered again when you click "Queue changed segments".
                         row["state"] = "unresolved"
                     elif row["state"] == "pending" and record.get("status") in {"error", "cancelled"}:
                         row["state"] = "failed"
-        blocked = {"unchanged", "pending", "unresolved"}
-        return {"ok": True, "rows": rows, "to_render": [r["segment_id"] for r in rows if r["state"] not in blocked]}
+        skip = {"unchanged", "pending"}
+        return {"ok": True, "rows": rows, "to_render": [r["segment_id"] for r in rows if r["state"] not in skip]}
 
     def lesson_queue_changed(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Queue only segments whose inputs changed (or failed / lost their output). Use dry_run to estimate."""
@@ -698,21 +688,12 @@ class PresenterMixin:
         if payload.get("dry_run") or not builds:
             return {"ok": True, "dry_run": True, **summary}
         settings = self._settings()
-        blocked = self._runway_gate(settings, uploads=True)
+        blocked = self._runway_gate(settings)
         if blocked:
             return {"ok": False, "error": blocked}
-        confirmation = self._runway_confirmation_error(payload, total)
-        if confirmation:
-            return {"ok": False, "error": confirmation}
-        batch_cap = int(settings.get("runway_max_credits_per_batch") or 400)
-        if any(build["estimate"]["credits"] > build["cap"] for _s, build in builds) or total > batch_cap:
-            return {"ok": False, "error": f"The changed segments need {total} credits, above a per-job or batch cap."}
-        budget = self._budget_status(settings, total)
-        if not budget["ok"]:
-            return {"ok": False, "error": budget["error"]}
-        guard = self._unresolved_guard(payload)
-        if guard:
-            return {"ok": False, "error": guard}
+        limit_error = self._runway_limit_error([{"build": build} for _s, build in builds], settings, total)
+        if limit_error:
+            return {"ok": False, "error": limit_error}
         items = [self._runway_queue_item(build, payload, f"{lesson['title']} · {segment['title']}") for segment, build in builds]
         queue_ids = self.queue.add_many(items)
         store = self._lessons()
@@ -741,16 +722,14 @@ class PresenterMixin:
             vision = {"available": True, "model_installed": settings.get("vision_classifier_model") in names}
         except (httpx.HTTPError, ValueError) as exc:
             vision["detail"] = f"{type(exc).__name__}"
-        gate = self._runway_gate(settings, uploads=True)
+        gate = self._runway_gate(settings)
         return {
             "ok": True,
             "providers": {
                 "comfyui": {**comfy, "label": "Local ComfyUI (H3 / Wan / AnimateDiff)"},
                 "local_vision": {**vision, "label": "Local vision QA (Ollama)"},
-                "runway": {"available": gate is None, "enabled": bool(settings.get("runway_enabled")),
-                           "upload_consent": bool(settings.get("runway_upload_consent")),
-                           "key_configured": secret_status("runway")["configured"], "detail": gate,
-                           "label": "Runway (cloud, opt-in)"},
+                "runway": {"available": gate is None, "key_configured": secret_status("runway")["configured"],
+                           "detail": gate, "label": "Runway (cloud)"},
                 "midjourney": {"available": True, "mode": "manual import only",
                                "detail": "No official public API; automated access is not permitted, so images are imported manually.",
                                "label": "Midjourney (manual import)"},

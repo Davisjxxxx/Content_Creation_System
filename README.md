@@ -16,6 +16,28 @@ COMFYUI PROVIDER  →  GPU MEMORY MANAGER  →  RENDER QUEUE
 OUTPUT / QA / HISTORY  →  DESKTOP APPLICATION
 ```
 
+## Studio (start here)
+
+The app opens on **Studio**, a simple step-by-step screen for making the BRAND presenter with
+Runway. Each step is one card with a couple of plain choices and one pink button that shows its
+price before you click. Nothing is charged until you click, and there are no extra confirmation
+pop-ups.
+
+1. **Your presenter.** Pick a look (Natural, Polished or Original), optionally say what to change,
+   and make 1, 2 or 4 options (8 credits each). Click any option to see it full size, then **Use this one**.
+2. **More photos of her.** The same face from new angles and expressions. Keep the ones that look like her.
+3. **Her voice.** Choose a voice, hear a 1-credit sample, type a script, and make a voiceover.
+4. **Talking video.** She says your typed words, or lip-syncs to one of your voiceovers. The first
+   time, the app sets up her Runway talking avatar automatically, then starts the video.
+5. **Act it out.** Film yourself for 3-30 s. She copies your face and moves, your voice is removed,
+   and the clip can be silent or carry her voiceover.
+6. **Make her move.** Turn her photo into a 5 or 10 s clip from a short description.
+
+**Latest results** shows finished photos, voiceovers and videos. Photos open in the full-size
+viewer, which has **Use / Keep / Toss**, arrow keys to compare, an actual-size zoom, and an **Open in its own
+window** button. Everything else (local ComfyUI rendering, every Runway option, lessons, QA,
+settings) is under **Pro tools** in the sidebar. Studio code: `avatar_v2/desktop_studio.py`.
+
 ## What the desktop app exposes
 
 - **Studio** — renderer lanes (MiniMax H3 Ref2VA, H3 FL2VA, Wan 2.2, Custom ComfyUI), runtime profiles, timed motion prompting, wind physics, H3 reference-role bindings, best-of-N and Profile Sweep. Adult content classes also expose an opt-in prompt builder with preloaded roles, environments, actions, toys/props, moves and positions; it remains gated by the existing verified-adult consent policy.
@@ -142,33 +164,36 @@ See `workflows/README.md` for the placeholder contract.
 > lane is unavailable until ComfyUI is reinstalled. See
 > [`docs/AVATAR_V2_CAPABILITY_AUDIT.md`](docs/AVATAR_V2_CAPABILITY_AUDIT.md).
 
-## Runway cloud provider (optional, explicit opt-in)
+## Runway cloud provider
 
-The **Runway** renderer card sends jobs you explicitly choose to Runway's developer API:
+Studio and the **Runway** renderer card (Pro tools → Create) send jobs to Runway's developer API:
 photoreal presenter stills (text-only or anchored by tagged identity references), consistent
 character variations, image-to-video (`gen4.5`, `gen4_turbo`, hosted `h3_max`), Act-Two
 performance transfer, lip-synced talking-presenter videos from a script or narration
 (`gwm1_avatars` with a custom avatar), and still upscaling.
 
-It is off by default and is never used as an automatic fallback. Jobs need the provider
-enabled, upload consent saved under **Advanced**, a configured API key (OS keyring, a user-only
-file, or `RUNWAYML_API_SECRET`; never `desktop.json`), and a per-job confirmation of the
-upload list and credit estimate. Per-job and per-batch credit caps apply. Cloud jobs are
-limited to general content and to avatars with declared synthetic or consented provenance.
+Runway works as soon as an API key is saved (OS keyring, a user-only file, or
+`RUNWAYML_API_SECRET`; never `desktop.json`; `scripts/set_runway_key.sh` saves one with hidden
+input). There is no enable switch, upload-consent box or per-job confirmation: the price is shown
+before you click, and jobs start on one click. Spending limits (per job, per batch, daily, monthly)
+are optional and off unless you set them under Pro tools → Settings. It is never used as an
+automatic fallback for local rendering, and the app never resubmits a paid job on its own. Cloud
+jobs stay limited to general content and to avatars declared synthetic or consenting adults, so a
+real person's likeness is never uploaded without their consent.
 Setup, costs and the presenter workflow: [`docs/RUNWAY_PROVIDER.md`](docs/RUNWAY_PROVIDER.md).
 
 ## Presenter production (BRAND Instructor)
 
-The **Presenter** view and the **Load BRAND Instructor** preset turn Avatar V2 into a repeatable
-pipeline for the fictional presenter `BRAND_INSTRUCTOR_PHOTOREAL_V1`:
+Studio, the **Presenter tools** view and the **Load BRAND Instructor** preset turn Avatar V2 into a
+repeatable pipeline for the fictional presenter `BRAND_INSTRUCTOR_PHOTOREAL_V1`:
 
-- master-identity candidates;
-- nine reviewable reference slots with hash-locked approval;
-- narration that is imported, generated or designed (no voice cloning) and approved before use;
+- master-identity candidates you pick in a full-size viewer;
+- nine reference slots whose chosen photos are recorded by hash (a different face is flagged, not blocked);
+- narration that is imported, generated or designed (no voice cloning) and usable right away;
 - talking-head and performance-transfer paths, where the performer's audio is never uploaded;
-- realism QA with a human-review production gate;
+- realism QA with an advisory production readiness check;
 - lessons that re-render only changed segments;
-- a cost ledger with daily and monthly budgets, and verified output hashes.
+- a cost ledger (charged and unconfirmed spend, optional limits) and verified output hashes.
 
 Midjourney images are supported through manual import only, because there is no official API.
 Settings and the recommended first render: [`docs/BRAND_INSTRUCTOR.md`](docs/BRAND_INSTRUCTOR.md).

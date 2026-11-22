@@ -376,7 +376,7 @@ def api(tmp_path, monkeypatch):
             return [i.public() for i in self.items]
 
     instance.queue = Queue()
-    instance.save_settings({"runway_enabled": True, "runway_upload_consent": True, "runway_daily_credit_cap": 20})
+    instance.save_settings({"runway_daily_limit": 20})  # an owner-set limit (none by default)
     instance.runway_save_key(KEY)
     return instance
 
@@ -393,17 +393,16 @@ def _payload(tmp_path):
     }
 
 
-def test_unresolved_charges_exhaust_budget_and_require_explicit_acknowledgement(api, tmp_path):
+def test_unconfirmed_charges_count_toward_spend_but_never_block_new_jobs(api, tmp_path):
     cloud_ledger.record(desktop.CLOUD_LEDGER_PATH, {"request_key": "req:lost", "status": "UNCERTAIN", "charge_status": "unknown",
                                                     "estimate_credits": 8, "label": "lost master"})
     estimate = api.runway_estimate(_payload(tmp_path))
     assert estimate["unresolved"] == {"count": 1, "credits": 8.0}
-    refused = api.queue_runway(_payload(tmp_path))
-    assert refused["ok"] is False and "unknown charges" in refused["error"]
-    queued = api.queue_runway({**_payload(tmp_path), "acknowledge_unresolved": True})
-    assert queued["ok"] is True  # 8 unconfirmed + 8 new <= 20
-    exhausted = api.queue_runway({**_payload(tmp_path), "acknowledge_unresolved": True})
-    assert exhausted["ok"] is False and "daily cap of 20" in exhausted["error"]  # 8 + 8 queued + 8 > 20
+    queued = api.queue_runway(_payload(tmp_path))  # no acknowledgement step
+    assert queued["ok"] is True and queued["unresolved"] == {"count": 1, "credits": 8.0}  # 8 unconfirmed + 8 new <= 20
+    exhausted = api.queue_runway(_payload(tmp_path))
+    assert exhausted["ok"] is False and "daily limit you set (20)" in exhausted["error"]  # 8 + 8 queued + 8 > 20
+    assert len(api.queue.items) == 1
 
 
 def test_resolution_settles_unknown_charges_without_resubmitting(api, tmp_path):
@@ -433,7 +432,7 @@ def test_reconcile_downloads_an_accepted_task_found_later(api, tmp_path, monkeyp
     assert cloud_ledger.spend_summary(desktop.CLOUD_LEDGER_PATH)["today_charged"] == 8
 
 
-def test_lessons_never_requeue_segments_with_uncertain_submissions(api, tmp_path):
+def test_lessons_flag_uncertain_segments_and_rerender_them_only_on_request(api, tmp_path):
     lesson = {"id": "intro", "title": "Intro", "runway_avatar_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
               "segments": [{"id": "s1", "mode": "script", "script": "Welcome."}]}
     api.lesson_save({"lesson": lesson})
@@ -442,7 +441,10 @@ def test_lessons_never_requeue_segments_with_uncertain_submissions(api, tmp_path
     store.record_render("intro", "s1", {"status": "queued", "queue_id": "q1", "input_hash": input_hash})
     (desktop.HISTORY_DIR / "q1.json").write_text(json.dumps({"status": "error", "error_category": "cloud_submission_uncertain"}))
     plan = api.lesson_plan("intro")
-    assert plan["rows"][0]["state"] == "unresolved" and plan["to_render"] == []
+    assert plan["rows"][0]["state"] == "unresolved" and plan["to_render"] == ["s1"]
+    assert api.queue.items == []  # planning never sends anything by itself
+    queued = api.lesson_queue_changed({"lesson_id": "intro", "base": _payload(tmp_path)})  # the owner's click
+    assert queued["ok"] is True and queued["to_render"] == ["s1"] and len(api.queue.items) == 1
 
 
 # --------------------------------------------------------------------------- JavaScript bridge

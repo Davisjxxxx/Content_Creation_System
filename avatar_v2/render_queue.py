@@ -95,6 +95,7 @@ class QueuedRender:
             "cloud_estimate": self.runtime.get("estimate_credits") if self.provider_config.provider != "comfyui" else None,
             "output_hashes": self.output_hashes,
             "candidate_slot": self.runtime.get("candidate_slot"),
+            "studio_action": self.runtime.get("studio_action"),
             "profile": self.profile,
             "seed": shot.seed,
             "status": self.status,

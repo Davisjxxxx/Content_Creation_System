@@ -138,7 +138,9 @@ def api(home):
 
 
 def _enable(api, **extra):
-    api.save_settings({"runway_enabled": True, "runway_upload_consent": True, **extra})
+    """Runway needs only a saved key; ``extra`` sets optional owner limits."""
+    if extra:
+        api.save_settings(extra)
     assert api.runway_save_key(KEY)["ok"] is True
 
 
@@ -156,6 +158,7 @@ def _brand_payload(api, home, *, task="still", refs=None, **options):
 
 
 def _confirm(payload, credits):
+    """Legacy confirmation fields: still accepted, no longer required."""
     return {**payload, "confirm_cloud_upload": True, "confirmed_estimate_credits": credits}
 
 
@@ -291,16 +294,25 @@ def test_spend_summary_counts_charged_and_reserved_credits(tmp_path):
     assert summary["today_total"] == 68 and summary["by_model"] == {"gen4_image": 8.0}
 
 
-def test_daily_budget_blocks_queueing_and_counts_unlogged_queued_jobs(api, home):
-    _enable(api, runway_daily_credit_cap=20)
+def test_no_daily_limit_by_default_and_spend_counts_unlogged_queued_jobs(api, home):
+    _enable(api)
+    cloud_ledger.record(desktop.CLOUD_LEDGER_PATH, {"task_id": "x", "status": "SUCCEEDED", "credits_charged": 990})
+    payload = _brand_payload(api, home, ratio="1080:1440")
+    first = api.queue_runway(payload)
+    assert first["ok"] is True and first["budget"]["today_projected"] == 998 and first["budget"]["daily_cap"] == 0
+    assert api.queue_runway(payload)["ok"] is True  # no built-in cap
+    spend = api.runway_spend()
+    assert spend["summary"]["today_charged"] == 990 and spend["budget"]["pending_queued"] == 16
+
+
+def test_a_daily_limit_the_owner_sets_stops_new_jobs(api, home):
+    _enable(api, runway_daily_limit=20)
     cloud_ledger.record(desktop.CLOUD_LEDGER_PATH, {"task_id": "x", "status": "SUCCEEDED", "credits_charged": 10})
     payload = _brand_payload(api, home, ratio="1080:1440")
-    first = api.queue_runway(_confirm(payload, 8))
+    first = api.queue_runway(payload)
     assert first["ok"] is True and first["budget"]["today_projected"] == 18
-    second = api.queue_runway(_confirm(payload, 8))
-    assert second["ok"] is False and "daily cap of 20" in second["error"]
-    spend = api.runway_spend()
-    assert spend["summary"]["today_charged"] == 10 and spend["budget"]["pending_queued"] == 8
+    second = api.queue_runway(payload)
+    assert second["ok"] is False and "daily limit you set (20)" in second["error"]
 
 
 # --------------------------------------------------------------------------- integrity
@@ -382,7 +394,7 @@ def test_act_two_strips_performer_audio_before_upload_and_mutes_or_replaces_outp
     assert _streams(muted) == {"video"}
 
 
-def test_performance_defaults_to_mute_and_requires_approved_narration_for_voiceover(api, home):
+def test_performance_defaults_to_mute_and_uses_any_library_voiceover(api, home):
     _enable(api)
     video = home / "drive.mp4"
     video.write_bytes(b"0" * 4096)
@@ -393,12 +405,13 @@ def test_performance_defaults_to_mute_and_requires_approved_narration_for_voiceo
     api.queue_runway(_confirm(payload, estimate["estimate"]["credits"]))
     spec = json.loads(api.queue.items[-1].job.asset_map["RUNWAY_SPEC"])
     assert spec["params"]["output_audio"] == "mute" and "local" not in spec
-    pending = api.voiceover_import({"paths": [str(_audio(home / "vo.wav"))], "authorization": "Recorded by contracted voice actor"})
+    pending = api.voiceover_import({"paths": [str(_audio(home / "vo.wav"))]})  # no note, no approval step
+    assert pending["imported"][0]["status"] == "pending"
     voiced = {**payload, "runway": {**payload["runway"], "voiceover_id": pending["imported"][0]["id"]}}
-    assert "approved narration" in api.runway_estimate(voiced)["error"]
-    api.voiceover_decide({"id": pending["imported"][0]["id"], "decision": "approved"})
-    approved = api.runway_estimate(voiced)
-    assert approved["ok"] is True and all(u["file"] != "vo.wav" for u in approved["uploads"])  # voiceover stays local
+    usable = api.runway_estimate(voiced)
+    assert usable["ok"] is True and all(u["file"] != "vo.wav" for u in usable["uploads"])  # voiceover stays local
+    missing = {**payload, "runway": {**payload["runway"], "voiceover_id": "vo_nothere"}}
+    assert "no longer in the library" in api.runway_estimate(missing)["error"]
 
 
 # --------------------------------------------------------------------------- narration and voices
@@ -447,11 +460,12 @@ def test_voice_design_uses_text_descriptions_only():
         runway_api.validate_voice_design("v", "too short", "eleven_ttv_v3")
 
 
-def test_voiceover_store_requires_authorization_approval_and_intact_files(api, home):
+def test_voiceover_store_imports_without_a_note_and_still_tracks_file_integrity(api, home):
     clip = _audio(home / "lesson1.wav")
-    assert "authorization" in api.voiceover_import({"paths": [str(clip)], "authorization": ""})["error"]
-    imported = api.voiceover_import({"paths": [str(clip)], "authorization": "My own recording for BRAND", "label": "Lesson 1"})["imported"][0]
-    assert imported["status"] == "pending" and imported["duration_s"] and imported["sha256"] == sha256_file(clip)
+    plain = api.voiceover_import({"paths": [str(clip)], "authorization": ""})
+    assert plain["ok"] is True and plain["imported"][0]["authorization"] == "Imported by the owner (no note)"
+    imported = api.voiceover_import({"paths": [str(_audio(home / "lesson1b.wav", seconds=1.5))], "authorization": "My own recording for BRAND", "label": "Lesson 1"})["imported"][0]
+    assert imported["status"] == "pending" and imported["duration_s"] and imported["authorization"] == "My own recording for BRAND"
     store = VoiceoverStore(desktop.VOICEOVER_DIR)
     with pytest.raises(ValueError, match="approved narration"):
         store.approved_path(imported["id"])
@@ -526,17 +540,19 @@ def test_brand_prompt_fits_gen4_with_tag_slot_and_realism_guards(api, home):
     assert "natural matte sheen" in prompt  # BRAND realism guards replace the generic block
 
 
-def test_identity_lock_refuses_a_different_primary_and_records_hashes(api, home):
+def test_identity_check_warns_about_a_different_primary_and_records_hashes(api, home):
     _enable(api)
     payload = _brand_payload(api, home, ratio="1080:1440")
     master = _accept_master(api, home)
     impostor = _png(home / "someone_else.png", color=(10, 200, 30))
     payload["avatar"]["identity_refs"] = [str(impostor)]
-    refused = api.runway_estimate(payload)
-    assert refused["ok"] is False and "not the approved master identity" in refused["error"]
+    different = api.runway_estimate(payload)
+    assert different["ok"] is True  # a warning, not a block
+    assert any("not the chosen master photo" in w for w in different["warnings"])
+    assert api.queue_runway(payload)["ok"] is True
     payload["avatar"]["identity_refs"] = [str(master)]
     allowed = api.runway_estimate(payload)
-    assert allowed["ok"] is True
+    assert allowed["ok"] is True and not any("master photo" in w for w in allowed["warnings"])
     assert allowed["identity"] == {"profile_id": bi.PROFILE_ID, "master_sha256": sha256_file(master), "primary_sha256": sha256_file(master)}
 
 
@@ -575,17 +591,16 @@ def test_seeded_master_candidates_batch(api, home):
     assert all(i.runtime["candidate_slot"] == "identity_front" for i in api.queue.items)
 
 
-def test_talking_head_requires_approved_narration_and_flags_unlocked_avatars(api, home):
+def test_talking_head_uses_library_narration_and_flags_unlocked_avatars(api, home):
     _enable(api)
     api.brand_instructor_install()
     _accept_master(api, home)
     payload = _brand_payload(api, home, task="avatar_video", avatar_id=AVATAR_UUID, speech="audio")
-    assert "approved narration" in api.runway_estimate(payload)["error"]
+    assert "Pick a voiceover" in api.runway_estimate(payload)["error"]  # it needs some audio to lip-sync to
     record = api.voiceover_import({"paths": [str(_audio(home / "n.wav"))], "authorization": "Hired voice actor, contract #12"})["imported"][0]
-    api.voiceover_decide({"id": record["id"], "decision": "approved"})
-    payload["runway"]["voiceover_id"] = record["id"]
+    payload["runway"]["voiceover_id"] = record["id"]  # usable without an approval step
     estimate = api.runway_estimate(payload)
-    assert estimate["ok"] is True and estimate["uploads"][0]["role"] == "approved narration audio"
+    assert estimate["ok"] is True and estimate["uploads"][0]["role"] == "narration audio"
     assert any("not created from the approved master" in w for w in estimate["warnings"])
 
 
@@ -597,8 +612,9 @@ def test_manual_import_validates_hashes_and_never_auto_accepts(api, home):
     small = _png(home / "thumb.png", size=(300, 300))
     gif = home / "anim.gif"
     Image.new("RGB", (800, 800)).save(gif, save_all=True, append_images=[Image.new("RGB", (800, 800), (9, 9, 9))])
-    assert "Confirm that you created" in api.reference_import({"paths": [str(good)], "source": "midjourney"})["error"]
     api.brand_instructor_install()
+    unattested = api.reference_import({"paths": [str(_png(home / "plain.png", size=(1024, 1536), color=(90, 80, 70)))], "source": "midjourney"})
+    assert unattested["ok"] is True and unattested["imported"][0]["attested"] is False  # recorded, not required
     result = api.reference_import(
         {"paths": [str(good), str(good), str(small), str(gif)], "source": "midjourney", "attested": True,
          "prompt": "brunette presenter --ar 2:3", "avatar_id": bi.PROFILE_ID, "slot_id": "identity_front"}
@@ -704,4 +720,4 @@ def test_provider_status_reports_each_lane(api):
     status = api.provider_status()["providers"]
     assert status["comfyui"]["available"] is False and status["local_vision"]["available"] is False
     assert status["midjourney"]["mode"] == "manual import only"
-    assert status["runway"]["available"] is False and "disabled" in status["runway"]["detail"]
+    assert status["runway"]["available"] is False and "API key" in status["runway"]["detail"]
