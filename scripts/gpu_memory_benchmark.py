@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from avatar_v2 import local_engine, offline_builder
+from avatar_v2.adherence_benchmark import default_adherence_suite
 from avatar_v2.gpu_memory import GPUMemoryManager, query_gpu_processes
 from avatar_v2.models import AvatarManifest, ProviderConfig, RenderJob, ShotSpec
 from avatar_v2.providers.comfyui import ComfyUIProvider
@@ -42,6 +44,38 @@ from avatar_v2.workflows_builder import with_tiled_vae
 DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
 DEFAULT_OUT_DIR = Path.home() / ".avatar_v2" / "benchmarks"
 ACTIVE_GPU_UTIL_GATE_PCT = 35
+
+
+def read_proc_memory_breakdown(pid: int | None) -> dict[str, int]:
+    """Read Linux RssAnon, RssFile, VmRSS, VmSwap, and Pss (MiB) for a process."""
+    if not pid or pid <= 0:
+        return {}
+    out: dict[str, int] = {}
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8").splitlines():
+            for key in ("VmRSS", "RssAnon", "RssFile", "RssShmem", "VmSwap", "VmPin", "VmLck"):
+                if line.startswith(f"{key}:"):
+                    out[f"{key.lower()}_mb"] = int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return out
+
+
+def parse_comfyui_stage_timings(log_slice: str) -> dict[str, Any]:
+    """Extract total execution time, denoising step seconds, and loaded/offloaded MB from a ComfyUI log slice."""
+    timings: dict[str, Any] = {"step_durations_s": [], "loaded_mb": [], "offloaded_mb": []}
+    m_total = re.search(r"Prompt executed in (\d+(?:\.\d+)?) seconds", log_slice)
+    if m_total:
+        timings["comfy_total_s"] = float(m_total.group(1))
+    for m_step in re.finditer(r"(\d+(?:\.\d+)?)s/it\]", log_slice):
+        timings["step_durations_s"].append(float(m_step.group(1)))
+    for m_load in re.finditer(r"loaded (?:partially|completely);[^\n]*?(\d+(?:\.\d+)?) MB loaded(?:,\s*(\d+(?:\.\d+)?) MB offloaded)?", log_slice):
+        timings["loaded_mb"].append(float(m_load.group(1)))
+        if m_load.group(2) is not None:
+            timings["offloaded_mb"].append(float(m_load.group(2)))
+    if timings["step_durations_s"]:
+        timings["mean_s_per_it"] = round(sum(timings["step_durations_s"]) / len(timings["step_durations_s"]), 2)
+    return timings
 
 
 def _comfy_pid() -> int | None:
@@ -244,9 +278,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "meta": meta,
         "trials_requested": args.trials,
         "idle_check": idle_check,
+        "comfy_memory_breakdown": read_proc_memory_breakdown(_comfy_pid()),
         "storage_gate": storage_gate.public(),
         "workflow_nodes": len(workflow),
         "has_tiled_vae_node": any(n.get("class_type") == "VAEDecodeTiled" for n in workflow.values()),
+        "adherence_suite_cases": len(default_adherence_suite()),
         "trials": [],
     }
 
@@ -341,8 +377,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--init-image", default=None, help="Local start image for video scenarios")
     parser.add_argument("--comfy-url", default=DEFAULT_COMFY_URL)
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
+    parser.add_argument("--list-adherence", action="store_true", help="Print the 13-category prompt adherence benchmark suite as JSON")
     parser.add_argument("--dry-run", action="store_true", help="Preflight check & workflow build without GPU execution")
     args = parser.parse_args(argv)
+    if args.list_adherence:
+        suite = [c.public() for c in default_adherence_suite()]
+        print(json.dumps({"ok": True, "count": len(suite), "cases": suite}, indent=2))
+        return 0
     try:
         report = run_benchmark(args)
     except Exception as exc:
