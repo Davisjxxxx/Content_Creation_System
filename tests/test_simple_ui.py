@@ -27,6 +27,8 @@ def test_removed_screens_and_conflicting_controls_are_gone():
 def test_every_result_has_a_visible_thumbnail_and_a_full_size_viewer():
     assert "function makeTile(" in HTML and "stThumb(img,path)" in HTML
     assert 'id="viewer"' in HTML and "Open in its own window" in HTML and "Actual size" in HTML
+    assert 'id="viewerVideo"' in HTML and "studio_video" in HTML
+    assert "viewerReplay()" in HTML and "viewerToggleLoop()" in HTML and "viewerStepFrame(" in HTML
     assert "slice(0,4)" not in HTML  # no options hidden behind a "see all" button
 
 

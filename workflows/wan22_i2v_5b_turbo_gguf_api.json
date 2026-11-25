@@ -1,0 +1,14 @@
+{
+  "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": "${WAN5B_MODEL}"}, "_meta": {"title": "Wan 2.2 TI2V 5B Turbo (GGUF, 4-step distilled)"}},
+  "2": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["1", 0], "shift": 5.0}},
+  "3": {"class_type": "CLIPLoader", "inputs": {"clip_name": "${WAN_TEXT_ENCODER}", "type": "wan", "device": "${WAN_CLIP_DEVICE}"}},
+  "4": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["3", 0], "text": "${PROMPT}"}, "_meta": {"title": "Positive prompt"}},
+  "5": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["3", 0], "text": "${WAN_NEGATIVE}"}, "_meta": {"title": "Negative prompt (no effect at CFG 1)"}},
+  "6": {"class_type": "VAELoader", "inputs": {"vae_name": "${WAN_VAE}"}},
+  "7": {"class_type": "LoadImage", "inputs": {"image": "${INIT_IMAGE}"}, "_meta": {"title": "Start photo"}},
+  "8": {"class_type": "WanImageToVideo", "inputs": {"positive": ["4", 0], "negative": ["5", 0], "vae": ["6", 0], "start_image": ["7", 0], "width": "${WAN_WIDTH}", "height": "${WAN_HEIGHT}", "length": "${WAN_LENGTH}", "batch_size": 1}},
+  "9": {"class_type": "KSampler", "inputs": {"model": ["2", 0], "seed": "${WAN_SEED}", "steps": 4, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "positive": ["8", 0], "negative": ["8", 1], "latent_image": ["8", 2], "denoise": 1.0}, "_meta": {"title": "4 steps, CFG 1 (Turbo settings)"}},
+  "10": {"class_type": "VAEDecode", "inputs": {"samples": ["9", 0], "vae": ["6", 0]}},
+  "11": {"class_type": "CreateVideo", "inputs": {"images": ["10", 0], "fps": 16}},
+  "12": {"class_type": "SaveVideo", "inputs": {"video": ["11", 0], "filename_prefix": "${WAN_PREFIX}", "format": "mp4", "format.codec": "h264"}}
+}

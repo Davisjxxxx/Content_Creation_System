@@ -13,17 +13,23 @@ import base64
 import hashlib
 import io
 import json
+import mimetypes
+import re
 import secrets
 import shutil
 import subprocess
+import threading
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from PIL import Image, ImageOps
 
 from . import brand_instructor as bi
 from . import cloud_ledger, local_engine
+from . import offline_builder as ob
 from .composer import build_job
 from .integrity import sha256_file
 from .library import AvatarProfile
@@ -47,9 +53,199 @@ TALKER_VOICES = (
     "petra", "violet", "luna",
 )
 TALKER_NAME = "BRAND Instructor"
-IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
-VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 AUDIO_SUFFIXES = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg"}
+
+_VIDEO_MIME = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+}
+_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+class _LocalMediaServer:
+    """Loopback-only HTTP file server with byte-range support for in-app video playback."""
+
+    def __init__(self, max_entries: int = 512) -> None:
+        self._lock = threading.Lock()
+        self._by_token: dict[str, Path] = {}
+        self._by_path: dict[Path, str] = {}
+        self._max_entries = max_entries
+        server_ref = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+                return
+
+            def do_HEAD(self) -> None:
+                self._serve(send_body=False)
+
+            def do_GET(self) -> None:
+                self._serve(send_body=True)
+
+            def _serve(self, *, send_body: bool) -> None:
+                raw_path = urlsplit(self.path).path
+                if not raw_path.startswith("/media/"):
+                    self._send_empty(404)
+                    return
+                stem = raw_path[len("/media/"):].split("/", 1)[0].split(".", 1)[0]
+                target = server_ref._lookup(stem)
+                if target is None or not target.is_file():
+                    self._send_empty(404)
+                    return
+                try:
+                    size = target.stat().st_size
+                except OSError:
+                    self._send_empty(404)
+                    return
+                mime = _VIDEO_MIME.get(target.suffix.lower()) or mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+                start, end = 0, max(size - 1, 0)
+                status = 200
+                range_header = (self.headers.get("Range") or "").strip()
+                if range_header and size > 0:
+                    match = _RANGE_RE.match(range_header)
+                    if not match:
+                        self._send_empty(416, extra={"Content-Range": f"bytes */{size}"})
+                        return
+                    raw_start, raw_end = match.groups()
+                    if raw_start == "" and raw_end == "":
+                        self._send_empty(416, extra={"Content-Range": f"bytes */{size}"})
+                        return
+                    if raw_start == "":
+                        suffix_len = int(raw_end)
+                        if suffix_len <= 0:
+                            self._send_empty(416, extra={"Content-Range": f"bytes */{size}"})
+                            return
+                        start = max(size - suffix_len, 0)
+                        end = size - 1
+                    else:
+                        start = int(raw_start)
+                        end = int(raw_end) if raw_end != "" else size - 1
+                        if start >= size or end < start:
+                            self._send_empty(416, extra={"Content-Range": f"bytes */{size}"})
+                            return
+                        end = min(end, size - 1)
+                    status = 206
+                length = (end - start + 1) if size > 0 else 0
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", mime)
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Content-Length", str(length))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    if status == 206:
+                        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                    self.end_headers()
+                    if not send_body or length == 0:
+                        return
+                    with target.open("rb") as handle:
+                        handle.seek(start)
+                        remaining = length
+                        while remaining > 0:
+                            chunk = handle.read(min(65536, remaining))
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            remaining -= len(chunk)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+
+            def _send_empty(self, code: int, extra: dict[str, str] | None = None) -> None:
+                try:
+                    self.send_response(code)
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    for key, value in (extra or {}).items():
+                        self.send_header(key, value)
+                    self.end_headers()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+
+        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._httpd.daemon_threads = True
+        self.port = int(self._httpd.server_address[1])
+        self._thread = threading.Thread(target=self._httpd.serve_forever, name="avatar-v2-media", daemon=True)
+        self._thread.start()
+
+    def _lookup(self, token: str) -> Path | None:
+        with self._lock:
+            return self._by_token.get(token)
+
+    def register(self, path: Path) -> str:
+        resolved = path.resolve()
+        with self._lock:
+            token = self._by_path.get(resolved)
+            if token is None:
+                token = secrets.token_urlsafe(16)
+                self._by_token[token] = resolved
+                self._by_path[resolved] = token
+                while len(self._by_token) > self._max_entries:
+                    oldest_token = next(iter(self._by_token))
+                    oldest_path = self._by_token.pop(oldest_token)
+                    self._by_path.pop(oldest_path, None)
+        return f"http://127.0.0.1:{self.port}/media/{token}{resolved.suffix.lower()}"
+
+    def close(self) -> None:
+        try:
+            self._httpd.shutdown()
+            self._httpd.server_close()
+        except Exception:
+            pass
+
+
+def _probe_video_meta(source: Path) -> dict[str, Any]:
+    """Read width, height, duration, and fps with ffprobe when available (best-effort)."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return {}
+    try:
+        result = subprocess.run(
+            [
+                ffprobe, "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate,duration:format=duration",
+                "-of", "json", str(source),
+            ],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return {}
+        data = json.loads(result.stdout)
+        stream = (data.get("streams") or [{}])[0]
+        fmt = data.get("format") or {}
+        out: dict[str, Any] = {}
+        if stream.get("width") and stream.get("height"):
+            out["width"] = int(stream["width"])
+            out["height"] = int(stream["height"])
+        raw_dur = stream.get("duration") or fmt.get("duration")
+        if raw_dur is not None:
+            try:
+                dur = float(raw_dur)
+                if dur > 0:
+                    out["duration_s"] = round(dur, 3)
+            except (TypeError, ValueError):
+                pass
+        for key in ("avg_frame_rate", "r_frame_rate"):
+            rate = str(stream.get(key) or "")
+            if "/" in rate:
+                num, den = rate.split("/", 1)
+                try:
+                    n_val, d_val = float(num), float(den)
+                    if n_val > 0 and d_val > 0:
+                        out["fps"] = round(n_val / d_val, 3)
+                        break
+                except ValueError:
+                    pass
+        return out
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+        return {}
 RECENT_FAILURE_WINDOW = timedelta(hours=6)
 TALK_PART_CHARS = 4500  # Runway avatar videos take up to 5,000 characters; longer scripts become parts
 MOVE_ENGINES = ("local", "best", "fast")  # your GPU, Runway Gen-4.5, Runway Gen-4 Turbo
@@ -276,16 +472,29 @@ class StudioMixin:
         target = str(Path(path).expanduser().resolve())
         return any(ref and str(Path(ref).expanduser().resolve()) == target for ref in profile.identity_refs.values())
 
-    def _local_wan_item(self, *, image: str, text: str, shape: str, label: str, action: str) -> QueuedRender:
-        """One free 5-second clip on this computer's GPU (Wan 2.2 14B through ComfyUI)."""
+    def _local_wan_item(
+        self,
+        *,
+        image: str,
+        text: str,
+        shape: str,
+        label: str,
+        action: str,
+        video_model: str = "a14b",
+        vram_mode: str = "balanced",
+        verbatim: bool = False,
+    ) -> QueuedRender:
+        """One free 5-second clip on this computer's GPU (Wan 2.2 through ComfyUI)."""
+        model = local_engine.VIDEO_MODELS.get(video_model) or local_engine.VIDEO_MODELS["a14b"]
         info = local_engine.inspect(self._settings())
-        if not info["installed"] or info["missing_models"]:
+        model_info = (info.get("video_models") or {}).get(video_model) or {}
+        if not info["installed"] or model_info.get("missing_models"):
             raise ValueError(
                 "Your GPU engine isn't installed yet. Run scripts/setup_local_engine.sh, or pick a Runway option."
             )
         if not image or not Path(image).is_file():
             raise ValueError("Pick a start picture first.")
-        text = " ".join(str(text or "").split())[:4000] or DEFAULT_MOTION  # long descriptions are fine; only a sanity cap
+        text = " ".join(str(text or "").split())[:ob.PROMPT_MAX_CHARS] or DEFAULT_MOTION
         phrase = depicts_minor(text)
         if phrase:
             raise ValueError(f'People shown have to be adults (18+). Remove "{phrase}" from the description.')
@@ -294,7 +503,7 @@ class StudioMixin:
         shot_payload = {
             **preset["shot"],
             "shot_id": f"studio-{action}-local",
-            "engine_preference": "wan22",
+            "engine_preference": "wan22",  # the ShotSpec literal; the detailed model lives in runtime
             "duration_s": local_engine.SECONDS,
             "fps": local_engine.FPS,
             "user_prompt": text,
@@ -306,28 +515,41 @@ class StudioMixin:
         if self._is_presenter_image(image):
             # Budget covers identity, realism and camera blocks plus the whole description (up to the 4000-char sanity cap).
             prompt, _dropped = compile_presenter_prompt(avatar, shot, budget=5000, motion=True)
+        elif verbatim:
+            # The Free builder sends the user's words exactly as written; no baked-in wording.
+            prompt = text
         else:  # some other picture: describe the motion only, never the presenter's identity
             prompt = f"{text if text.endswith(('.', '!', '?')) else text + '.'} {MOTION_REALISM} {NO_TEXT}"
         width, height = local_engine.SHAPES[_choice(shape, local_engine.SHAPES, "tall")]
         job.prompt = prompt
+        placeholders = (
+            local_engine.model_placeholders()
+            if video_model == "a14b"
+            else {
+                **local_engine.model_placeholders_5b(),
+                "WAN_TEXT_ENCODER": local_engine.MODELS["WAN_TEXT_ENCODER"][1],
+                "WAN_VAE": local_engine.MODELS_5B["WAN5B_VAE"][1],
+            }
+        )
         job.asset_map.update(
             {
                 "PROMPT": prompt,
                 "INIT_IMAGE": image,
                 "WAN_NEGATIVE": local_engine.NEGATIVE,
+                "WAN_CLIP_DEVICE": ob.vram_mode_choice(vram_mode) == "cpu_offload" and "cpu" or "default",
                 "WAN_WIDTH": width,
                 "WAN_HEIGHT": height,
                 "WAN_LENGTH": local_engine.FRAMES,
                 "WAN_SEED": secrets.randbelow(2_000_000_000) + 1,
                 "WAN_PREFIX": f"avatar_v2/studio_{action}_{job.job_id[:12]}",
-                **local_engine.model_placeholders(),
+                **placeholders,
             }
         )
         runtime = {
             "provider": "comfyui",
             "profile": local_engine.PROFILE,
-            "engine": "wan22_i2v_14b_gguf",
-            "model": local_engine.ENGINE_LABEL,
+            "engine": model["engine"],
+            "model": model["label"],
             "steps": 4,
             "cfg": 1.0,
             "width": width,
@@ -339,7 +561,7 @@ class StudioMixin:
         }
         return QueuedRender(
             job=job,
-            workflow=str(local_engine.WORKFLOW),
+            workflow=str(model["workflow"]),
             provider_config=self._provider_config({}),
             profile=local_engine.PROFILE,
             runtime=runtime,
@@ -360,7 +582,15 @@ class StudioMixin:
             item.runtime.update({"studio_voiceover": voiceover, "candidate_qa": True})
         return item
 
-    def _studio_scene_items(self, options: dict[str, Any]) -> list[QueuedRender]:
+    def _studio_scene_items(
+        self,
+        options: dict[str, Any],
+        *,
+        video_model: str = "a14b",
+        vram_mode: str = "balanced",
+        action: str = "scene",
+        verbatim: bool = False,
+    ) -> list[QueuedRender]:
         """A video scene made offline: 1-12 shots (about a minute), each continuing from the previous shot's last frame."""
         image = str(options.get("image") or "").strip()  # a blank slate: never default to the master photo
         if not image or not Path(image).is_file():
@@ -372,8 +602,16 @@ class StudioMixin:
         shape = str(options.get("shape") or "")
         items: list[QueuedRender] = []
         for index, text in enumerate(shots, start=1):
-            item = self._local_wan_item(image=image, text=text, shape=shape, action="scene",
-                                        label=f"Scene · shot {index} of {len(shots)} · your GPU")
+            item = self._local_wan_item(
+                image=image,
+                text=text,
+                shape=shape,
+                action=action,
+                video_model=video_model,
+                vram_mode=vram_mode,
+                verbatim=verbatim,
+                label=f"Scene · shot {index} of {len(shots)} · your GPU",
+            )
             if items:
                 item.chain_from_previous = True
                 item.runtime["chain_from_id"] = items[-1].id
@@ -753,6 +991,291 @@ class StudioMixin:
             return self.comfyui_start()
         return {"ok": True, "state": status["state"]}
 
+    # ------------------------------------------------------------------ the Offline Builder (Free builder)
+
+    def _forge_shots(self, options: dict[str, Any]) -> list[str]:
+        """Shot prompts from a manual list when given, otherwise split from the one long prompt."""
+        manual = [" ".join(str(text or "").split()) for text in options.get("shots") or []]
+        manual = [text for text in manual if text]
+        if manual:
+            return manual[:ob.SCENE_MAX_SHOTS]
+        prompt = " ".join(str(options.get("prompt") or "").split())[:ob.PROMPT_MAX_CHARS]
+        return ob.split_scene_prompt(prompt)
+
+    def _forge_photo_item(
+        self,
+        *,
+        prompt: str,
+        shape: str,
+        photo_model: str,
+        label: str,
+        action: str = "forge_photo",
+        extra_runtime: dict[str, Any] | None = None,
+    ) -> QueuedRender:
+        """One avatar photo made offline: FLUX.2 klein through ComfyUI (free)."""
+        info = ob.inspect(self._settings())
+        model_info = (info.get("models") or {}).get(photo_model)
+        if model_info is None or model_info.get("missing_models"):
+            raise ValueError(
+                "That image model isn't installed yet. Run scripts/setup_offline_builder.sh (about 6 GB)."
+            )
+        prompt = " ".join(str(prompt or "").split())[:ob.PROMPT_MAX_CHARS]
+        if not prompt:
+            raise ValueError("Describe what you want first.")
+        phrase = depicts_minor(prompt)
+        if phrase:
+            raise ValueError(f'People shown have to be adults (18+). Remove "{phrase}" from the description.')
+        model = ob.PHOTO_MODELS[photo_model]
+        preset = self.brand_instructor_preset()
+        avatar_payload = {**preset["avatar"], "identity_refs": [], "hair_refs": [], "wardrobe_refs": []}
+        shot_payload = {
+            **preset["shot"],
+            "shot_id": f"studio-{action}-forge",
+            "engine_preference": "custom",  # the ShotSpec literal; the detailed model lives in runtime
+            "user_prompt": prompt,
+            "wind": {},
+            "references": {},
+        }
+        avatar, shot = self._models_from_payload({"avatar": avatar_payload, "shot": shot_payload})
+        job = build_job(avatar, shot)
+        width, height = ob.PHOTO_SHAPES[_choice(shape, ob.PHOTO_SHAPES, "portrait")]
+        job.prompt = prompt
+        job.asset_map.update(
+            {
+                "PROMPT": prompt,
+                "NEGATIVE_PROMPT": ob.PHOTO_NEGATIVE,
+                "WIDTH": width,
+                "HEIGHT": height,
+                "SEED": secrets.randbelow(2_000_000_000) + 1,
+                "STEPS": model["steps"],
+                "CFG": model["cfg"],
+                "SAMPLER_NAME": ob.PHOTO_SAMPLER,
+                "OUTPUT_PREFIX": f"avatar_v2/forge_{job.job_id[:12]}",
+                **ob.image_placeholders(photo_model),
+            }
+        )
+        runtime: dict[str, Any] = {
+            "provider": "comfyui",
+            "profile": local_engine.PROFILE,
+            "engine": "flux2_txt2img",
+            "model": model["label"],
+            "steps": model["steps"],
+            "cfg": model["cfg"],
+            "width": width,
+            "height": height,
+            "studio_action": action,
+            "estimate_credits": 0,
+            "reason": "Rendered on your GPU (free)",
+        }
+        if extra_runtime:
+            runtime.update(extra_runtime)
+        return QueuedRender(
+            job=job,
+            workflow="builtin:flux2_txt2img",
+            provider_config=self._provider_config({}),
+            profile=local_engine.PROFILE,
+            runtime=runtime,
+            archive_dir=str(self._archive_dir()),
+            label=label,
+        )
+
+    def _forge_continue_scene(self, item: QueuedRender) -> dict[str, Any]:
+        """After the start photo renders, queue the scene shots that use it (prompt-only scenes)."""
+        spec = dict(item.runtime.get("forge_scene") or {})
+        photo = next(
+            (Path(output) for output in item.outputs if Path(output).suffix.lower() in IMAGE_SUFFIXES and Path(output).is_file()),
+            None,
+        )
+        if photo is None:
+            return {"ok": False, "scene": "not started: the start photo has no usable output"}
+        try:
+            items = self._studio_scene_items(
+                {
+                    "image": str(photo),
+                    "shots": spec.get("shots") or [],
+                    "shape": str(spec.get("shape") or ""),
+                },
+                video_model=str(spec.get("video_model") or "a14b"),
+                vram_mode=str(spec.get("vram_mode") or "balanced"),
+                action="forge_scene",
+                verbatim=True,
+            )
+        except ValueError as exc:
+            return {"ok": False, "scene": f"not started: {exc}"}
+        if not items:
+            return {"ok": False, "scene": "not started: no shots"}
+        queue_ids = self.queue.add_many(items)
+        return {"ok": True, "scene": "queued", "shots": len(items), "queue_ids": queue_ids}
+
+    def forge_state(self) -> dict[str, Any]:
+        """Everything the Free builder screen shows, in one local call (no network)."""
+        settings = self._settings()
+        photos = ob.inspect(settings)
+        videos = local_engine.video_model_info(settings)
+        engine = self.engine_status()
+        return {
+            "ok": True,
+            "installed": photos["installed"],
+            "photo_models": [photos["models"][model_id] for model_id in ob.PHOTO_MODEL_IDS],
+            "video_models": [videos[model_id] for model_id in local_engine.video_model_ids()],
+            "vram_modes": [{"id": key, **value} for key, value in ob.VRAM_MODES.items()],
+            "shapes": list(ob.PHOTO_SHAPES),
+            "scene_shapes": list(local_engine.SHAPES),
+            "max_shots": ob.SCENE_MAX_SHOTS,
+            "shot_seconds": local_engine.SECONDS,
+            "max_prompt_chars": ob.PROMPT_MAX_CHARS,
+            "engine_state": engine["state"],
+            "engine_message": engine["message"],
+        }
+
+    def forge_price(self, options: dict[str, Any]) -> dict[str, Any]:
+        """What a Free builder action would take (local estimate, nothing queued)."""
+        options = dict(options or {})
+        action = "scene" if str(options.get("action") or "") == "scene" else "photo"
+        prompt = " ".join(str(options.get("prompt") or "").split())[:ob.PROMPT_MAX_CHARS]
+        photo_model = ob.photo_model_choice(options.get("photo_model"))
+        video_model = str(options.get("video_model") or "a14b")
+        if video_model not in local_engine.VIDEO_MODELS:
+            video_model = "a14b"
+        vram_mode = ob.vram_mode_choice(options.get("vram_mode"))
+        image = str(options.get("image") or "").strip()
+        try:
+            if not prompt and action == "photo":
+                raise ValueError("Describe what you want first.")
+            phrase = depicts_minor(prompt)
+            if phrase:
+                raise ValueError(f'People shown have to be adults (18+). Remove "{phrase}" from the description.')
+            if image and not Path(image).expanduser().is_file():
+                raise ValueError("That start picture isn't on this computer anymore.")
+            photos = ob.inspect(self._settings())
+            model_info = (photos.get("models") or {}).get(photo_model)
+            if model_info is None or model_info.get("missing_models"):
+                raise ValueError(
+                    f"The {model_info['label'] if model_info else photo_model} image model isn't installed yet. "
+                    "Run scripts/setup_offline_builder.sh."
+                )
+            videos = local_engine.video_model_info(self._settings())
+            if action == "scene" and videos[video_model].get("missing_models"):
+                raise ValueError(
+                    f"The {videos[video_model]['label']} video model isn't installed yet. "
+                    "Run scripts/setup_offline_builder.sh for the 5B, or setup_local_engine.sh for the 14B."
+                )
+            if action == "photo":
+                count = max(1, min(int(options.get("count") or 1), 4))
+                shots = count
+                minutes = ob.PHOTO_MODELS[photo_model]["estimated_minutes"] * count
+            else:
+                shots = len(self._forge_shots(options))
+                if not shots:
+                    raise ValueError("Describe at least one shot (it becomes the video scene).")
+                photo_minutes = 0 if image else ob.PHOTO_MODELS[photo_model]["estimated_minutes"]
+                minutes = photo_minutes + shots * local_engine.VIDEO_MODELS[video_model]["estimated_minutes"]
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "action": action,
+            "credits": 0,
+            "usd": 0.0,
+            "upper_bound": False,
+            "local": True,
+            "shots": shots,
+            "minutes": minutes,
+            "photo_first": action == "scene" and not image,
+            "warnings": (
+                ["The 9B model is non-commercial: only for testing and research."]
+                if photo_model == "9b"
+                else []
+            ),
+            "limit_error": None,
+            "needs_talker": False,
+        }
+
+    def forge_go(self, options: dict[str, Any]) -> dict[str, Any]:
+        """Start a Free builder action right away (no confirmation step)."""
+        options = dict(options or {})
+        action = "scene" if str(options.get("action") or "") == "scene" else "photo"
+        engine = self.engine_status()
+        if engine["state"] != "ready":
+            if engine["state"] in ("stopped", "error"):
+                self.engine_autostart()
+            return {"ok": False, "error": engine["message"] + " Try again when it says ready."}
+        prompt = " ".join(str(options.get("prompt") or "").split())[:ob.PROMPT_MAX_CHARS]
+        photo_model = ob.photo_model_choice(options.get("photo_model"))
+        video_model = str(options.get("video_model") or "a14b")
+        if video_model not in local_engine.VIDEO_MODELS:
+            video_model = "a14b"
+        vram_mode = ob.vram_mode_choice(options.get("vram_mode"))
+        shape = str(options.get("shape") or "")
+        image = str(options.get("image") or "").strip()
+        try:
+            if action == "photo":
+                count = max(1, min(int(options.get("count") or 1), 4))
+                short_label = ob.PHOTO_MODELS[photo_model]["label"].split(" (")[0]
+                items = [
+                    self._forge_photo_item(
+                        prompt=prompt,
+                        shape=shape,
+                        photo_model=photo_model,
+                        label=f"Avatar photo {index} of {count} · {short_label} · your GPU",
+                    )
+                    for index in range(1, count + 1)
+                ]
+                total_minutes = ob.PHOTO_MODELS[photo_model]["estimated_minutes"] * count
+                two_stage = False
+            else:
+                shots = self._forge_shots(options)
+                if not shots:
+                    raise ValueError("Describe at least one shot (it becomes the video scene).")
+                if image and not Path(image).expanduser().is_file():
+                    raise ValueError("That start picture isn't on this computer anymore.")
+                photo_minutes = ob.PHOTO_MODELS[photo_model]["estimated_minutes"]
+                if image:
+                    items = self._studio_scene_items(
+                        {"image": image, "shots": shots, "shape": shape},
+                        video_model=video_model,
+                        vram_mode=vram_mode,
+                        action="forge_scene",
+                        verbatim=True,
+                    )
+                    total_minutes = len(shots) * local_engine.VIDEO_MODELS[video_model]["estimated_minutes"]
+                    two_stage = False
+                else:
+                    items = [
+                        self._forge_photo_item(
+                            prompt=prompt,
+                            shape=shape,
+                            photo_model=photo_model,
+                            action="forge_scene",
+                            label=f"Scene start photo · {ob.PHOTO_MODELS[photo_model]['label'].split(' (')[0]} · your GPU",
+                            extra_runtime={
+                                "candidate_qa": True,
+                                "forge_scene": {
+                                    "shots": shots,
+                                    "shape": shape,
+                                    "video_model": video_model,
+                                    "vram_mode": vram_mode,
+                                },
+                            },
+                        )
+                    ]
+                    total_minutes = photo_minutes + len(shots) * local_engine.VIDEO_MODELS[video_model]["estimated_minutes"]
+                    two_stage = True
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+        queue_ids = self.queue.add_many(items)
+        return {
+            "ok": True,
+            "action": action,
+            "queue_id": queue_ids[0],
+            "queued": [{"queue_id": queue_id} for queue_id in queue_ids],
+            "total_credits": 0,
+            "local": True,
+            "shots": len(items),
+            "minutes": total_minutes,
+            "photo_first": two_stage,
+        }
+
     def studio_thumb(self, path: str) -> dict[str, Any]:
         """Small preview for an image or (first frame of) a video in the Studio results."""
         source = Path(str(path or "")).expanduser()
@@ -811,6 +1334,39 @@ class StudioMixin:
             }
         except OSError as exc:
             return {"ok": False, "error": f"Could not open that photo ({type(exc).__name__})."}
+
+    def _ensure_media_server(self) -> _LocalMediaServer:
+        server = getattr(self, "_media_server", None)
+        if server is None:
+            server = _LocalMediaServer()
+            self._media_server = server
+        return server
+
+    def _close_media_server(self) -> None:
+        server = getattr(self, "_media_server", None)
+        if server is not None:
+            server.close()
+            self._media_server = None
+
+    def studio_video(self, path: str) -> dict[str, Any]:
+        """Serve a local video over loopback HTTP (with Range seeking) for the in-app review viewer."""
+        source = Path(str(path or "")).expanduser()
+        if _kind(str(source)) != "video" or not source.is_file():
+            return {"ok": False, "error": "That video is no longer on this computer."}
+        try:
+            url = self._ensure_media_server().register(source)
+            meta = _probe_video_meta(source)
+            return {
+                "ok": True,
+                "url": url,
+                "name": source.name,
+                "width": meta.get("width"),
+                "height": meta.get("height"),
+                "duration_s": meta.get("duration_s"),
+                "fps": meta.get("fps"),
+            }
+        except OSError as exc:
+            return {"ok": False, "error": f"Could not open that video ({type(exc).__name__})."}
 
     # ------------------------------------------------------------------ state for the Studio screen
 

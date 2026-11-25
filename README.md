@@ -31,6 +31,14 @@ Avatar V2 is now one simple screen with three parts in the sidebar:
   5. **Act it out**: film yourself for 3-30 s; she copies your face and moves, and your voice is removed.
   6. **Moving clip**: turn her photo into a 5-second clip **free on your GPU**, or a 5-10 s clip on
      Runway (Gen-4.5 or the cheaper Turbo).
+- **Free builder** (⚡ in the sidebar): build offline, prompt-first, no credits. One prompt box can
+  make an **avatar photo** (FLUX.2 klein 4B on the GPU) or a **video scene** — the long prompt is
+  split into shots, rendered through Wan 2.2, and stitched into one video. Start from a picture or
+  from words alone (the start photo is made first, then the scene follows automatically). Photo
+  model dropdown: FLUX.2 klein 4B (Apache 2.0) or 9B Base (non-commercial). Video model dropdown:
+  Wan A14B + Lightning or the faster 5B Turbo. A VRAM mode can move text encoders to the CPU for
+  the heavy jobs. Every job forces GPU-memory cleanup before and after the render. Details:
+  [`docs/OFFLINE_BUILDER.md`](docs/OFFLINE_BUILDER.md).
 - **My stuff**: every photo, video and voiceover as a thumbnail. Click to see it full size (Use /
   Keep / Toss, arrow keys, actual-size zoom, "Open in its own window").
 - **Settings**: Runway key and balance, the GPU engine (start/stop), optional spending limits, the
@@ -46,9 +54,11 @@ still in the package, and the screens are in git history (`798d34f`). Code: `ava
 
 `scripts/setup_local_engine.sh` installs ComfyUI with **Wan 2.2 14B image-to-video** (GGUF Q4_K_S
 plus the 4-step Lightning LoRAs), sized for an 8 GB NVIDIA GPU, into `~/AvatarForge` (about 34 GB).
-The app starts it when it opens and stops it when it closes. It powers the free "Moving clip"
-option; everything else uses Runway, because nothing else runs well enough on 8 GB. Details and
-measured speed: [`docs/LOCAL_ENGINE.md`](docs/LOCAL_ENGINE.md).
+`scripts/setup_offline_builder.sh` adds the Free builder's image models (FLUX.2 klein 4B/9B and
+the Wan 5B Turbo, about 16 GB more). The app starts ComfyUI when it opens and stops it when it
+closes. It powers the free "Moving clip" option and the whole Free builder; everything else uses
+Runway, because nothing else runs well enough on 8 GB. Details and measured speed:
+[`docs/LOCAL_ENGINE.md`](docs/LOCAL_ENGINE.md) and [`docs/OFFLINE_BUILDER.md`](docs/OFFLINE_BUILDER.md).
 
 ## What the desktop app exposes
 

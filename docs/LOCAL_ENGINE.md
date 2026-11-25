@@ -33,9 +33,12 @@ scripts/setup_local_engine.sh   # about 27 GB of models plus about 7 GB for Comf
 The app starts ComfyUI when it opens (only if it's installed; it is ready in about 10 seconds) and
 asks it to quit when the app closes, if the app started it. **Settings → Your GPU engine** shows its
 state and has Start / Stop buttons. Stop frees the GPU memory. A loaded engine can take about a minute
-to release its models; it is only ever asked to quit (SIGTERM), never force-killed. Extra ComfyUI flags
-go in the `comfyui_args` setting (default `--disable-auto-launch`); ComfyUI's own dynamic VRAM manager
-needs no tuning flags on 8 GB.
+to release its models; it is asked to quit (SIGTERM) first. **Closing the app always frees the GPU**:
+on shutdown the app stops the queue, asks ComfyUI to unload its models (`POST /free`), sends SIGTERM,
+and if its own engine hasn't exited within about 10 seconds it force-kills only that engine process —
+never any other program's process — so videos and other GPU work run smoothly after the app closes.
+Extra ComfyUI flags go in the `comfyui_args` setting (default `--disable-auto-launch`); ComfyUI's own
+dynamic VRAM manager needs no tuning flags on 8 GB.
 
 ## GPU memory safety
 

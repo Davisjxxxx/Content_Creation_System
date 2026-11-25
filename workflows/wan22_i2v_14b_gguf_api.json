@@ -5,7 +5,7 @@
   "4": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["2", 0], "lora_name": "${WAN_LOW_LORA}", "strength_model": 1.0}, "_meta": {"title": "Lightning 4-step LoRA (low)"}},
   "5": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["3", 0], "shift": 5.0}},
   "6": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["4", 0], "shift": 5.0}},
-  "7": {"class_type": "CLIPLoader", "inputs": {"clip_name": "${WAN_TEXT_ENCODER}", "type": "wan", "device": "default"}},
+  "7": {"class_type": "CLIPLoader", "inputs": {"clip_name": "${WAN_TEXT_ENCODER}", "type": "wan", "device": "${WAN_CLIP_DEVICE}"}},
   "8": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["7", 0], "text": "${PROMPT}"}, "_meta": {"title": "Positive prompt"}},
   "9": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["7", 0], "text": "${WAN_NEGATIVE}"}, "_meta": {"title": "Negative prompt (no effect at CFG 1)"}},
   "10": {"class_type": "VAELoader", "inputs": {"vae_name": "${WAN_VAE}"}},

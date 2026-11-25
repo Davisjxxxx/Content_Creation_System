@@ -38,6 +38,64 @@ WAN_FRAME_OFFSET = 1
 WAN_MAX_FRAMES = 481
 WAN_CANVAS_MULTIPLE = 32
 
+# Pixel threshold above which FLUX.2 still decoding automatically switches to VAEDecodeTiled
+# (standard 896x1280 = 1,146,880 px stays on baseline VAEDecode unless TILED_VAE is requested).
+TILED_VAE_STILL_PIXEL_THRESHOLD = 1024 * 1280
+
+
+def tiled_vae_decode_node(
+    samples_link: list[Any],
+    vae_link: list[Any],
+    *,
+    tile_size: int = 512,
+    overlap: int = 64,
+    temporal_size: int = 64,
+    temporal_overlap: int = 8,
+) -> dict[str, Any]:
+    """Schema-verified ComfyUI 0.46 VAEDecodeTiled node (nodes.py:348)."""
+    tile_size = max(64, min(int(tile_size), 4096))
+    overlap = max(0, min(int(overlap), tile_size // 4))
+    temporal_size = max(8, min(int(temporal_size), 4096))
+    temporal_overlap = max(4, min(int(temporal_overlap), temporal_size // 2))
+    return _node(
+        "VAEDecodeTiled",
+        samples=samples_link,
+        vae=vae_link,
+        tile_size=tile_size,
+        overlap=overlap,
+        temporal_size=temporal_size,
+        temporal_overlap=temporal_overlap,
+    )
+
+
+def with_tiled_vae(
+    graph: dict[str, Any],
+    *,
+    tile_size: int = 512,
+    overlap: int = 64,
+    temporal_size: int = 64,
+    temporal_overlap: int = 8,
+) -> dict[str, Any]:
+    """Return a copy of a ComfyUI API graph with every VAEDecode node upgraded to VAEDecodeTiled."""
+    updated: dict[str, Any] = {}
+    for node_id, node in graph.items():
+        if isinstance(node, dict) and node.get("class_type") == "VAEDecode":
+            inputs = node.get("inputs") or {}
+            tiled = tiled_vae_decode_node(
+                inputs["samples"],
+                inputs["vae"],
+                tile_size=tile_size,
+                overlap=overlap,
+                temporal_size=temporal_size,
+                temporal_overlap=temporal_overlap,
+            )
+            if "_meta" in node:
+                tiled["_meta"] = dict(node["_meta"])
+            updated[node_id] = tiled
+        else:
+            updated[node_id] = node
+    return updated
+
 
 def wan_frame_count(duration_s: float) -> int:
     """Snap a duration to a valid Wan 2.2 frame count (4k+1 grid, 16 fps)."""
@@ -189,7 +247,19 @@ def build_h3_common(
     sample_id = next_id
     next_id += 1
 
-    graph[str(next_id)] = _node("VAEDecode", samples=_link(sample_id), vae=_link(vae_id))
+    if bool(mapping.get("TILED_VAE")) or (
+        int(_value(mapping, "WIDTH", 0)) * int(_value(mapping, "HEIGHT", 0)) > TILED_VAE_STILL_PIXEL_THRESHOLD
+    ):
+        graph[str(next_id)] = tiled_vae_decode_node(
+            _link(sample_id),
+            _link(vae_id),
+            tile_size=int(_value(mapping, "VAE_TILE_SIZE", 512)),
+            overlap=int(_value(mapping, "VAE_OVERLAP", 64)),
+            temporal_size=int(_value(mapping, "VAE_TEMPORAL_SIZE", 64)),
+            temporal_overlap=int(_value(mapping, "VAE_TEMPORAL_OVERLAP", 8)),
+        )
+    else:
+        graph[str(next_id)] = _node("VAEDecode", samples=_link(sample_id), vae=_link(vae_id))
     decode_id = next_id
     next_id += 1
 
@@ -323,7 +393,19 @@ def build_wan_flf2v_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
     sample_id = next_id
     next_id += 1
 
-    graph[str(next_id)] = _node("VAEDecode", samples=_link(sample_id), vae=_link(vae_id))
+    if bool(mapping.get("TILED_VAE")) or (
+        int(_value(mapping, "WIDTH", 0)) * int(_value(mapping, "HEIGHT", 0)) > TILED_VAE_STILL_PIXEL_THRESHOLD
+    ):
+        graph[str(next_id)] = tiled_vae_decode_node(
+            _link(sample_id),
+            _link(vae_id),
+            tile_size=int(_value(mapping, "VAE_TILE_SIZE", 512)),
+            overlap=int(_value(mapping, "VAE_OVERLAP", 64)),
+            temporal_size=int(_value(mapping, "VAE_TEMPORAL_SIZE", 64)),
+            temporal_overlap=int(_value(mapping, "VAE_TEMPORAL_OVERLAP", 8)),
+        )
+    else:
+        graph[str(next_id)] = _node("VAEDecode", samples=_link(sample_id), vae=_link(vae_id))
     decode_id = next_id
     next_id += 1
 
@@ -438,7 +520,19 @@ def build_wan_funcontrol_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
     sample_id = next_id
     next_id += 1
 
-    graph[str(next_id)] = _node("VAEDecode", samples=_link(sample_id), vae=_link(vae_id))
+    if bool(mapping.get("TILED_VAE")) or (
+        int(_value(mapping, "WIDTH", 0)) * int(_value(mapping, "HEIGHT", 0)) > TILED_VAE_STILL_PIXEL_THRESHOLD
+    ):
+        graph[str(next_id)] = tiled_vae_decode_node(
+            _link(sample_id),
+            _link(vae_id),
+            tile_size=int(_value(mapping, "VAE_TILE_SIZE", 512)),
+            overlap=int(_value(mapping, "VAE_OVERLAP", 64)),
+            temporal_size=int(_value(mapping, "VAE_TEMPORAL_SIZE", 64)),
+            temporal_overlap=int(_value(mapping, "VAE_TEMPORAL_OVERLAP", 8)),
+        )
+    else:
+        graph[str(next_id)] = _node("VAEDecode", samples=_link(sample_id), vae=_link(vae_id))
     decode_id = next_id
     next_id += 1
 
@@ -451,6 +545,140 @@ def build_wan_funcontrol_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
         format="video/h264-mp4",
         pingpong=False,
         save_output=True,
+    )
+    next_id += 1
+
+    return graph
+
+
+def build_flux2_txt2img_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
+    """FLUX.2 [klein] 4B text-to-image graph (ComfyUI 0.46 native Flux2 pipeline).
+
+    Node wiring follows the community-verified 8 GB workflow for the unsloth GGUF
+    (UnetLoaderGGUF + Qwen3 CLIP on CPU + CFGGuider + Flux2Scheduler). FLUX.2 uses
+    an SD3-style latent, so the empty latent comes from EmptySD3LatentImage and the
+    sampler runs through SamplerCustomAdvanced. Canvas dimensions must be multiples
+    of 16 (FLUX.2 VAE latent).
+    """
+    graph: dict[str, Any] = {}
+    next_id = 1
+
+    graph[str(next_id)] = _node(
+        "UnetLoaderGGUF",
+        unet_name=_value(mapping, "FORGE_UNET", "flux-2-klein-4b-Q5_K_M.gguf"),
+    )
+    unet_id = next_id
+    next_id += 1
+
+    # The Qwen3 text encoder is a GGUF, so it loads through ComfyUI-GGUF's CLIPLoaderGGUF.
+    # In this ComfyUI build (0.46) text encoders run on the CPU by default (no --gpu-only
+    # in the app's launch args), which keeps the 8 GB card free for the UNet.
+    graph[str(next_id)] = _node(
+        "CLIPLoaderGGUF",
+        clip_name=_value(mapping, "FORGE_TEXT_ENCODER", "Qwen3-4B-Q5_K_M.gguf"),
+        type="flux2",
+    )
+    clip_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "VAELoader",
+        vae_name=_value(mapping, "FORGE_VAE", "flux2-vae.safetensors"),
+    )
+    vae_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "CLIPTextEncode",
+        text=_value(mapping, "PROMPT", ""),
+        clip=_link(clip_id),
+    )
+    pos_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "CLIPTextEncode",
+        text=_value(mapping, "NEGATIVE_PROMPT", ""),
+        clip=_link(clip_id),
+    )
+    neg_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "EmptySD3LatentImage",
+        width=int(_value(mapping, "WIDTH", 896)),
+        height=int(_value(mapping, "HEIGHT", 1280)),
+        batch_size=1,
+    )
+    latent_id = next_id
+    next_id += 1
+
+    width = int(_value(mapping, "WIDTH", 896))
+    height = int(_value(mapping, "HEIGHT", 1280))
+    graph[str(next_id)] = _node(
+        "Flux2Scheduler",
+        steps=int(_value(mapping, "STEPS", 8)),
+        width=width,
+        height=height,
+    )
+    sigmas_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "RandomNoise",
+        noise_seed=int(_value(mapping, "SEED", 41001)),
+    )
+    noise_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "KSamplerSelect",
+        sampler_name=_value(mapping, "SAMPLER_NAME", "euler"),
+    )
+    sampler_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "CFGGuider",
+        model=_link(unet_id),
+        positive=_link(pos_id),
+        negative=_link(neg_id),
+        cfg=float(_value(mapping, "CFG", 1.2)),
+    )
+    guider_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "SamplerCustomAdvanced",
+        noise=_link(noise_id),
+        guider=_link(guider_id),
+        sampler=_link(sampler_id),
+        sigmas=_link(sigmas_id),
+        latent_image=_link(latent_id),
+    )
+    sample_id = next_id
+    next_id += 1
+
+    if bool(mapping.get("TILED_VAE")) or (
+        int(_value(mapping, "WIDTH", 0)) * int(_value(mapping, "HEIGHT", 0)) > TILED_VAE_STILL_PIXEL_THRESHOLD
+    ):
+        graph[str(next_id)] = tiled_vae_decode_node(
+            _link(sample_id),
+            _link(vae_id),
+            tile_size=int(_value(mapping, "VAE_TILE_SIZE", 512)),
+            overlap=int(_value(mapping, "VAE_OVERLAP", 64)),
+            temporal_size=int(_value(mapping, "VAE_TEMPORAL_SIZE", 64)),
+            temporal_overlap=int(_value(mapping, "VAE_TEMPORAL_OVERLAP", 8)),
+        )
+    else:
+        graph[str(next_id)] = _node("VAEDecode", samples=_link(sample_id), vae=_link(vae_id))
+    decode_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "SaveImage",
+        images=_link(decode_id),
+        filename_prefix=_value(mapping, "OUTPUT_PREFIX", "avatar_v2/forge"),
     )
     next_id += 1
 
@@ -514,5 +742,6 @@ BUILTIN_BUILDERS = {
     "h3_fl2va": build_h3_fl2va_workflow,
     "wan22": build_wan_flf2v_workflow,
     "wan22_funcontrol": build_wan_funcontrol_workflow,
+    "flux2_txt2img": build_flux2_txt2img_workflow,
     "upscale": build_upscale_workflow,
 }

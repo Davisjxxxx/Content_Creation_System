@@ -213,15 +213,23 @@ class GPUMemoryManager:
         """Clean local Python garbage and, when needed, ask ComfyUI to free VRAM."""
         gc.collect()
         before = query_gpu_memory()
+        over_threshold = any(item.usage >= self.threshold for item in before)
         # Explicit/manual and memory-sensitive-profile cleanup must work even when
         # threshold-based automatic cleanup is disabled in Settings.
-        should_clean = force or (self.enabled and any(item.usage >= self.threshold for item in before))
+        should_clean = force or (self.enabled and over_threshold)
+        # ComfyUI 0.46's /free handler defaults unset/false unload_models to free_memory=True,
+        # which unloads all loaded models anyway. When a caller intentionally asks to retain
+        # warm models (unload_models=False) and VRAM is safely below the cleanup threshold,
+        # skip /free so models actually remain resident; escalate to a full unload if VRAM
+        # reaches or exceeds the threshold.
+        effective_unload = unload_models or over_threshold
+        models_retained = bool(not unload_models and not over_threshold)
         requested = False
         error = ""
 
-        if should_clean and provider is not None:
+        if should_clean and provider is not None and effective_unload:
             try:
-                provider.free_memory(unload_models=unload_models, free_memory=True)
+                provider.free_memory(unload_models=True, free_memory=True)
                 requested = True
             except Exception as exc:  # cleanup failure should be recorded, not mask a render result
                 error = f"{type(exc).__name__}: {exc}"
@@ -261,6 +269,8 @@ class GPUMemoryManager:
             "enabled": self.enabled,
             "threshold": self.threshold,
             "forced": force,
+            "unload_models": effective_unload,
+            "models_retained": models_retained,
             "cleanup_requested": requested,
             "error": error,
             "before": [item.public() for item in before],

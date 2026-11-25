@@ -15,6 +15,7 @@ a = Analysis(
         (os.path.join(os.path.dirname(SPECPATH), "workflows", "animatediff_sd15_api.json"), "workflows"),
         (os.path.join(os.path.dirname(SPECPATH), "workflows", "animatediff_sdxl_api.json"), "workflows"),
         (os.path.join(os.path.dirname(SPECPATH), "workflows", "wan22_i2v_14b_gguf_api.json"), "workflows"),
+        (os.path.join(os.path.dirname(SPECPATH), "workflows", "wan22_i2v_5b_turbo_gguf_api.json"), "workflows"),
     ],
     hiddenimports=hiddenimports,
     hookspath=[],

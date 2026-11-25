@@ -94,7 +94,7 @@ def _spec(item) -> dict:
 
 def test_studio_methods_are_bridged_and_the_internal_setup_is_not():
     for name in ("studio_state", "studio_price", "studio_go", "studio_pick", "studio_talker_status", "studio_thumb",
-                 "studio_image", "studio_library", "studio_avatars", "studio_delete", "engine_status",
+                 "studio_image", "studio_video", "studio_library", "studio_avatars", "studio_delete", "engine_status",
                  "comfyui_start", "comfyui_stop"):
         assert name in JS_API_METHODS
     for name in ("studio_setup_talker", "engine_autostart", "queue_runway", "queue_render", "vault_save"):
@@ -252,9 +252,46 @@ def test_full_size_viewer_image_and_video_thumbnails(api, home):
     assert image["ok"] is True and (image["width"], image["height"]) == (1080, 1440)
     assert image["data_url"].startswith("data:image/jpeg;base64,")
     assert api.studio_image(str(home / "missing.png"))["ok"] is False
-    assert api.studio_image(str(_video(home / "clip.mp4", 1)))["ok"] is False  # stills only
-    thumb = api.studio_thumb(str(home / "clip.mp4"))
+    clip = _video(home / "clip.mp4", 1)
+    assert api.studio_image(str(clip))["ok"] is False  # stills only
+    thumb = api.studio_thumb(str(clip))
     assert thumb["ok"] is True and thumb["data_url"].startswith("data:image/jpeg;base64,")
+
+
+def test_in_app_video_viewer_serves_local_video_with_range_seeking(api, home):
+    import httpx
+
+    clip = _video(home / "review.mp4", 1)
+    still = _png(home / "still.png")
+    try:
+        assert api.studio_video(str(home / "missing.mp4"))["ok"] is False
+        assert api.studio_video(str(still))["ok"] is False  # videos only
+
+        info = api.studio_video(str(clip))
+        assert info["ok"] is True
+        assert info["url"].startswith("http://127.0.0.1:") and info["url"].endswith(".mp4")
+        assert info["name"] == "review.mp4"
+        assert info["width"] and info["height"] and info["duration_s"]
+
+        raw = clip.read_bytes()
+        full = httpx.get(info["url"], timeout=5.0)
+        assert full.status_code == 200
+        assert full.headers.get("accept-ranges") == "bytes"
+        assert full.headers.get("content-type") == "video/mp4"
+        assert full.content == raw
+
+        partial = httpx.get(info["url"], headers={"Range": "bytes=0-127"}, timeout=5.0)
+        assert partial.status_code == 206
+        assert partial.headers.get("content-range") == f"bytes 0-127/{len(raw)}"
+        assert partial.content == raw[:128]
+
+        bad_range = httpx.get(info["url"], headers={"Range": f"bytes={len(raw) + 10}-"}, timeout=5.0)
+        assert bad_range.status_code == 416
+
+        base_url = info["url"].rsplit("/", 1)[0]
+        assert httpx.get(f"{base_url}/not_registered.mp4", timeout=5.0).status_code == 404
+    finally:
+        api._close_media_server()
 
 
 def test_results_list_recent_runway_outputs_and_recent_failures_only(api, home):
@@ -323,6 +360,16 @@ def test_engine_status_reports_not_installed_missing_and_ready(api, home, monkey
     monkeypatch.setattr(api, "comfyui_status", lambda: {"state": "STOPPED", "ready": False, "pid": None})
     monkeypatch.setattr(api, "comfyui_start", lambda: started.append(True) or {"ok": True, "state": "STARTING"})
     assert api.engine_autostart()["state"] == "STARTING" and started == [True]
+
+
+def test_proc_alive_never_counts_zombies_or_missing_pids():
+    import os
+
+    from avatar_v2.desktop import _proc_alive
+
+    assert _proc_alive(os.getpid()) is True
+    assert _proc_alive(None) is False
+    assert _proc_alive(99999999) is False
 
 
 def test_local_moving_clip_is_free_and_fills_every_workflow_slot(api, home, monkeypatch):

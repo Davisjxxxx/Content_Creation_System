@@ -39,6 +39,8 @@ Set `AVATAR_V2_GPU_AUTOCLEAN=0` to disable automatic cleanup without changing co
 
 `GPUMemoryManager.emergency_terminate()` accepts only explicitly approved PIDs. It does not discover-and-kill every Python process. A future UI emergency action must show the candidate GPU processes and require the user to select/confirm the PID(s) before termination.
 
+One scoped exception, added at the owner's request (2026-11-24): when the **app shuts down**, it must stop all its GPU activity so the machine stays usable for videos and other GPU work. Shutdown therefore stops the queue, asks ComfyUI to unload models through `POST /free`, sends SIGTERM to the engine process the app itself started, and — only if that process has not exited within about 10 seconds — force-kills that one app-owned pid. This never extends to any process the app did not start.
+
 ## Profile-sweep data
 
 Every queued render now retains:

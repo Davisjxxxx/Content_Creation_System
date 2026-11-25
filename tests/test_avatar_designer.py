@@ -220,13 +220,40 @@ def test_open_path_uses_ffplay_for_linux_video(tmp_path: Path, monkeypatch):
     result = api.open_path(str(source))
 
     assert result == {"ok": True}
+    assert "-autoexit" not in launched[0][0][0]
     assert launched[0][0][0] == [
         "/usr/bin/ffplay",
-        "-autoexit",
         "-seek_interval",
         "1",
         str(source.resolve()),
     ]
+
+
+def test_open_path_prefers_stay_open_desktop_players_for_linux_video(tmp_path: Path, monkeypatch):
+    from avatar_v2 import desktop
+
+    source = tmp_path / "review.mp4"
+    source.write_bytes(b"video")
+    api = DesktopAPI.__new__(DesktopAPI)
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Linux")
+
+    launched = []
+    monkeypatch.setattr(
+        desktop.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"vlc", "ffplay"} else None,
+    )
+    monkeypatch.setattr(desktop.subprocess, "Popen", lambda *args, **kwargs: launched.append(args[0]))
+    assert api.open_path(str(source)) == {"ok": True}
+    assert launched[-1] == ["/usr/bin/vlc", "--started-from-file", "--play-and-pause", str(source.resolve())]
+
+    monkeypatch.setattr(
+        desktop.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"mpv", "vlc", "ffplay"} else None,
+    )
+    assert api.open_path(str(source)) == {"ok": True}
+    assert launched[-1] == ["/usr/bin/mpv", "--force-window=yes", "--keep-open=yes", str(source.resolve())]
 
 
 def test_candidate_decision_requires_explicit_accept_and_protects_anatomy(tmp_path: Path, monkeypatch):

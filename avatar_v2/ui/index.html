@@ -126,8 +126,8 @@ h2{font-size:28px;margin:0;letter-spacing:-.03em}
 .shot .label{padding-top:12px}
 .more{margin-top:14px;text-align:center}
 pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(--line);border-radius:10px;padding:10px;font:12px/1.5 ui-monospace,monospace;color:#9a9aa5;white-space:pre-wrap;margin:8px 0 0}
-/* full-size photo viewer */
-.viewer{position:fixed;inset:0;z-index:200;background:rgba(4,4,7,.97);display:none;grid-template-rows:auto minmax(0,1fr) auto;padding:14px 18px;gap:10px}
+/* full-size photo and video viewer */
+.viewer{position:fixed;inset:0;z-index:200;background:rgba(4,4,7,.97);display:none;grid-template-rows:auto minmax(0,1fr) auto auto;padding:14px 18px;gap:10px}
 .viewer.open{display:grid}
 .viewer-top{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .viewer-title{display:flex;gap:12px;align-items:baseline;min-width:0}
@@ -136,12 +136,17 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
 .viewer-stage{min-height:0;height:100%;display:grid;grid-template-columns:58px minmax(0,1fr) 58px;grid-template-rows:minmax(0,1fr);align-items:stretch;gap:10px}
 .viewer-frame{position:relative;min-height:0;min-width:0;overflow:hidden;display:flex;align-items:center;justify-content:center}
 .viewer-frame img{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;border-radius:10px;box-shadow:0 20px 70px rgba(0,0,0,.6);cursor:zoom-in;display:block}
+.viewer-frame video{max-width:100%;max-height:100%;width:auto;height:auto;border-radius:10px;box-shadow:0 20px 70px rgba(0,0,0,.6);background:#000;display:block;outline:none}
 .viewer-frame.zoom{overflow:auto;display:block;text-align:center}
 .viewer-frame.zoom img{max-width:none;max-height:none;cursor:zoom-out;border-radius:0;display:inline-block}
-.viewer-loading{position:absolute;inset:0;display:grid;place-items:center;color:#9a9aa6;font-size:14px;pointer-events:none}
+.viewer-loading{position:absolute;inset:0;display:grid;place-items:center;color:#9a9aa6;font-size:14px;pointer-events:none;text-align:center;padding:16px}
 .viewer-nav{align-self:center;height:84px;border:1px solid var(--line);background:rgba(255,255,255,.04);color:#ddd;border-radius:14px;font-size:34px;cursor:pointer}
 .viewer-nav:hover{border-color:rgba(255,45,125,.5);color:#fff}
 .viewer-nav:disabled{opacity:.15;cursor:default}
+.viewer-controls{display:none;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;padding:6px 10px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.03)}
+.viewer-controls.show{display:flex}
+.viewer-controls .mini.on{border-color:var(--pink);background:rgba(255,45,125,.2);color:#fff}
+.viewer-time{font:12px/1 ui-monospace,monospace;color:#c9c9d4;padding:0 6px;min-width:110px;text-align:center}
 .viewer-bottom{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .viewer-actions{display:flex;gap:8px;flex-wrap:wrap}
 .viewer-actions .btn{padding:12px 22px;font-size:15px}
@@ -153,6 +158,7 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
   <div class="brand"><svg width="34" height="34" viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="g" x1="4" y1="3" x2="27" y2="28"><stop stop-color="#ff2d7d"/><stop offset="1" stop-color="#ff3b30"/></linearGradient></defs><path fill="url(#g)" d="M16 27.6S4.1 20.2 4.1 11.7c0-4.5 3-7.4 6.9-7.4 2.4 0 4.2 1.2 5 2.9.8-1.7 2.6-2.9 5-2.9 3.9 0 6.9 2.9 6.9 7.4 0 8.5-11.9 15.9-11.9 15.9Z"/></svg><div><h1>AVATAR V2</h1><small>Studio</small></div></div>
   <div class="nav">
     <button class="active" data-view="make">✨ Make</button>
+    <button data-view="forge">⚡ Free builder</button>
     <button data-view="library">🗂 My stuff</button>
     <button data-view="settings">⚙ Settings</button>
   </div>
@@ -277,6 +283,39 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
   </section>
 </div>
 
+<!-- ============================== FREE BUILDER ============================== -->
+<div id="view-forge" class="view">
+  <div class="top"><div><div class="eyebrow">Your GPU · free, no credits</div><h2>Build with your GPU</h2><p class="lead">Type what you want and it happens offline on this computer. A long scene prompt is split into shots and stitched into one video. Runway stays in Make as the final polish gate.</p></div></div>
+  <div class="card">
+    <span class="label">Describe it</span>
+    <textarea id="forgePrompt" rows="6" maxlength="8000" placeholder="A confident course instructor in her late 30s, warm smile, shoulder-length brown hair and a navy blazer. She sits at a desk and greets the camera. Then she explains today's lesson with natural hand gestures…"></textarea>
+    <div class="tiny" id="forgeCount">0 / 8000</div>
+    <div class="chips" id="forgeIdeas" style="margin-top:8px"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <span class="label">Start picture <small style="text-transform:none">(optional)</small></span>
+    <div class="thumbs" id="forgeImages"></div>
+    <p class="tiny">One clear front photo works best. Leave it empty and the builder designs the person from your words first, then builds the scene around them.</p>
+  </div>
+  <div class="pair" style="margin:14px 0">
+    <div><span class="label">What to make</span><div class="chips" data-chips="forgeAction"><button data-v="scene" class="on">Video scene<small>split into shots, stitched into one video</small></button><button data-v="photo">Avatar photo<small>one portrait to keep and reuse</small></button></div></div>
+    <div><span class="label">Photo model</span><select id="forgePhotoModel"></select><span class="tiny" id="forgePhotoHint"></span></div>
+    <div><span class="label">Video model</span><select id="forgeVideoModel"></select><span class="tiny" id="forgeVideoHint"></span></div>
+    <div><span class="label">VRAM mode</span><select id="forgeVram"></select><span class="tiny" id="forgeVramHint"></span></div>
+  </div>
+  <div id="forgeCountWrap" style="display:none"><span class="label">How many options?</span><div class="chips" data-chips="forgeCount" style="margin-top:6px"><button data-v="1">1</button><button data-v="2" class="on">2</button><button data-v="4">4</button></div></div>
+  <div class="card" id="forgeShotCard">
+    <span class="label">The scene, shot by shot <small style="text-transform:none">(about 5 seconds each)</small></span>
+    <p class="tiny" id="forgeShotHint">Split from your prompt automatically. Edit any line if you want it different.</p>
+    <div class="shots" id="forgeShots"></div>
+    <div class="row" style="margin-top:8px"><button class="mini" id="forgeAddShot" onclick="forgeAddShot()">+ Add a shot</button><button class="mini" onclick="forgeSplit()">Re-split from my prompt</button></div>
+  </div>
+  <button class="btn primary go" id="goForge" onclick="forgeGo()">Make it</button>
+  <div class="note" id="noteForge"></div>
+  <div class="out" id="forgeJobsWrap" style="display:none"><h3>Working on it</h3><div class="jobs" id="forgeJobs"></div></div>
+  <div class="out"><h3>Your builds</h3><p class="tiny" id="forgePickHint">Click any photo to see it full size — "Presenter option" makes it her for future recipes.</p><div class="thumbs" id="forgeResults"></div></div>
+</div>
+
 <!-- ============================== MY STUFF ============================== -->
 <div id="view-library" class="view">
   <div class="top"><div><div class="eyebrow">Everything you've made</div><h2>My stuff</h2></div><div class="row"><span class="tiny" id="libCount"></span><button class="mini" onclick="window.pywebview.api.open_output_dir()">Open folder</button></div></div>
@@ -315,18 +354,27 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
 </main>
 </div>
 
-<!-- full-size photo viewer -->
-<div class="viewer" id="viewer" role="dialog" aria-modal="true" aria-label="Full-size photo">
+<!-- full-size photo and video viewer -->
+<div class="viewer" id="viewer" role="dialog" aria-modal="true" aria-label="Full-size media viewer">
   <div class="viewer-top">
     <div class="viewer-title"><b id="viewerTitle">Photo</b><span id="viewerMeta"></span></div>
     <div class="row"><button class="mini" id="viewerZoomBtn" onclick="viewerToggleZoom()">Actual size</button><button class="mini" onclick="viewerExternal()">Open in its own window</button><button class="mini" onclick="viewerClose()">Close ✕</button></div>
   </div>
   <div class="viewer-stage">
-    <button class="viewer-nav" id="viewerPrev" onclick="viewerStep(-1)" aria-label="Previous photo">‹</button>
-    <div class="viewer-frame" id="viewerFrame"><img id="viewerImg" alt="Full-size photo"><div class="viewer-loading" id="viewerLoading">Loading full size…</div></div>
-    <button class="viewer-nav" id="viewerNext" onclick="viewerStep(1)" aria-label="Next photo">›</button>
+    <button class="viewer-nav" id="viewerPrev" onclick="viewerStep(-1)" aria-label="Previous item">‹</button>
+    <div class="viewer-frame" id="viewerFrame"><img id="viewerImg" alt="Full-size photo"><video id="viewerVideo" controls playsinline preload="auto" style="display:none"></video><div class="viewer-loading" id="viewerLoading">Loading full size…</div></div>
+    <button class="viewer-nav" id="viewerNext" onclick="viewerStep(1)" aria-label="Next item">›</button>
   </div>
-  <div class="viewer-bottom"><div class="viewer-actions" id="viewerActions"></div><div class="tiny">← → compare · Enter keep/use · Delete toss · Z or click zoom · Esc close</div></div>
+  <div class="viewer-controls" id="viewerVideoBar">
+    <button class="mini" id="viewerPlayBtn" onclick="viewerPlayPause()">⏸ Pause</button>
+    <button class="mini" id="viewerReplayBtn" onclick="viewerReplay()" title="Play from the start (R)">↺ Replay</button>
+    <button class="mini" id="viewerLoopBtn" onclick="viewerToggleLoop()" title="Keep replaying automatically (L)">🔁 Loop</button>
+    <button class="mini" onclick="viewerStepFrame(-1)" title="Previous frame (,)">‹ Frame</button>
+    <button class="mini" onclick="viewerStepFrame(1)" title="Next frame (.)">Frame ›</button>
+    <span class="row" id="viewerSpeedBtns" style="gap:4px"><button class="mini" data-rate="0.25" onclick="viewerSetRate(0.25)">0.25×</button><button class="mini" data-rate="0.5" onclick="viewerSetRate(0.5)">0.5×</button><button class="mini on" data-rate="1" onclick="viewerSetRate(1)">1×</button><button class="mini" data-rate="1.5" onclick="viewerSetRate(1.5)">1.5×</button></span>
+    <span class="viewer-time" id="viewerTime">0:00.0 / 0:00.0</span>
+  </div>
+  <div class="viewer-bottom"><div class="viewer-actions" id="viewerActions"></div><div class="tiny" id="viewerHelp">← → compare · Enter keep/use · Delete toss · Z or click zoom · Esc close</div></div>
 </div>
 
 <script>
@@ -334,6 +382,7 @@ const $=id=>document.getElementById(id);
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function base(v){return (v||'').split(/[\\/]/).pop()}
 function log(x){const el=$('log');if(!el)return;el.textContent=`[${new Date().toLocaleTimeString()}] ${x}\n`+el.textContent.slice(0,8000)}
+function say(text,kind){log((kind==='err'?'✕ ':'')+text)}
 function openLocalPath(path){window.pywebview.api.open_path(path).then(r=>{if(r&&!r.ok)log('Open: '+r.error)})}
 
 const RECIPES=[
@@ -352,7 +401,8 @@ const ST_VERB={presenter:o=>o.count>1?`Make ${o.count} options`:'Make 1 option',
 const ST_DEFAULT_ANGLES=['identity_three_quarter_left','identity_three_quarter_right','presenter_expression_smile'];
 const MOVE_IDEAS=['She smiles warmly and nods.','She waves hello to the camera.','She explains something with natural hand gestures.','She turns to face the camera and smiles.','She laughs naturally, then looks back at the camera.'];
 const st={data:null,engine:null,thumbs:new Map(),recipe:null,look:'natural',actVideo:'',moveImage:'',sceneImage:'',actImage:'',anglesImage:'',sceneShots:[''],priceTimer:null,sig:{},talkerTimer:null,lastJobs:0,noteUntil:{},libKind:'all',libItems:[],libShown:60,libImages:[],pickShown:{},pickExpanded:{},presenterAddOpen:false,
-  opts:{stCount:'4',stTalkMode:'type',stActBody:'body',stActShape:'tall',moveEngine:'best',moveSeconds:'5',moveShape:'tall',sceneShape:'tall'},engineChosen:false};
+  opts:{stCount:'4',stTalkMode:'type',stActBody:'body',stActShape:'tall',moveEngine:'best',moveSeconds:'5',moveShape:'tall',sceneShape:'tall',forgeAction:'scene',forgeCount:'2'},engineChosen:false,
+  forge:{data:null,image:'',shots:[],edited:false,priceTimer:null,noteUntil:0}};
 const SCENE_IDEAS=['She walks into the room and smiles at the camera.','She sits down at the desk and opens a laptop.','She explains a point with natural hand gestures.','The camera slowly pushes in as she keeps talking.','She laughs, then turns back to the camera.'];
 // Each shot starts from the previous shot's last frame, so every line begins where the last one ended:
 // a 12-shot lesson that stitches into about one minute of continuous video.
@@ -381,7 +431,7 @@ function stSig(key,value){const s=JSON.stringify(value===undefined?null:value);i
 async function stThumb(img,path){if(!img||!path)return;const hit=st.thumbs.get(path);if(hit){img.src=hit;return}try{const t=await window.pywebview.api.studio_thumb(path);if(t&&t.ok){st.thumbs.set(path,t.data_url);img.src=t.data_url}}catch(e){}}
 
 /* ---------- navigation ---------- */
-function view(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='view-'+v));document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));if(v==='make')stLoad();if(v==='library')libLoad();if(v==='settings')setLoad()}
+function view(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='view-'+v));document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));if(v==='make')stLoad();if(v==='forge')forgeLoad();if(v==='library')libLoad();if(v==='settings')setLoad()}
 document.querySelectorAll('.nav button[data-view]').forEach(b=>b.onclick=()=>{view(b.dataset.view);if(b.dataset.view==='make')openRecipe(null)});
 function openRecipe(id){st.recipe=id;$('makeHome').hidden=!!id;RECIPES.forEach(r=>{$('recipe-'+r.id).hidden=r.id!==id});document.querySelector('.main').scrollTop=0;if(id){stLoad();if(['move','scene','photos','act'].includes(id))stLoadImages().then(()=>stRender(false));stPriceSoon()}}
 function renderTiles(){const d=st.data||{};$('tiles').innerHTML='';RECIPES.forEach(r=>{const b=document.createElement('button');b.className='tile'+(r.master&&!d.master?' locked':'');b.innerHTML=`<span class="ic">${r.ic}</span><b>${esc(r.title)}</b><span>${esc(r.text)}</span><small>${r.master&&!d.master?'Design her look first':esc(r.price)}</small>`;b.onclick=()=>openRecipe(r.master&&!d.master?'look':r.id);$('tiles').appendChild(b)})}
@@ -391,6 +441,7 @@ function stChipInit(){document.querySelectorAll('.chips[data-chips]').forEach(gr
 function stChipSet(name,value){const group=document.querySelector(`.chips[data-chips="${name}"]`);if(!group)return;group.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x.dataset.v===value));st.opts[name]=value;
   if(name==='stTalkMode'){$('talkTypeBox').style.display=value==='type'?'block':'none';$('talkVoBox').style.display=value==='voiceover'?'block':'none'}
   if(name==='moveEngine'){const local=value==='local';$('moveTen').disabled=local;if(local&&st.opts.moveSeconds!=='5')stChipSet('moveSeconds','5')}
+  if(name==='forgeAction'){$('forgeShotCard').style.display=value==='photo'?'none':'block';$('forgeCountWrap').style.display=value==='photo'?'block':'none'}
   stPriceSoon()}
 function stLookChips(){const root=$('stLook');root.innerHTML='';((st.data&&st.data.looks)||[]).forEach(l=>{const b=document.createElement('button');b.type='button';b.className=l.id===st.look?'on':'';b.innerHTML=`${esc(l.label)}<small>${esc(l.hint)}</small>`;b.onclick=()=>{st.look=l.id;stLookChips();stPriceSoon()};root.appendChild(b)})}
 function stOptions(action){
@@ -522,7 +573,7 @@ function makeTile(path,kind,opts){
   const badge=kind==='video'?'▶ video':kind==='audio'?'♪ voice':(opts.badge||'photo');
   t.innerHTML=`<div class="pic"><span class="badge">${esc(badge)}</span>${kind==='audio'?'<span>♪</span>':'<img alt="">'}</div><div class="meta">${opts.title?`<b title="${esc(opts.title)}">${esc(opts.title)}</b>`:''}${opts.sub?`<span>${esc(opts.sub)}</span>`:''}<div class="acts"></div></div>`;
   const img=t.querySelector('img');if(img)lazyThumb(img,path);
-  t.querySelector('.pic').onclick=opts.onOpen||(()=>{if(kind==='image')viewerOpen([{path,title:opts.title||base(path)}],0);else openLocalPath(path)});
+  t.querySelector('.pic').onclick=opts.onOpen||(()=>{if(kind==='image'||kind==='video')viewerOpen([{path,kind,title:opts.title||base(path)}],0);else openLocalPath(path)});
   const acts=t.querySelector('.acts');(opts.actions||[]).forEach(a=>{const b=document.createElement('button');b.className='mini'+(a.use?' use':'');b.textContent=a.label;if(a.title)b.title=a.title;b.onclick=ev=>{ev.stopPropagation();a.run()};acts.appendChild(b)});
   if(!(opts.actions||[]).length)acts.remove();
   return t;
@@ -533,24 +584,34 @@ async function stDelete(path,tile){let r;try{r=await window.pywebview.api.studio
   say(`Deleted ${base(path)}`,'ok');if(tile)tile.remove();
   ['moveImage','sceneImage','actImage','anglesImage'].forEach(k=>{if(st[k]===path)st[k]=''});
   if($('view-library').classList.contains('active'))libLoad();else stLoad();
-  const viewer=viewer.items[viewer.index];if(viewer&&viewer.path===path)viewerClose()}
-function imageViewerItems(list){return list.filter(x=>x.kind==='image').map(x=>({path:x.path,title:x.result?x.result.label:x.label,meta:stWhen(x.result?x.result.finished_at:x.finished_at),actions:[
-  {label:'Make a scene from this',run:async()=>{viewerClose();stSceneFrom(x.path);return 'close'}},
-  {label:'Animate this photo',run:async()=>{viewerClose();stAnimate(x.path);return 'close'}},
-  {label:'Sharpen · 25 credits',run:async()=>{stSharpen(x.path);return 'close'}},
-  {label:'Presenter option',title:'Add this to her face options in the look recipe',run:async()=>{await stPresenterAdd(x.path);return 'close'}},
-  {label:'Delete',title:'Remove this from My stuff for good',run:async()=>{await stDelete(x.path);return 'close'}}]}))}
+  const cur=viewer.items[viewer.index];if(cur&&cur.path===path)viewerClose()}
+function mediaViewerItems(list){return list.filter(x=>x.kind==='image'||x.kind==='video').map(x=>({
+  path:x.path,
+  kind:x.kind,
+  title:x.result?x.result.label:x.label,
+  meta:stWhen(x.result?x.result.finished_at:x.finished_at),
+  actions:x.kind==='image'?[
+    {label:'Make a scene from this',run:async()=>{viewerClose();stSceneFrom(x.path);return 'close'}},
+    {label:'Animate this photo',run:async()=>{viewerClose();stAnimate(x.path);return 'close'}},
+    {label:'Sharpen · 25 credits',run:async()=>{stSharpen(x.path);return 'close'}},
+    {label:'Presenter option',title:'Add this to her face options in the look recipe',run:async()=>{await stPresenterAdd(x.path);return 'close'}},
+    {label:'Delete',title:'Remove this from My stuff for good',run:async()=>{await stDelete(x.path);return 'close'}}
+  ]:[
+    {label:'Delete',title:'Remove this from My stuff for good',run:async()=>{await stDelete(x.path);return 'close'}}
+  ]
+}))}
 function renderResultTiles(root,list,limit){
   root.innerHTML='';const items=list.slice(0,limit||60);
   if(!items.length){root.innerHTML='<div class="empty">Nothing here yet.</div>';return}
-  const viewable=imageViewerItems(items);
-  items.forEach(x=>{const r=x.result||x;const isImg=x.kind==='image';
+  const viewable=mediaViewerItems(items);
+  items.forEach(x=>{const r=x.result||x;const isImg=x.kind==='image',isVid=x.kind==='video';
     const src=r.source||x.source,origin=src==='old'?' · made with the old app':src==='gpu'?' · free (your GPU)':(r.credits!==null&&r.credits!==undefined?' · '+stCredits(r.credits):'');
     let tile;
     const remove=()=>stDelete(x.path,tile);
+    const openInViewer=()=>viewerOpen(viewable,Math.max(0,viewable.findIndex(v=>v.path===x.path)));
     tile=makeTile(x.path,x.kind,{title:r.label,sub:`${stWhen(r.finished_at)}${origin}`,
-      onOpen:isImg?()=>viewerOpen(viewable,Math.max(0,viewable.findIndex(v=>v.path===x.path))):()=>openLocalPath(x.path),
-      actions:[...(isImg?[{label:'Animate',title:'Use this picture for a moving clip',run:()=>stAnimate(x.path)},{label:'Scene',title:'Make an offline video scene from this picture',run:()=>stSceneFrom(x.path)},{label:'Presenter option',title:'Add this to her face options in the look recipe',run:()=>stPresenterAdd(x.path)}]:[{label:x.kind==='audio'?'Play':'Open',run:()=>openLocalPath(x.path)}]),{label:'Delete',title:'Remove this from My stuff for good',run:remove}]});
+      onOpen:(isImg||isVid)?openInViewer:()=>openLocalPath(x.path),
+      actions:[...(isImg?[{label:'Animate',title:'Use this picture for a moving clip',run:()=>stAnimate(x.path)},{label:'Scene',title:'Make an offline video scene from this picture',run:()=>stSceneFrom(x.path)},{label:'Presenter option',title:'Add this to her face options in the look recipe',run:()=>stPresenterAdd(x.path)}]:isVid?[{label:'Watch',title:'Open in the viewer — stays open so you can replay and review',run:openInViewer}]:[{label:'Play',run:()=>openLocalPath(x.path)}]),{label:'Delete',title:'Remove this from My stuff for good',run:remove}]});
     root.appendChild(tile)});
 }
 
@@ -637,11 +698,103 @@ function stRender(first){
   if(stSig('talker',[d.talker,d.talker_voices]))stRenderTalker();
   if(stSig('jobs',d.jobs))stRenderJobs();
   if(stSig('results',d.results))stRenderResults();
+  if($('view-forge').classList.contains('active'))forgeRender();
   if(first||stSig('price_inputs',[d.master,d.talker,d.narrations.length]))stPriceSoon();
 }
 async function stLoad(){let d;try{d=await window.pywebview.api.studio_state()}catch(e){return}if(!d||!d.ok)return;
   const first=!st.data;st.data=d;if(first){st.look=d.look||'natural';$('stExtra').value=d.extra||''}
   stRender(first);const active=(d.jobs||[]).length;if(st.lastJobs>0&&active===0)stRefreshBalance();st.lastJobs=active}
+
+/* ---------- the Free builder (offline, prompt-first) ---------- */
+const FORGE_IDEAS=[
+ 'A confident course instructor in her late 30s, warm smile, shoulder-length brown hair and a navy blazer. She sits at a desk and greets the camera, then explains today\'s lesson with natural hand gestures, nods as she makes her point, and ends with an open-handed wave.',
+ 'A friendly fitness coach in her late 20s, ponytail and athletic wear, standing in a bright studio. She smiles at the camera, demonstrates a stretch, talks through the move with her hands, and finishes with a thumbs up.',
+ 'A calm news anchor in her 40s, neat bob and soft smile, behind a desk. She looks into the camera, introduces the story, gestures at a screen beside her, and closes with a small nod.'];
+function forgeNote(text,kind){const el=$('noteForge');if(!el)return;el.className='note'+(kind?' '+kind:'');el.textContent=text||''}
+function forgeMinutes(n){n=Number(n)||0;if(n<60)return `${n} min`;const h=Math.floor(n/60),m=Math.round(n%60);return m?`${h} h ${m} min`:`${h} h`}
+function forgeOptions(){const o={action:st.opts.forgeAction||'scene',prompt:$('forgePrompt').value,photo_model:$('forgePhotoModel').value||'4b',video_model:$('forgeVideoModel').value||'a14b',vram_mode:$('forgeVram').value||'balanced',image:st.forge.image};
+  if(o.action==='photo')o.count=Number(st.opts.forgeCount);
+  if(o.action==='scene'&&st.forge.edited)o.shots=st.forge.shots.map(t=>t.trim()).filter(Boolean);
+  return o}
+function forgeSplit(){
+  const text=($('forgePrompt').value||'').replace(/\s+/g,' ').trim();
+  const sentences=text.split(/(?<=[.!?…])\s+/).map(s=>s.trim()).filter(Boolean);
+  const shots=[];let buf='';
+  sentences.forEach(s=>{const c=(buf+' '+s).trim();
+    if(buf&&c.length>220){shots.push(buf);buf=s}else{buf=c}
+    if(shots.length>=12){buf='';return}});
+  if(buf&&shots.length<12)shots.push(buf);
+  st.forge.shots=shots.slice(0,12);st.forge.edited=false;
+  forgeRenderShots();forgePriceSoon();
+}
+function forgeRenderShots(){const root=$('forgeShots');root.innerHTML='';st.forge.shots.forEach((text,i)=>{const row=document.createElement('div');row.className='shot';row.innerHTML=`<span class="label">Shot ${i+1}</span><textarea rows="2"></textarea>`;const ta=row.querySelector('textarea');ta.value=text;ta.oninput=()=>{st.forge.shots[i]=ta.value;st.forge.edited=true;forgePriceSoon()};
+  if(st.forge.shots.length>1){const x=document.createElement('button');x.className='mini';x.textContent='✕';x.title='Remove this shot';x.onclick=()=>{st.forge.shots.splice(i,1);st.forge.edited=true;forgeRenderShots();forgePriceSoon()};row.appendChild(x)}root.appendChild(row)});
+  $('forgeAddShot').disabled=st.forge.shots.length>=12;
+  $('forgeShotHint').textContent=st.forge.shots.length?`Split from your prompt into ${st.forge.shots.length} shot${st.forge.shots.length===1?'':'s'} (about ${st.forge.shots.length*5} seconds of video). Edit any line if you want it different.`:'Your prompt becomes shots here once you type it.'}
+function forgeAddShot(){if(st.forge.shots.length<12){st.forge.shots.push('');st.forge.edited=true;forgeRenderShots();forgePriceSoon()}}
+function forgePriceSoon(){clearTimeout(st.forge.priceTimer);st.forge.priceTimer=setTimeout(forgePrice,300)}
+async function forgePrice(){
+  const btn=$('goForge');if(!btn||btn.dataset.busy==='1')return;
+  const o=forgeOptions(),quiet=(st.forge.noteUntil||0)>Date.now();
+  if(o.action==='photo'&&!o.prompt.trim()){btn.disabled=true;btn.textContent='Describe what you want first';return}
+  if(o.action==='scene'&&!o.prompt.trim()&&!st.forge.edited){btn.disabled=true;btn.textContent='Describe what you want first';return}
+  let r;try{r=await window.pywebview.api.forge_price(o)}catch(e){r={ok:false,error:String(e)}}
+  if(!r.ok){btn.disabled=true;btn.textContent='Make it';if(!quiet)forgeNote(r.error||'Could not check the price.','err');return}
+  btn.disabled=false;
+  btn.textContent=`Make it · free · about ${forgeMinutes(r.minutes)} on your GPU`;
+  if(quiet)return;
+  const notes=[];
+  if(r.photo_first)notes.push('The start photo is made first, then the scene follows automatically.');
+  if(r.shots>1)notes.push(`Your description becomes ${r.shots} shots, stitched into one video.`);
+  (r.warnings||[]).forEach(w=>notes.push(w));
+  forgeNote(notes.join(' '),r.warnings&&r.warnings.length?'warn':'');
+}
+async function forgeGo(){
+  const btn=$('goForge');btn.disabled=true;btn.dataset.busy='1';
+  const o=forgeOptions();forgeNote('Sending to your GPU…','');
+  let r;try{r=await window.pywebview.api.forge_go(o)}catch(e){r={ok:false,error:String(e)}}
+  btn.dataset.busy='0';
+  if(r.ok){
+    st.forge.noteUntil=Date.now()+12000;
+    const extra=r.photo_first?' (the start photo is made first, then the scene follows automatically)':'';
+    forgeNote(`Started on your GPU · free · about ${forgeMinutes(r.minutes)}${extra}. It shows up below when it's done.`,'ok');
+    log('free builder started: '+o.action+' · about '+r.minutes+' min');
+  }else{st.forge.noteUntil=Date.now()+15000;forgeNote(r.error||'Something went wrong.','err');log('free builder: '+(r.error||'error'))}
+  await stLoad();forgePriceSoon();
+}
+function forgeResultItems(){const out=[];(st.data.results||[]).forEach(r=>{if(r.status!=='done')return;if(['forge_photo','forge_scene'].indexOf(r.action)<0)return;
+  r.outputs.forEach(o=>{if(r.action==='forge_scene'&&o.kind==='video'&&!o.name.startsWith('scene_'))return;out.push({...o,result:r})})});return out}
+function forgeRender(){
+  const jobs=(st.data&&st.data.jobs)||[];
+  const mine=jobs.filter(j=>['forge_photo','forge_scene'].indexOf(j.action)>=0);
+  $('forgeJobsWrap').style.display=mine.length?'block':'none';
+  $('forgeJobs').innerHTML=mine.map(j=>{const p=typeof j.progress==='number'?` · ${Math.round(j.progress*100)}%`:'';return `<div class="job"><div class="spin"></div><span>${esc(j.label||'Job')}</span><b class="tiny">${j.status==='running'?'making it'+p:'waiting in line'}</b>${j.status==='queued'?`<button class="mini" onclick="forgeCancel('${j.id}')" title="Stop this before it starts">✕</button>`:''}</div>`}).join('');
+  renderResultTiles($('forgeResults'),forgeResultItems(),24);
+}
+async function forgeCancel(id){let r;try{r=await window.pywebview.api.cancel_queue_item(id)}catch(e){r={ok:false,error:String(e)}}
+  if(!r.ok){forgeNote(r.error||'Could not cancel it.','err');return}
+  st.forge.noteUntil=Date.now()+8000;forgeNote('Cancelled.','ok');await stLoad();forgeRender();}
+async function forgeLoad(){
+  if(!st.data)await stLoad();
+  let r;try{r=await window.pywebview.api.forge_state()}catch(e){return}
+  if(!r||!r.ok)return;
+  st.forge.data=r;
+  const installedPhoto=(r.photo_models||[]).find(m=>m.installed);
+  stFillSelect('forgePhotoModel',r.photo_models.map(m=>({value:m.id,label:m.label+(m.installed?'':' · not installed')})),installedPhoto?installedPhoto.id:'4b');
+  const ph=(r.photo_models||[]).find(m=>m.id===$('forgePhotoModel').value);
+  $('forgePhotoHint').textContent=ph?(ph.installed?`about ${ph.minutes} min per photo`:'Missing: run scripts/setup_offline_builder.sh'):'';
+  const installedVideo=(r.video_models||[]).find(m=>m.installed);
+  stFillSelect('forgeVideoModel',r.video_models.map(m=>({value:m.id,label:`${m.label} · about ${m.minutes} min per shot${m.installed?'':' · not installed'}`})),installedVideo?installedVideo.id:'a14b');
+  const vm=(r.video_models||[]).find(m=>m.id===$('forgeVideoModel').value);
+  $('forgeVideoHint').textContent=vm&&!vm.installed?'Missing: run scripts/setup_offline_builder.sh (5B) or setup_local_engine.sh (14B)':'';
+  stFillSelect('forgeVram',(r.vram_modes||[]).map(m=>({value:m.id,label:m.label})),'balanced');
+  $('forgeVramHint').textContent=$('forgeVram').value==='cpu_offload'?'Text encoders move to the CPU: more VRAM for the model, a bit slower.':'Weights stream between RAM and VRAM; the photo encoder always runs on the CPU.';
+  await stLoadImages();  // so "Choose from My stuff…" has the pictures to offer
+  stPickImages('forgeImages',()=>st.forge.image,v=>st.forge.image=v);
+  if(!st.forge.edited&&!st.forge.shots.length)forgeSplit();
+  forgeRender();forgePriceSoon();
+}
+function forgeUseIdea(text){$('forgePrompt').value=text;$('forgeCount').textContent=`${text.length} / 8000`;if(!st.forge.edited)forgeSplit();forgePriceSoon()}
 
 /* ---------- Runway balance, key, and the local GPU engine ---------- */
 async function stRefreshBalance(){
@@ -685,30 +838,71 @@ async function setLoad(){engLoad();stRefreshBalance();const s=await window.pyweb
   if(st.data)$('setSpend').textContent=`Spent today: ${stCredits(st.data.spend.today)} · this month: ${stCredits(st.data.spend.month)}${st.data.spend.unresolved?` · ${st.data.spend.unresolved} job(s) with an unconfirmed charge`:''}`}
 async function setSaveLimits(){const r=await window.pywebview.api.save_settings({runway_job_limit:Number($('limJob').value)||0,runway_batch_limit:Number($('limBatch').value)||0,runway_daily_limit:Number($('limDay').value)||0,runway_monthly_limit:Number($('limMonth').value)||0});$('setLimitsSaved').textContent=r.ok?'Saved.':'Could not save.';stPriceSoon()}
 
-/* ---------- full-size photo viewer ---------- */
-const viewer={items:[],index:0,zoom:false,big:new Map(),busy:false};
+/* ---------- full-size photo and video viewer ---------- */
+const viewer={items:[],index:0,zoom:false,loop:false,rate:1,fps:24,big:new Map(),vid:new Map(),busy:false};
+function viewerKind(it){if(!it)return 'image';if(it.kind==='video'||it.kind==='image')return it.kind;return /\.(mp4|mov|mkv|webm|avi|m4v)$/i.test(it.path||'')?'video':'image'}
+function viewerFmtTime(s){if(!Number.isFinite(s)||s<0)return '0:00.0';const m=Math.floor(s/60),rem=s-m*60;return `${m}:${rem<10?'0':''}${rem.toFixed(1)}`}
+function viewerStopVideo(){const v=$('viewerVideo');try{v.pause()}catch(_){}v.removeAttribute('src');try{v.load()}catch(_){}v.style.display='none'}
+function viewerSyncVideo(){
+  const v=$('viewerVideo'),btn=$('viewerPlayBtn');if(!v||!btn)return;
+  const atEnd=v.ended||(Number.isFinite(v.duration)&&v.duration>0&&v.currentTime>=v.duration-0.05);
+  btn.textContent=atEnd?'↺ Replay':(v.paused?'▶ Play':'⏸ Pause');
+  $('viewerLoopBtn').classList.toggle('on',viewer.loop);
+  $('viewerTime').textContent=`${viewerFmtTime(v.currentTime||0)} / ${viewerFmtTime(Number.isFinite(v.duration)?v.duration:0)}`;
+}
 function viewerOpen(items,index){viewer.items=(items||[]).filter(x=>x&&x.path);if(!viewer.items.length)return;viewer.index=Math.max(0,Math.min(Number(index)||0,viewer.items.length-1));viewer.zoom=false;if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();$('viewer').classList.add('open');viewerShow()}
-function viewerClose(){$('viewer').classList.remove('open');$('viewerImg').removeAttribute('src');viewer.items=[]}
+function viewerClose(){viewerStopVideo();$('viewer').classList.remove('open');$('viewerImg').removeAttribute('src');viewer.items=[]}
 function viewerApplyZoom(){$('viewerFrame').classList.toggle('zoom',viewer.zoom);$('viewerZoomBtn').textContent=viewer.zoom?'Fit to window':'Actual size'}
+function viewerReplay(){const v=$('viewerVideo');if(!v||v.style.display==='none')return;try{v.currentTime=0;v.playbackRate=viewer.rate;v.play().catch(()=>{})}catch(_){}viewerSyncVideo()}
+function viewerPlayPause(){const v=$('viewerVideo');if(!v||v.style.display==='none')return;const atEnd=v.ended||(Number.isFinite(v.duration)&&v.duration>0&&v.currentTime>=v.duration-0.05);if(atEnd){viewerReplay();return}if(v.paused)v.play().catch(()=>{});else v.pause();viewerSyncVideo()}
+function viewerToggleLoop(){viewer.loop=!viewer.loop;$('viewerVideo').loop=viewer.loop;viewerSyncVideo()}
+function viewerStepFrame(dir){const v=$('viewerVideo');if(!v||v.style.display==='none')return;try{v.pause();const step=1/(viewer.fps||24),dur=Number.isFinite(v.duration)?v.duration:0;v.currentTime=Math.max(0,Math.min(dur||1e9,(v.currentTime||0)+dir*step))}catch(_){}viewerSyncVideo()}
+function viewerSetRate(rate){viewer.rate=Number(rate)||1;$('viewerVideo').playbackRate=viewer.rate;document.querySelectorAll('#viewerSpeedBtns button').forEach(b=>b.classList.toggle('on',Number(b.dataset.rate)===viewer.rate))}
 async function viewerShow(){
   const it=viewer.items[viewer.index];if(!it){viewerClose();return}
-  const n=viewer.items.length;$('viewerTitle').textContent=it.title||base(it.path);$('viewerPrev').disabled=n<2;$('viewerNext').disabled=n<2;viewerApplyZoom();
-  const img=$('viewerImg'),loading=$('viewerLoading');img.style.visibility='hidden';loading.textContent='Loading full size…';loading.style.display='grid';
+  const n=viewer.items.length,kind=viewerKind(it),isVid=kind==='video';
+  $('viewerTitle').textContent=it.title||base(it.path);$('viewerPrev').disabled=n<2;$('viewerNext').disabled=n<2;
+  viewer.zoom=false;viewerApplyZoom();
+  viewerStopVideo();
+  const img=$('viewerImg'),vid=$('viewerVideo'),loading=$('viewerLoading');
+  img.style.display=isVid?'none':'block';img.style.visibility='hidden';
+  $('viewerZoomBtn').style.display=isVid?'none':'inline-block';
+  $('viewerVideoBar').classList.toggle('show',isVid);
+  $('viewerHelp').textContent=isVid
+    ?'Space play/pause · R replay · L loop · , . step frame · ← → next/prev · Esc close (stays open until you close it)'
+    :'← → compare · Enter keep/use · Delete toss · Z or click zoom · Esc close';
+  loading.textContent=isVid?'Loading video…':'Loading full size…';loading.style.display='grid';
   $('viewerMeta').textContent=[n>1?`${viewer.index+1} of ${n}`:'',it.meta||''].filter(Boolean).join(' · ');
   const root=$('viewerActions');root.innerHTML='';(it.actions||[]).forEach(a=>{const b=document.createElement('button');b.className='btn'+(a.primary?' primary':'')+(a.toss?' danger':'');b.textContent=a.label;b.onclick=()=>viewerAct(a);root.appendChild(b)});
+  if(isVid){
+    let data=viewer.vid.get(it.path);
+    if(!data){let r;try{r=await window.pywebview.api.studio_video(it.path)}catch(e){r={ok:false,error:String(e)}}if(viewer.items[viewer.index]!==it)return;if(!r.ok){loading.textContent=r.error||'Could not open this video.';return}data=r;viewer.vid.set(it.path,r);if(viewer.vid.size>24)viewer.vid.delete(viewer.vid.keys().next().value)}
+    viewer.fps=Number(data.fps)||24;
+    const dims=data.width&&data.height?`${data.width} × ${data.height}`:'';
+    const dur=data.duration_s?`${Number(data.duration_s).toFixed(1)} s`:'';
+    $('viewerMeta').textContent=[n>1?`${viewer.index+1} of ${n}`:'',dims,dur,it.meta||''].filter(Boolean).join(' · ');
+    vid.loop=viewer.loop;vid.playbackRate=viewer.rate;vid.src=data.url;vid.style.display='block';loading.style.display='none';
+    viewerSetRate(viewer.rate);viewerSyncVideo();
+    vid.play().catch(()=>viewerSyncVideo());
+    return;
+  }
   let data=viewer.big.get(it.path);
   if(!data){let r;try{r=await window.pywebview.api.studio_image(it.path)}catch(e){r={ok:false,error:String(e)}}if(viewer.items[viewer.index]!==it)return;if(!r.ok){loading.textContent=r.error||'Could not open this photo.';return}data=r;viewer.big.set(it.path,r);if(viewer.big.size>24)viewer.big.delete(viewer.big.keys().next().value)}
   img.src=data.data_url;img.style.visibility='visible';loading.style.display='none';
   $('viewerMeta').textContent=[n>1?`${viewer.index+1} of ${n}`:'',`${data.width} × ${data.height}`,it.meta||''].filter(Boolean).join(' · ');
-  const next=viewer.items[(viewer.index+1)%n];if(n>1&&next&&!viewer.big.has(next.path))window.pywebview.api.studio_image(next.path).then(r=>{if(r&&r.ok)viewer.big.set(next.path,r)}).catch(()=>{});
+  const next=viewer.items[(viewer.index+1)%n];if(n>1&&next&&viewerKind(next)==='image'&&!viewer.big.has(next.path))window.pywebview.api.studio_image(next.path).then(r=>{if(r&&r.ok)viewer.big.set(next.path,r)}).catch(()=>{});
 }
 async function viewerAct(a){if(viewer.busy)return;viewer.busy=true;try{const done=await a.run();if(done==='close'){viewerClose();return}if(done){viewer.items.splice(viewer.index,1);if(!viewer.items.length){viewerClose();return}if(viewer.index>=viewer.items.length)viewer.index=0;viewerShow()}}finally{viewer.busy=false}}
 function viewerStep(d){const n=viewer.items.length;if(n<2)return;viewer.index=(viewer.index+d+n)%n;viewer.zoom=false;viewerShow()}
-function viewerToggleZoom(){viewer.zoom=!viewer.zoom;viewerApplyZoom()}
+function viewerToggleZoom(){if(viewerKind(viewer.items[viewer.index])==='video')return;viewer.zoom=!viewer.zoom;viewerApplyZoom()}
 function viewerExternal(){const it=viewer.items[viewer.index];if(it)openLocalPath(it.path)}
 $('viewerImg').addEventListener('click',viewerToggleZoom);
-document.addEventListener('keydown',ev=>{if(!$('viewer').classList.contains('open'))return;const acts=(viewer.items[viewer.index]||{}).actions||[];const onButton=ev.target&&ev.target.tagName==='BUTTON';
-  if(ev.key==='Escape')viewerClose();else if(ev.key==='ArrowRight')viewerStep(1);else if(ev.key==='ArrowLeft')viewerStep(-1);else if(ev.key==='z'||ev.key==='Z')viewerToggleZoom();
+['play','pause','ended','timeupdate','loadedmetadata','ratechange'].forEach(ev=>$('viewerVideo').addEventListener(ev,viewerSyncVideo));
+$('viewerVideo').addEventListener('error',()=>{const v=$('viewerVideo');if(!v.getAttribute('src'))return;const cur=viewer.items[viewer.index];if(cur)viewer.vid.delete(cur.path);$('viewerLoading').textContent='Could not play this video in-app. Click "Open in its own window" above.';$('viewerLoading').style.display='grid'});
+document.addEventListener('keydown',ev=>{if(!$('viewer').classList.contains('open'))return;const cur=viewer.items[viewer.index],isVid=viewerKind(cur)==='video',acts=(cur||{}).actions||[];const onButton=ev.target&&ev.target.tagName==='BUTTON';
+  if(ev.key==='Escape')viewerClose();else if(ev.key==='ArrowRight')viewerStep(1);else if(ev.key==='ArrowLeft')viewerStep(-1);
+  else if(isVid&&ev.key===' ')viewerPlayPause();else if(isVid&&(ev.key==='r'||ev.key==='R'))viewerReplay();else if(isVid&&(ev.key==='l'||ev.key==='L'))viewerToggleLoop();else if(isVid&&ev.key===',')viewerStepFrame(-1);else if(isVid&&ev.key==='.')viewerStepFrame(1);
+  else if(!isVid&&(ev.key==='z'||ev.key==='Z'))viewerToggleZoom();
   else if(ev.key==='Enter'&&!onButton){const a=acts.find(x=>x.primary);if(a)viewerAct(a);else return}else if(ev.key==='Delete'){const a=acts.find(x=>x.toss);if(a)viewerAct(a);else return}else return;ev.preventDefault()});
 
 /* ---------- start ---------- */
@@ -718,12 +912,17 @@ function stInit(){
   $('moveIdeas').querySelectorAll('button').forEach(b=>b.onclick=()=>{$('stMotion').value=b.textContent;stPriceSoon()});
   $('sceneIdeas').innerHTML=SCENE_IDEAS.map(t=>`<button type="button">${esc(t)}</button>`).join('');
   $('sceneIdeas').querySelectorAll('button').forEach(b=>b.onclick=()=>sceneUseIdea(b.textContent));sceneRenderShots();
+  $('forgeIdeas').innerHTML=FORGE_IDEAS.map(t=>`<button type="button">${esc(t)}</button>`).join('');
+  $('forgeIdeas').querySelectorAll('button').forEach(b=>b.onclick=()=>forgeUseIdea(b.textContent));
+  $('forgePrompt').addEventListener('input',()=>{$('forgeCount').textContent=`${$('forgePrompt').value.length} / 8000`;if(!st.forge.edited)forgeSplit();forgePriceSoon()});
+  ['forgePhotoModel','forgeVideoModel'].forEach(id=>$(id).addEventListener('change',forgePriceSoon));
+  $('forgeVram').addEventListener('change',()=>{$('forgeVramHint').textContent=$('forgeVram').value==='cpu_offload'?'Text encoders move to the CPU: more VRAM for the model, a bit slower.':'Weights stream between RAM and VRAM; the photo encoder always runs on the CPU.';forgePriceSoon()});
   $('stAngles').addEventListener('change',stPriceSoon);
   ['stExtra','stTalkScript','stMotion'].forEach(id=>$(id).addEventListener('input',stPriceSoon));
   $('stVoScript').addEventListener('input',()=>{$('stVoCount').textContent=`${$('stVoScript').value.length} / 2500`;stPriceSoon()});
   ['stVoice','stTalkNarration','stActNarration','stMoveNarration','stSceneNarration','stTalkerVoice'].forEach(id=>$(id).addEventListener('change',stPriceSoon));
-  stLoad().then(()=>{renderTiles();stRefreshBalance()});engLoad();
-  setInterval(()=>{if($('view-make').classList.contains('active'))stLoad()},4000);
+  stLoad().then(()=>{renderTiles();stRefreshBalance()});engLoad();forgeLoad();
+  setInterval(()=>{if($('view-make').classList.contains('active')||$('view-forge').classList.contains('active'))stLoad()},4000);
   setInterval(()=>{const e=st.engine;if(!e||e.state!=='ready'||$('view-settings').classList.contains('active'))engLoad()},5000);
 }
 window.addEventListener('pywebviewready',()=>{try{stInit();log('App ready.');if(location.search.indexOf('uitest')>=0)setTimeout(runUiTest,2500)}catch(e){log('Start error: '+e)}});
@@ -736,9 +935,10 @@ async function runUiTest(){
   const api=window.pywebview.api,wait=ms=>new Promise(r=>setTimeout(r,ms));
   const report={views:{},recipes:{},checks:{},js_errors:[]};
   try{
-    for(const v of ['make','library','settings']){view(v);await wait(400);report.views[v]=$('view-'+v).classList.contains('active')}
+    for(const v of ['make','forge','library','settings']){view(v);await wait(400);report.views[v]=$('view-'+v).classList.contains('active')}
     view('make');openRecipe(null);await wait(300);
     report.checks.tiles=$('tiles').querySelectorAll('.tile').length;
+    view('forge');await wait(400);report.checks.forge_prompt=!!$('forgePrompt');report.checks.forge_shots=$('forgeShots').querySelectorAll('textarea').length;report.checks.forge_models=!!$('forgePhotoModel').value&&!!$('forgeVideoModel').value;view('make');
     for(const r of RECIPES){openRecipe(r.id);await wait(250);report.recipes[r.id]={shown:!$('recipe-'+r.id).hidden,steps:$('recipe-'+r.id).querySelectorAll('.steps>li').length}}
     openRecipe(null);
     const s=await api.studio_state(),price=await api.studio_price({action:'presenter',count:4,look:'natural'}),voice=await api.studio_price({action:'voiceover',script:'Hello and welcome.'}),move=await api.studio_price({action:'move'});
@@ -748,6 +948,7 @@ async function runUiTest(){
     report.checks.state_ok=s.ok===true;report.checks.presenter_price=price.ok?price.credits:'error '+price.error;report.checks.voiceover_price=voice.ok?voice.credits:'error '+voice.error;
     report.checks.move_without_master_explains=move.ok===false&&/presenter/i.test(move.error||'');report.checks.library_ok=lib.ok===true;report.checks.engine_state=eng.state;
     const missing=await api.studio_image('/definitely/not/here.png');report.checks.missing_image_refused=missing.ok===false;
+    const missingVid=await api.studio_video('/definitely/not/here.mp4');report.checks.missing_video_refused=missingVid.ok===false;
     let ran=false;viewerOpen([{path:'/definitely/not/here.png',title:'UI test photo',actions:[{label:'Use this one',primary:true,run:async()=>{ran=true;return 'close'}},{label:'Toss',toss:true,run:async()=>true}]}],0);await wait(400);
     report.checks.viewer_opens=$('viewer').classList.contains('open');report.checks.viewer_buttons=$('viewerActions').querySelectorAll('button').length;report.checks.viewer_missing_explained=/no longer/i.test($('viewerLoading').textContent);
     document.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await wait(150);report.checks.viewer_enter_uses=ran&&!$('viewer').classList.contains('open');

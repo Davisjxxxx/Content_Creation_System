@@ -126,6 +126,18 @@ _RUNWAY_NUMERIC_SETTINGS = (
 )
 
 
+def _proc_alive(pid: int | None) -> bool:
+    """True only for a live process (a zombie's /proc entry does not count)."""
+    if not pid:
+        return False
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            state = handle.read().split()[2]
+        return state != "Z"
+    except (OSError, IndexError):
+        return False
+
+
 def _sanitize_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
     """Drop credential-like keys and coerce Runway settings to documented values."""
     clean = {
@@ -247,7 +259,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             history_dir=HISTORY_DIR,
             candidate_qa_runner=self._candidate_qa,
             ledger_path=CLOUD_LEDGER_PATH,
-            engine_restart=self.engine_autostart,
+            engine_restart=self._engine_restart_hook,
         )
         settings = self._settings()
         self.queue.memory_manager.update_settings(
@@ -813,11 +825,11 @@ class DesktopAPI(StudioMixin, PresenterMixin):
 
     @staticmethod
     def _launch_linux_video(target: str) -> bool:
-        """Open videos without routing them through broken desktop GL players."""
+        """Open videos in a player that stays open at the end so they can be replayed and reviewed."""
         players = (
-            ("ffplay", ("-autoexit", "-seek_interval", "1")),
-            ("mpv", ("--force-window=yes",)),
-            ("vlc", ("--started-from-file",)),
+            ("mpv", ("--force-window=yes", "--keep-open=yes")),
+            ("vlc", ("--started-from-file", "--play-and-pause")),
+            ("ffplay", ("-seek_interval", "1")),
         )
         for command, options in players:
             executable = shutil.which(command)
@@ -856,6 +868,9 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         """Compare a finished designer still after H3 has been unloaded."""
         if item.provider_config.provider == "runway":
             return self._runway_postprocess(item)
+        if item.runtime.get("forge_scene"):
+            # A prompt-only scene: the start photo just rendered, so its shots go next.
+            return self._forge_continue_scene(item)
         if item.runtime.get("scene_shots"):
             return self._studio_finish_scene(item)
         if item.runtime.get("studio_voiceover"):
@@ -1567,7 +1582,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             pid = int(COMFY_PID_PATH.read_text(encoding="utf-8").strip())
         except (FileNotFoundError, ValueError):
             pass
-        alive = bool(pid) and Path(f"/proc/{pid}").exists()
+        alive = _proc_alive(pid)
         if ready:
             state = "READY"
         elif alive:
@@ -1586,6 +1601,77 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             "comfyui_python": settings.get("comfyui_python") or "",
         }
 
+    @staticmethod
+    def _default_comfyui_cache_ram_args(ram_total_mb: int | None = None) -> list[str]:
+        """Bound ComfyUI's RAM pressure cache so host desktop RAM does not thrash into swap.
+
+        Override via ``AVATAR_V2_COMFY_CACHE_RAM="6 24"`` (or ``"off"`` to omit).
+        """
+        override = os.getenv("AVATAR_V2_COMFY_CACHE_RAM", "").strip()
+        if override.lower() in {"0", "off", "none", "false"}:
+            return []
+        if override:
+            tokens = [tok for tok in override.split() if re.fullmatch(r"\d+(?:\.\d+)?", tok)]
+            if 1 <= len(tokens) <= 2:
+                return ["--cache-ram", *tokens]
+        if ram_total_mb is None:
+            try:
+                from .resource_monitor import query_host_memory
+
+                ram_total_mb = query_host_memory().ram_total_mb
+            except Exception:
+                ram_total_mb = 0
+        if ram_total_mb >= 48_000:
+            return ["--cache-ram", "6", "24"]
+        if ram_total_mb >= 24_000:
+            return ["--cache-ram", "4", "12"]
+        if ram_total_mb >= 12_000:
+            return ["--cache-ram", "2", "6"]
+        return []
+
+    @classmethod
+    def _build_comfyui_launch_args(
+        cls,
+        settings: dict[str, Any],
+        port: str,
+        *,
+        ram_total_mb: int | None = None,
+    ) -> list[str]:
+        """Build safe ComfyUI CLI args, preserving multi-token flags and bounded RAM cache."""
+        raw_tokens = str(settings.get("comfyui_args") or "").split()
+        extra: list[str] = []
+        expect_value_for: str | None = None
+        # Flags that accept one or two scalar arguments (numbers or simple identifiers).
+        _VALUE_FLAGS = {
+            "--cache-ram": 2,
+            "--cache-lru": 1,
+            "--reserve-vram": 1,
+            "--async-offload": 1,
+            "--preview-method": 1,
+            "--cuda-device": 1,
+        }
+        remaining_vals = 0
+        for tok in raw_tokens:
+            if tok.startswith("--"):
+                if not re.fullmatch(r"--[a-zA-Z0-9][a-zA-Z0-9_-]*", tok):
+                    remaining_vals = 0
+                    expect_value_for = None
+                    continue
+                extra.append(tok)
+                expect_value_for = tok
+                remaining_vals = _VALUE_FLAGS.get(tok, 0)
+            elif remaining_vals > 0 and expect_value_for and re.fullmatch(r"[a-zA-Z0-9._-]+", tok):
+                extra.append(tok)
+                remaining_vals -= 1
+            else:
+                remaining_vals = 0
+                expect_value_for = None
+
+        cache_flags = {"--cache-ram", "--cache-classic", "--cache-lru", "--cache-none"}
+        if not any(tok in cache_flags for tok in extra):
+            extra.extend(cls._default_comfyui_cache_ram_args(ram_total_mb=ram_total_mb))
+        return ["main.py", "--listen", "127.0.0.1", "--port", str(port), *extra]
+
     def comfyui_start(self) -> dict[str, Any]:
         settings = self._settings()
         current = self.comfyui_status()
@@ -1600,12 +1686,12 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         python = str(settings.get("comfyui_python") or "python3")
         url = str(settings.get("comfyui_url") or DEFAULT_SETTINGS["comfyui_url"])
         port = url.rsplit(":", 1)[-1] if ":" in url else "8188"
-        extra = [arg for arg in str(settings.get("comfyui_args") or "").split() if arg.startswith("--")]
+        launch_args = self._build_comfyui_launch_args(settings, port)
         try:
             COMFY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
             log = open(COMFY_LOG_PATH, "ab")
             proc = subprocess.Popen(
-                [python, "main.py", "--listen", "127.0.0.1", "--port", str(port), *extra],
+                [python, *launch_args],
                 cwd=str(comfyui_dir),
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -1616,14 +1702,28 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         COMFY_PID_PATH.write_text(str(proc.pid), encoding="utf-8")
         return {"ok": True, "state": "STARTING", "pid": proc.pid}
 
-    def comfyui_stop(self, wait_s: float = 90.0) -> dict[str, Any]:
-        """Ask the ComfyUI that Avatar V2 started to exit (SIGTERM only; never force-killed).
+    def _engine_restart_hook(self) -> None:
+        """The queue's recovery hook: start our own ComfyUI, and raise when it cannot start
+        so the failure lands in the render's memory events instead of being silently lost."""
+        result = self.engine_autostart()
+        if not result.get("ok") and result.get("error"):
+            raise RuntimeError(str(result["error"]))
+
+    def comfyui_stop(self, wait_s: float = 90.0, force: bool = False) -> dict[str, Any]:
+        """Ask the ComfyUI that Avatar V2 started to exit.
 
         A loaded engine can take a minute to release its models, so a slow exit is reported as
-        "still shutting down", not as an error.
+        "still shutting down", not as an error. With ``force=True`` (used at app shutdown), the
+        app then kills its *own* engine process if it hasn't exited in time, so the GPU is free
+        for other programs. Force-kill is scoped to the pid this app started; it never touches
+        any other process.
         """
         current = self.comfyui_status()
         if not current["ready"] and not current["pid"]:
+            try:  # a stale pid file would otherwise look like a crashed engine on next start
+                COMFY_PID_PATH.unlink()
+            except FileNotFoundError:
+                pass
             return {"ok": True, "state": "STOPPED", "message": "ComfyUI is not running."}
         pid = current["pid"]
         if not pid:
@@ -1639,9 +1739,22 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         except (OSError, ProcessLookupError):
             pass
         deadline = time.monotonic() + max(float(wait_s), 0.0)
-        while time.monotonic() < deadline and Path(f"/proc/{pid}").exists():
+        while time.monotonic() < deadline and _proc_alive(pid):
             time.sleep(0.5)
-        if Path(f"/proc/{pid}").exists():
+        if _proc_alive(pid):
+            if force:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+                time.sleep(0.5)
+                try:
+                    COMFY_PID_PATH.unlink()
+                except FileNotFoundError:
+                    pass
+                if not _proc_alive(pid):
+                    return {"ok": True, "state": "STOPPED", "pid": pid,
+                            "message": "ComfyUI was force-stopped at shutdown so the GPU is free."}
             return {"ok": True, "state": "STOPPING", "pid": pid,
                     "message": "ComfyUI is still shutting down (releasing its models); it finishes on its own."}
         try:
@@ -1649,6 +1762,31 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         except FileNotFoundError:
             pass
         return {"ok": True, "state": "STOPPED", "pid": pid}
+
+    def shutdown_engine(self) -> None:
+        """App close-down: stop queue work and make sure the GPU is fully released.
+
+        Order matters: the queue stops picking new work, ComfyUI is asked to unload its models
+        (fast VRAM release through ``POST /free``), and the app's own engine process is stopped —
+        force-killed if it hasn't exited within the grace period — so closing the app always
+        frees the GPU for videos, games, or other GPU work.
+        """
+        try:
+            self._close_media_server()
+        except Exception:
+            pass
+        try:
+            self.queue.shutdown()
+        except Exception:
+            pass
+        try:
+            ComfyUIProvider(self._provider_config({})).free_memory(unload_models=True, free_memory=True)
+        except Exception:
+            pass
+        try:
+            self.comfyui_stop(wait_s=10.0, force=True)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # History and best-of-N
@@ -2461,12 +2599,7 @@ def main() -> None:
     )
     api._self_window = window
     webview.start(debug=False)
-    api.queue.shutdown()
-    try:  # stop ComfyUI if this app started it, so it doesn't keep holding GPU memory; don't hold up closing
-        if api.comfyui_status().get("pid"):
-            api.comfyui_stop(wait_s=3)
-    except Exception:
-        pass
+    api.shutdown_engine()  # close-down: free the GPU (stop queue work, /free, stop the engine process)
 
 
 if __name__ == "__main__":

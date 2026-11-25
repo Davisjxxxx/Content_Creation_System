@@ -18,6 +18,7 @@ from .gpu_memory import GPUMemoryManager
 from .integrity import hash_files
 from .models import ProviderConfig, RenderJob
 from .providers import ComfyUIProvider, RunwayProvider
+from .resource_monitor import check_storage_for_job, estimate_job_storage_bytes
 
 JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
 MEMORY_SENSITIVE_PROFILES = {"int8_12gb", "low_memory", "low_memory_quality"}
@@ -27,6 +28,15 @@ VIDEO_SUFFIXES = {".mp4", ".mov", ".webm", ".mkv"}
 def _uses_local_gpu(provider: Any) -> bool:
     """Local renderers (ComfyUI) need VRAM management; cloud providers declare uses_local_gpu = False."""
     return bool(getattr(provider, "uses_local_gpu", True))
+
+
+def _keeps_image_models_loaded(item: "QueuedRender") -> bool:
+    """FLUX.2 photo jobs keep their models loaded between runs so the next image replays fast.
+
+    Only the image path (builtin:flux2_txt2img) opts into this: the Wan video weights are far
+    larger (8.75 GB) and keep their unload-after-render behavior.
+    """
+    return item.workflow == "builtin:flux2_txt2img"
 
 
 def write_durable(path: Path, text: str) -> None:
@@ -156,6 +166,7 @@ class RenderQueue:
         self._stop = threading.Event()
         self._active_provider: ComfyUIProvider | None = None
         self._active_id: str | None = None
+        self._last_local_workflow: str | None = None
         self._restore()
         self._thread = threading.Thread(target=self._worker, daemon=True, name="avatar-v2-render-queue")
         self._thread.start()
@@ -334,13 +345,26 @@ class RenderQueue:
                 continue
             self._items.append(item)
             if was_running and item.status == "error":
-                # Interrupted by a restart: record it once (an uncertain cloud submission keeps its
-                # estimate reserved in the ledger) and retire the stale file so it cannot reappear.
-                try:
-                    self._record_cloud_final(item)
-                    self._persist_history(item)
-                except OSError:
-                    pass
+                if item.provider_config.provider == "comfyui":
+                    # A local render interrupted by a restart is not a failure: give it one fresh
+                    # attempt once the engine has had time to start. (A real failure on that
+                    # attempt still gets the normal recovery, and a broken chain stops visibly.)
+                    item.status = "queued"
+                    item.error = ""
+                    item.error_category = ""
+                    item.error_message = ""
+                    item.started_at = None
+                    item.runtime["retry_after"] = time.time() + 120  # ComfyUI needs about a minute to boot
+                    item.memory_events.append({"reason": "interrupted-by-restart-retry", "retry_after_s": 120})
+                else:
+                    # Interrupted by a restart: record it once (an uncertain cloud submission keeps its
+                    # estimate reserved in the ledger) and retire the stale file so it cannot reappear.
+                    try:
+                        self._record_cloud_final(item)
+                        self._persist_history(item)
+                    except OSError:
+                        pass
+        self._persist()  # keep queue_state.json in step with the restored items (scenes wait on them)
 
     def _drop_item_file(self, item: QueuedRender) -> None:
         path = self.work_dir / "items" / f"{item.id}.json"
@@ -355,6 +379,7 @@ class RenderQueue:
         self._drop_item_file(item)
 
     def _next(self) -> QueuedRender | None:
+        broken: set[str] = set()
         with self._lock:
             now = time.time()
             statuses = {item.id: item.status for item in self._items}
@@ -365,13 +390,21 @@ class RenderQueue:
                     continue  # a shot awaiting its engine-restart retry
                 chain = str(item.runtime.get("chain_from_id") or "")
                 if chain and statuses.get(chain) not in {None, "done"}:
+                    if statuses[chain] in {"error", "cancelled"}:
+                        broken.add(chain)  # the previous shot died: stop the chain, never wait forever
                     continue  # wait for the previous shot (or its retry) before starting this one
                 return item
+        for failed_id in broken:
+            self._cancel_downstream(failed_id)
         return None
 
     def _cancel_downstream(self, failed_id: str) -> int:
-        """A chained scene stops at its first failure: cancel every queued shot after the failed one."""
-        cancelled = 0
+        """A chained scene stops at its first failure: cancel every queued shot after the failed one.
+
+        Each cancellation is recorded durably (history record + retired item file) so an app
+        restart cannot resurrect the shot as "queued" from a stale queue file.
+        """
+        cancelled: list[QueuedRender] = []
         with self._lock:
             pending = [failed_id]
             changed = True
@@ -381,12 +414,18 @@ class RenderQueue:
                     if item.status == "queued" and str(item.runtime.get("chain_from_id") or "") in pending:
                         item.status = "cancelled"
                         item.error = "Scene stopped: the previous shot failed."
+                        item.finished_at = time.time()
                         pending.append(item.id)
-                        cancelled += 1
+                        cancelled.append(item)
                         changed = True
+        for item in cancelled:
+            try:
+                self._persist_history(item)
+            except OSError:
+                pass
         if cancelled:
             self._persist()
-        return cancelled
+        return len(cancelled)
 
     def _previous_output(self, current: QueuedRender) -> str | None:
         wanted = str(current.runtime.get("chain_from_id") or "")
@@ -570,7 +609,6 @@ class RenderQueue:
             and item.error_category in {"comfyui_unavailable", "cuda_oom", "cuda_error_999", "timeout"}
         ):
             item.runtime["recover_attempts"] = int(item.runtime.get("recover_attempts") or 0) + 1
-            item.runtime["retry_after"] = time.time() + 45  # let the restarted engine load its models
             item.memory_events.append({"reason": "engine-crash-recovery", "error": item.error})
             restart_error = None
             if self._engine_restart is not None:
@@ -580,6 +618,22 @@ class RenderQueue:
                     restart_error = f"{type(restart_exc).__name__}: {restart_exc}"
             if restart_error:
                 item.memory_events.append({"reason": "engine-restart-failed", "error": restart_error})
+            # Wait for the restarted engine to actually answer before the retry can run, so the
+            # single retry isn't wasted against a still-booting ComfyUI. (A healthy HTTP server
+            # counts as ready; the render itself is re-submitted from scratch.)
+            ready = False
+            wait_s = float(getattr(self, "engine_ready_wait_s", 240.0))
+            deadline = time.monotonic() + wait_s
+            probe = self._make_provider(item.provider_config)
+            while time.monotonic() < deadline and not self._stop.is_set():
+                try:
+                    probe.health()
+                    ready = True
+                    break
+                except Exception:
+                    time.sleep(2.0)
+            item.runtime["retry_after"] = time.time() + (30.0 if ready else 45.0)
+            item.memory_events.append({"reason": "engine-ready-wait", "ready": ready})
             cleanup = self.memory_manager.maybe_cleanup(
                 self._active_provider,
                 reason="pre-retry",
@@ -609,7 +663,13 @@ class RenderQueue:
         if item.chain_from_previous:
             previous = self._previous_output(item)
             if not previous:
-                raise RuntimeError("No successful previous video is available for chaining")
+                error = RuntimeError("No successful previous video is available for chaining")
+                error.error_category = "scene_chain_broken"  # type: ignore[attr-defined]
+                error.error_message = (
+                    "The previous shot's video is no longer available (it was interrupted or "
+                    "deleted), so the scene stopped. Start the scene again."
+                )
+                raise error
             frame = self._extract_last_frame(previous, self.work_dir / "chains" / f"{item.id}.png")
             job.asset_map["INIT_IMAGE"] = str(frame)
             if job.selected_engine == "h3_ref2va" and "H3_PICTURE_1" in job.asset_map:
@@ -620,15 +680,38 @@ class RenderQueue:
         self._active_id = item.id
 
         if _uses_local_gpu(provider):
+            # Predictive storage protection: never start a local render whose estimated footprint
+            # would breach the protected reserve (provisional 15 GB).
+            if getattr(self, "storage_guard_enabled", True):
+                kind = "image" if _keeps_image_models_loaded(item) else "video"
+                est = estimate_job_storage_bytes(
+                    kind=kind,
+                    width=item.job.shot.width,
+                    height=item.job.shot.height,
+                    frames=item.job.shot.frames,
+                )
+                storage_target = item.output_dir or item.provider_config.output_dir or str(self.work_dir)
+                storage_check = check_storage_for_job(storage_target, estimated_bytes=est)
+                if not storage_check.allowed:
+                    item.memory_events.append({"reason": "storage-guard-blocked", **storage_check.public()})
+                    raise RuntimeError(storage_check.reason)
+
             force_preclean = item.profile in MEMORY_SENSITIVE_PROFILES
+            last_workflow = getattr(self, "_last_local_workflow", None)
+            switched_workflow = bool(last_workflow and last_workflow != item.workflow)
+            keep_loaded = _keeps_image_models_loaded(item) and not switched_workflow
             item.memory_events.append(
                 self.memory_manager.maybe_cleanup(
                     provider,
-                    reason=f"pre-render:{item.profile}",
-                    force=force_preclean,
-                    unload_models=True,
+                    reason=(
+                        f"pre-render:{item.profile}"
+                        + (" · keep image models" if keep_loaded else " · model switch" if switched_workflow else "")
+                    ),
+                    force=force_preclean or switched_workflow,
+                    unload_models=not keep_loaded,
                 )
             )
+            self._last_local_workflow = item.workflow
 
             self.memory_manager.start_trace(item.id)
             try:
@@ -677,6 +760,30 @@ class RenderQueue:
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
+    def _post_cleanup(self, item: QueuedRender, provider: Any) -> dict[str, Any]:
+        """One post-render memory event: cloud jobs skip it, video jobs unload, image jobs
+        keep their models loaded so the next image replays without a reload."""
+        is_cloud = (
+            not _uses_local_gpu(provider)
+            if provider is not None
+            else item.provider_config.provider != "comfyui"
+        )
+        if is_cloud:
+            return _cloud_memory_event(f"post-render:{item.status}")
+        force_postclean = item.status in {"error", "cancelled"} or item.profile in {
+            "low_memory",
+            "low_memory_quality",
+        }
+        keep_loaded = _keeps_image_models_loaded(item) and item.status not in {"error", "cancelled"}
+        if not keep_loaded:
+            self._last_local_workflow = None
+        return self.memory_manager.maybe_cleanup(
+            provider,
+            reason=f"post-render:{item.status}" + (" · keep image models" if keep_loaded else ""),
+            force=force_postclean,
+            unload_models=not keep_loaded,
+        )
+
     def _worker(self) -> None:
         while not self._stop.is_set():
             item = self._next()
@@ -700,26 +807,7 @@ class RenderQueue:
             finally:
                 provider = self._active_provider
                 try:
-                    is_cloud = (
-                        not _uses_local_gpu(provider)
-                        if provider is not None
-                        else item.provider_config.provider != "comfyui"
-                    )
-                    if is_cloud:
-                        item.memory_events.append(_cloud_memory_event(f"post-render:{item.status}"))
-                    else:
-                        force_postclean = item.status in {"error", "cancelled"} or item.profile in {
-                            "low_memory",
-                            "low_memory_quality",
-                        }
-                        item.memory_events.append(
-                            self.memory_manager.maybe_cleanup(
-                                provider,
-                                reason=f"post-render:{item.status}",
-                                force=force_postclean,
-                                unload_models=True,
-                            )
-                        )
+                    item.memory_events.append(self._post_cleanup(item, provider))
                 except Exception as exc:
                     item.memory_events.append(
                         {
