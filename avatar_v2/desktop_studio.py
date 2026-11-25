@@ -56,6 +56,7 @@ from .subject_references import (
     SubjectReferenceSet,
     select_relevant_references,
 )
+from .workflow_router import plan_intelligent_generation
 from .voiceover import segment_script
 
 STUDIO_ACTIONS = ("presenter", "angles", "voiceover", "sample", "talk", "act", "move", "sharpen", "scene")
@@ -1731,6 +1732,20 @@ class StudioMixin:
                     staged_starter = self._stage_reference_if_external(image, workflow="multi_reference")
                     if staged_starter not in photo_refs:
                         photo_refs.insert(0, staged_starter)
+                ver_record = None
+                try:
+                    routed = plan_intelligent_generation(
+                        prompt,
+                        requested_action="photo",
+                        starter_image=image or None,
+                        input_mode="guided" if guided else "automatic",
+                        model_preference=f"flux2_{photo_model}",
+                        use_llm=False,
+                    )
+                    if routed.ok and routed.verification_record is not None:
+                        ver_record = routed.verification_record.public()
+                except Exception:
+                    ver_record = None
                 items = [
                     self._forge_photo_item(
                         prompt=prompt,
@@ -1740,6 +1755,7 @@ class StudioMixin:
                         extra_runtime={
                             "guided_mode": bool(guided),
                             "reference_selection": ref_selection_meta,
+                            "verification_record": ver_record,
                         },
                         reference_images=photo_refs,
                     )
