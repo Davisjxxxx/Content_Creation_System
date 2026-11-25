@@ -19,6 +19,7 @@ from .integrity import hash_files
 from .models import ProviderConfig, RenderJob
 from .providers import ComfyUIProvider, RunwayProvider
 from .resource_monitor import check_storage_for_job, estimate_job_storage_bytes
+from .resource_planner import ResourcePlanner, WorkloadRequest
 
 JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
 MEMORY_SENSITIVE_PROFILES = {"int8_12gb", "low_memory", "low_memory_quality"}
@@ -167,6 +168,9 @@ class RenderQueue:
         self._active_provider: ComfyUIProvider | None = None
         self._active_id: str | None = None
         self._last_local_workflow: str | None = None
+        self._last_local_model_id: str | None = None
+        self._last_local_failed: bool = False
+        self.resource_planner = ResourcePlanner()
         self._restore()
         self._thread = threading.Thread(target=self._worker, daemon=True, name="avatar-v2-render-queue")
         self._thread.start()
@@ -680,38 +684,104 @@ class RenderQueue:
         self._active_id = item.id
 
         if _uses_local_gpu(provider):
-            # Predictive storage protection: never start a local render whose estimated footprint
-            # would breach the protected reserve (provisional 15 GB).
-            if getattr(self, "storage_guard_enabled", True):
-                kind = "image" if _keeps_image_models_loaded(item) else "video"
-                est = estimate_job_storage_bytes(
-                    kind=kind,
-                    width=item.job.shot.width,
-                    height=item.job.shot.height,
-                    frames=item.job.shot.frames,
-                )
-                storage_target = item.output_dir or item.provider_config.output_dir or str(self.work_dir)
-                storage_check = check_storage_for_job(storage_target, estimated_bytes=est)
-                if not storage_check.allowed:
-                    item.memory_events.append({"reason": "storage-guard-blocked", **storage_check.public()})
-                    raise RuntimeError(storage_check.reason)
+            planner: ResourcePlanner | None = getattr(self, "resource_planner", None)
+            if planner is None:
+                planner = ResourcePlanner()
+                self.resource_planner = planner
+
+            model_id = planner.registry.resolve_model_id(item.workflow, item.runtime, job.asset_map)
+            upcoming_model_id = self._peek_next_local_model_id(exclude_id=item.id)
+            storage_guard_on = getattr(self, "storage_guard_enabled", True)
 
             force_preclean = item.profile in MEMORY_SENSITIVE_PROFILES
             last_workflow = getattr(self, "_last_local_workflow", None)
             switched_workflow = bool(last_workflow and last_workflow != item.workflow)
-            keep_loaded = _keeps_image_models_loaded(item) and not switched_workflow
-            item.memory_events.append(
-                self.memory_manager.maybe_cleanup(
-                    provider,
-                    reason=(
-                        f"pre-render:{item.profile}"
-                        + (" · keep image models" if keep_loaded else " · model switch" if switched_workflow else "")
-                    ),
-                    force=force_preclean or switched_workflow,
-                    unload_models=not keep_loaded,
+            respect_retention = False
+
+            if model_id is not None:
+                req = WorkloadRequest(
+                    model_id=model_id,
+                    workflow=item.workflow,
+                    width=item.job.shot.width,
+                    height=item.job.shot.height,
+                    frames=item.job.shot.frames,
+                    local_only=True,
+                    requires_vlm_qa=bool(item.runtime.get("candidate_qa")),
+                    output_dir=item.output_dir or item.provider_config.output_dir or str(self.work_dir),
+                    explicit_vram_mode=str(item.runtime.get("vram_mode") or "") or None,
                 )
-            )
+                dummy_storage = None
+                if not storage_guard_on:
+                    from .resource_monitor import StorageCheck
+
+                    dummy_storage = StorageCheck(True, "normal", 100.0, 0.0, 100.0, 15.0)
+                current_model_id = getattr(self, "_last_local_model_id", None)
+                if current_model_id is None and last_workflow:
+                    current_model_id = planner.registry.resolve_model_id(last_workflow)
+                plan = planner.plan_execution(
+                    req,
+                    current_model_id=current_model_id,
+                    upcoming_model_id=upcoming_model_id,
+                    prior_failed_or_cancelled=bool(getattr(self, "_last_local_failed", False)),
+                    storage_check=dummy_storage,
+                )
+                item.runtime["execution_plan"] = plan.public()
+                if not plan.admitted:
+                    item.memory_events.append({"reason": "resource-planner-blocked", "plan": plan.public()})
+                    raise RuntimeError(plan.admission_reason)
+                if plan.wan_clip_device == "cpu" and job.asset_map.get("WAN_CLIP_DEVICE") == "default":
+                    job.asset_map["WAN_CLIP_DEVICE"] = "cpu"
+                if plan.vae_strategy == "tiled" and str(item.workflow).startswith("builtin:"):
+                    job.asset_map.setdefault("TILED_VAE", True)
+                unload_models = plan.pre_unload_models or (switched_workflow and current_model_id is None)
+                respect_retention = plan.respect_retention_above_threshold and not unload_models
+                keep_loaded = not unload_models
+                if switched_workflow and (plan.transition_kind == "cross_family" or current_model_id is None):
+                    force_preclean = True
+                reason = (
+                    f"pre-render:{item.profile}"
+                    + (
+                        " · keep image models"
+                        if _keeps_image_models_loaded(item) and keep_loaded
+                        else " · model switch"
+                        if switched_workflow and unload_models
+                        else f" · {plan.retention_strategy}"
+                        if keep_loaded
+                        else ""
+                    )
+                )
+            else:
+                if storage_guard_on:
+                    kind = "image" if _keeps_image_models_loaded(item) else "video"
+                    est = estimate_job_storage_bytes(
+                        kind=kind,
+                        width=item.job.shot.width,
+                        height=item.job.shot.height,
+                        frames=item.job.shot.frames,
+                    )
+                    storage_target = item.output_dir or item.provider_config.output_dir or str(self.work_dir)
+                    storage_check = check_storage_for_job(storage_target, estimated_bytes=est)
+                    if not storage_check.allowed:
+                        item.memory_events.append({"reason": "storage-guard-blocked", **storage_check.public()})
+                        raise RuntimeError(storage_check.reason)
+                keep_loaded = _keeps_image_models_loaded(item) and not switched_workflow
+                unload_models = not keep_loaded
+                reason = (
+                    f"pre-render:{item.profile}"
+                    + (" · keep image models" if keep_loaded else " · model switch" if switched_workflow else "")
+                )
+
+            cleanup_kwargs: dict[str, Any] = {
+                "reason": reason,
+                "force": force_preclean or switched_workflow,
+                "unload_models": unload_models,
+            }
+            if isinstance(self.memory_manager, GPUMemoryManager):
+                cleanup_kwargs["respect_retention"] = respect_retention
+            item.memory_events.append(self.memory_manager.maybe_cleanup(provider, **cleanup_kwargs))
             self._last_local_workflow = item.workflow
+            self._last_local_model_id = model_id
+            self._last_local_failed = False
 
             self.memory_manager.start_trace(item.id)
             try:
@@ -760,9 +830,23 @@ class RenderQueue:
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
+    def _peek_next_local_model_id(self, *, exclude_id: str | None = None) -> str | None:
+        planner: ResourcePlanner | None = getattr(self, "resource_planner", None)
+        if planner is None:
+            return None
+        with self._lock:
+            for candidate in self._items:
+                if candidate.id == exclude_id or candidate.status != "queued":
+                    continue
+                if candidate.provider_config.provider != "comfyui":
+                    continue
+                return planner.registry.resolve_model_id(
+                    candidate.workflow, candidate.runtime, candidate.job.asset_map
+                )
+        return None
+
     def _post_cleanup(self, item: QueuedRender, provider: Any) -> dict[str, Any]:
-        """One post-render memory event: cloud jobs skip it, video jobs unload, image jobs
-        keep their models loaded so the next image replays without a reload."""
+        """One post-render memory event coordinated with ResourcePlanner."""
         is_cloud = (
             not _uses_local_gpu(provider)
             if provider is not None
@@ -774,15 +858,43 @@ class RenderQueue:
             "low_memory",
             "low_memory_quality",
         }
-        keep_loaded = _keeps_image_models_loaded(item) and item.status not in {"error", "cancelled"}
+        failed = item.status in {"error", "cancelled"}
+        self._last_local_failed = failed
+
+        planner: ResourcePlanner | None = getattr(self, "resource_planner", None)
+        respect_retention = False
+        if planner is not None and not failed:
+            completed_model = planner.registry.resolve_model_id(item.workflow, item.runtime, item.job.asset_map)
+            next_model = self._peek_next_local_model_id(exclude_id=item.id)
+            post_plan = planner.plan_post_render(
+                completed_model_id=completed_model,
+                next_queued_model_id=next_model,
+                job_status=item.status,
+                requires_vlm_qa=bool(item.runtime.get("candidate_qa")),
+            )
+            keep_loaded = not post_plan["unload_models"]
+            respect_retention = bool(post_plan["respect_retention"])
+            reason = (
+                f"post-render:{item.status} · keep image models"
+                if _keeps_image_models_loaded(item) and keep_loaded
+                else post_plan["reason"]
+            )
+        else:
+            keep_loaded = _keeps_image_models_loaded(item) and not failed
+            reason = f"post-render:{item.status}" + (" · keep image models" if keep_loaded else "")
+
         if not keep_loaded:
             self._last_local_workflow = None
-        return self.memory_manager.maybe_cleanup(
-            provider,
-            reason=f"post-render:{item.status}" + (" · keep image models" if keep_loaded else ""),
-            force=force_postclean,
-            unload_models=not keep_loaded,
-        )
+            self._last_local_model_id = None
+
+        cleanup_kwargs: dict[str, Any] = {
+            "reason": reason,
+            "force": force_postclean,
+            "unload_models": not keep_loaded,
+        }
+        if isinstance(self.memory_manager, GPUMemoryManager):
+            cleanup_kwargs["respect_retention"] = respect_retention
+        return self.memory_manager.maybe_cleanup(provider, **cleanup_kwargs)
 
     def _worker(self) -> None:
         while not self._stop.is_set():

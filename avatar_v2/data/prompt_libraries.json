@@ -1,0 +1,212 @@
+{
+  "version": "1.0",
+  "categories": {
+    "composition": {
+      "label": "Composition",
+      "applies_to": ["image", "video"],
+      "options": [
+        {"id": "headshot", "label": "Close-up headshot", "value": "tight head-and-shoulders portrait framed at eye level"},
+        {"id": "medium_portrait", "label": "Medium portrait", "value": "waist-up medium portrait with balanced headroom"},
+        {"id": "three_quarter", "label": "Three-quarter framing", "value": "three-quarter figure framing with natural posture"},
+        {"id": "full_body", "label": "Full body", "value": "full-body framing from head to shoes fully inside the frame"},
+        {"id": "rule_of_thirds", "label": "Rule of thirds", "value": "off-center rule-of-thirds composition with clean negative space"},
+        {"id": "over_shoulder", "label": "Desk presentation", "value": "medium seated desk framing facing the camera"}
+      ]
+    },
+    "subject_attributes": {
+      "label": "Subject",
+      "applies_to": ["image"],
+      "options": [
+        {"id": "instructor", "label": "Course instructor", "value": "confident adult course instructor with natural posture"},
+        {"id": "executive", "label": "Business presenter", "value": "composed adult business presenter with approachable presence"},
+        {"id": "creative", "label": "Creative host", "value": "expressive adult creative host with relaxed demeanor"},
+        {"id": "coach", "label": "Wellness coach", "value": "energetic adult wellness coach with athletic posture"}
+      ]
+    },
+    "environment": {
+      "label": "Environment",
+      "applies_to": ["image", "video"],
+      "options": [
+        {"id": "clean_studio", "label": "Clean studio", "value": "minimalist photography studio with a soft neutral backdrop"},
+        {"id": "modern_office", "label": "Modern office", "value": "bright modern office with glass walls and subtle greenery"},
+        {"id": "sunlit_loft", "label": "Sunlit loft", "value": "airy loft room with tall windows and warm wood floors"},
+        {"id": "home_desk", "label": "Creator desk", "value": "tidy home studio desk with bookshelves softly out of focus"},
+        {"id": "cafe", "label": "Sunlit cafe", "value": "quiet neighborhood cafe near a large window"},
+        {"id": "city_courtyard", "label": "Outdoor courtyard", "value": "quiet architectural brick courtyard outdoors"}
+      ]
+    },
+    "lighting": {
+      "label": "Lighting",
+      "applies_to": ["image", "video"],
+      "options": [
+        {"id": "window_natural", "label": "Soft window light", "value": "soft directional natural daylight from a side window"},
+        {"id": "three_point", "label": "Studio three-point", "value": "clean three-point studio softbox lighting with gentle rim separation"},
+        {"id": "golden_hour", "label": "Golden hour", "value": "warm low-angle golden hour sunlight with gentle highlights"},
+        {"id": "editorial_contrast", "label": "Editorial contrast", "value": "sculpted key light with crisp natural shadow falloff"},
+        {"id": "overcast_even", "label": "Soft overcast", "value": "even diffused overcast daylight with flattering skin tones"}
+      ]
+    },
+    "camera_perspective": {
+      "label": "Camera perspective",
+      "applies_to": ["image", "video"],
+      "options": [
+        {"id": "eye_level", "label": "Eye level", "value": "eye-level camera perspective with direct lens connection"},
+        {"id": "slight_low", "label": "Slight low angle", "value": "subtle low-angle perspective conveying quiet confidence"},
+        {"id": "three_quarter_angle", "label": "Three-quarter angle", "value": "slight three-quarter camera angle with natural facial depth"},
+        {"id": "high_angle", "label": "Gentle high angle", "value": "gentle slightly elevated camera angle"}
+      ]
+    },
+    "focal_length": {
+      "label": "Focal length",
+      "applies_to": ["image"],
+      "options": [
+        {"id": "35mm", "label": "35mm environmental", "value": "35mm lens capturing natural environmental context"},
+        {"id": "50mm", "label": "50mm natural", "value": "50mm prime lens with true-to-life proportions"},
+        {"id": "85mm", "label": "85mm portrait", "value": "85mm portrait lens with flattering facial compression"}
+      ]
+    },
+    "depth_of_field": {
+      "label": "Depth of field",
+      "applies_to": ["image"],
+      "options": [
+        {"id": "shallow", "label": "Shallow background blur", "value": "shallow depth of field with smooth natural background bokeh"},
+        {"id": "moderate", "label": "Balanced focus", "value": "moderate depth of field keeping subject sharp and setting readable"},
+        {"id": "deep", "label": "Deep focus", "value": "deep focus with crisp foreground and architectural background"}
+      ]
+    },
+    "visual_style": {
+      "label": "Visual style",
+      "applies_to": ["image", "video"],
+      "options": [
+        {"id": "photoreal_editorial", "label": "Editorial photograph", "value": "authentic editorial photography with natural skin pores and fine hair detail"},
+        {"id": "documentary_35mm", "label": "Candid 35mm film", "value": "candid 35mm documentary photography with subtle organic film grain"},
+        {"id": "clean_commercial", "label": "Clean commercial", "value": "crisp modern commercial production look with accurate colors"},
+        {"id": "cinematic_still", "label": "Cinematic still", "value": "cinematic live-action frame with restrained tonal rolloff"}
+      ]
+    },
+    "atmosphere": {
+      "label": "Atmosphere",
+      "applies_to": ["image", "video"],
+      "options": [
+        {"id": "warm_welcoming", "label": "Warm & welcoming", "value": "warm, welcoming, and approachable atmosphere"},
+        {"id": "calm_focused", "label": "Calm & focused", "value": "calm, clear, and focused professional atmosphere"},
+        {"id": "candid_relaxed", "label": "Candid & relaxed", "value": "relaxed, unposed, slice-of-life atmosphere"},
+        {"id": "crisp_energetic", "label": "Bright & energetic", "value": "bright, lively, and motivating atmosphere"}
+      ]
+    },
+    "color_grading": {
+      "label": "Color grading",
+      "applies_to": ["image", "video"],
+      "options": [
+        {"id": "true_neutral", "label": "True-to-life neutral", "value": "true-to-life neutral color balance with accurate skin tones"},
+        {"id": "warm_filmic", "label": "Warm filmic", "value": "subtle warm filmic color palette with soft cream highlights"},
+        {"id": "cool_modern", "label": "Clean cool modern", "value": "clean modern palette with crisp whites and muted slate tones"}
+      ]
+    },
+    "materials_and_textures": {
+      "label": "Materials & textures",
+      "applies_to": ["image"],
+      "options": [
+        {"id": "natural_skin_fabric", "label": "Natural skin & woven fabric", "value": "realistic natural skin texture and visible woven fabric detail"},
+        {"id": "matte_architectural", "label": "Matte wood & linen", "value": "tactile matte wood, brushed metal, and soft linen textures"},
+        {"id": "crisp_tailored", "label": "Tailored wool & cotton", "value": "fine tailored wool suiting and crisp cotton weave"}
+      ]
+    },
+    "expressions": {
+      "label": "Expression",
+      "applies_to": ["image", "video"],
+      "options": [
+        {"id": "warm_smile", "label": "Warm smile", "value": "gentle authentic warm smile with relaxed eyes"},
+        {"id": "calm_confident", "label": "Calm & confident", "value": "calm, attentive, confident expression"},
+        {"id": "engaged_explaining", "label": "Engaged speaking", "value": "engaged, friendly expression as if explaining an idea"},
+        {"id": "thoughtful", "label": "Thoughtful pause", "value": "subtle thoughtful expression looking toward the lens"}
+      ]
+    },
+    "wardrobe": {
+      "label": "Wardrobe",
+      "applies_to": ["image"],
+      "options": [
+        {"id": "navy_blazer", "label": "Navy blazer & white shirt", "value": "wearing a tailored navy blazer over a crisp white shirt"},
+        {"id": "knit_sweater", "label": "Neutral knit sweater", "value": "wearing a soft charcoal knit crew-neck sweater"},
+        {"id": "smart_casual", "label": "Smart casual blouse", "value": "wearing an understated sage blouse and tailored trousers"},
+        {"id": "athletic_studio", "label": "Clean athletic wear", "value": "wearing modern fitted studio athletic top and training pants"}
+      ]
+    },
+    "motion": {
+      "label": "Subject motion",
+      "applies_to": ["video"],
+      "options": [
+        {"id": "nod_smile", "label": "Warm nod & smile", "value": "smiles warmly, nods gently, and holds natural eye contact"},
+        {"id": "explain_hands", "label": "Natural hand gestures", "value": "speaks naturally while illustrating a point with calm open-hand gestures"},
+        {"id": "wave_hello", "label": "Friendly wave", "value": "raises one hand in a relaxed friendly wave and settles naturally"},
+        {"id": "turn_camera", "label": "Turn to camera", "value": "turns smoothly toward the camera and settles into a poised smile"},
+        {"id": "walk_in", "label": "Walk into frame", "value": "walks naturally a few steps forward and pauses facing the camera"}
+      ]
+    },
+    "camera_movement": {
+      "label": "Camera movement",
+      "applies_to": ["video"],
+      "options": [
+        {"id": "locked_tripod", "label": "Locked tripod", "value": "steady locked-off tripod camera with zero unintended drift"},
+        {"id": "slow_push_in", "label": "Slow push-in", "value": "smooth, subtle slow forward camera push-in"},
+        {"id": "gentle_handheld", "label": "Subtle handheld", "value": "very subtle organic handheld breathing motion"},
+        {"id": "gentle_pan", "label": "Gentle pan", "value": "slow smooth horizontal pan following the subject"}
+      ]
+    },
+    "scene_continuity": {
+      "label": "Scene continuity",
+      "applies_to": ["video"],
+      "options": [
+        {"id": "strict_match", "label": "Strict identity & wardrobe lock", "value": "maintain consistent facial identity, hairstyle, wardrobe, and studio lighting across every frame"},
+        {"id": "seamless_chain", "label": "Seamless multi-shot handoff", "value": "begin smoothly from the previous pose and setting with consistent lighting and framing"}
+      ]
+    }
+  },
+  "recipes": [
+    {
+      "id": "studio_instructor",
+      "label": "Studio instructor portrait",
+      "applies_to": ["image", "video"],
+      "attributes": {
+        "composition": "medium seated desk framing facing the camera",
+        "environment": "minimalist photography studio with a soft neutral backdrop",
+        "lighting": "clean three-point studio softbox lighting with gentle rim separation",
+        "camera_perspective": "eye-level camera perspective with direct lens connection",
+        "visual_style": "authentic editorial photography with natural skin pores and fine hair detail",
+        "atmosphere": "calm, clear, and focused professional atmosphere",
+        "motion": "speaks naturally while illustrating a point with calm open-hand gestures",
+        "camera_movement": "steady locked-off tripod camera with zero unintended drift"
+      }
+    },
+    {
+      "id": "sunlit_loft_editorial",
+      "label": "Sunlit loft editorial",
+      "applies_to": ["image", "video"],
+      "attributes": {
+        "composition": "waist-up medium portrait with balanced headroom",
+        "environment": "airy loft room with tall windows and warm wood floors",
+        "lighting": "soft directional natural daylight from a side window",
+        "camera_perspective": "slight three-quarter camera angle with natural facial depth",
+        "visual_style": "candid 35mm documentary photography with subtle organic film grain",
+        "atmosphere": "warm, welcoming, and approachable atmosphere",
+        "motion": "smiles warmly, nods gently, and holds natural eye contact",
+        "camera_movement": "smooth, subtle slow forward camera push-in"
+      }
+    },
+    {
+      "id": "modern_office_explainer",
+      "label": "Modern office explainer",
+      "applies_to": ["image", "video"],
+      "attributes": {
+        "composition": "three-quarter figure framing with natural posture",
+        "environment": "bright modern office with glass walls and subtle greenery",
+        "lighting": "even diffused overcast daylight with flattering skin tones",
+        "camera_perspective": "eye-level camera perspective with direct lens connection",
+        "visual_style": "crisp modern commercial production look with accurate colors",
+        "atmosphere": "bright, lively, and motivating atmosphere",
+        "motion": "raises one hand in a relaxed friendly wave and settles naturally",
+        "camera_movement": "steady locked-off tripod camera with zero unintended drift"
+      }
+    }
+  ]
+}

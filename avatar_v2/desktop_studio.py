@@ -35,6 +35,8 @@ from .integrity import sha256_file
 from .library import AvatarProfile
 from .policy import depicts_minor
 from .presenter import MOTION_REALISM, NO_TEXT, compile_presenter_prompt
+from .prompt_compilers import compile_prompt_for_model
+from .prompt_library import build_spec_from_guided_payload, guided_ui_payload
 from .providers import runway as runway_api
 from .render_queue import QueuedRender
 from .secret_store import secret_status
@@ -1107,6 +1109,44 @@ class StudioMixin:
         queue_ids = self.queue.add_many(items)
         return {"ok": True, "scene": "queued", "shots": len(items), "queue_ids": queue_ids}
 
+    def _compile_guided_prompt(
+        self,
+        *,
+        prompt: str,
+        action: str,
+        guided: dict[str, Any] | None,
+        model_id: str,
+        width: int = 896,
+        height: int = 1280,
+        frames: int = 1,
+    ) -> tuple[str, list[str]]:
+        """Compile optional Guided attributes deterministically via StructuredPromptSpec.
+
+        When no guided attributes or randomized fields are active, returns the raw prompt
+        untouched so Automatic mode behaves identically.
+        """
+        g = dict(guided or {})
+        has_attrs = any(str(v or "").strip() for v in (g.get("attributes") or {}).values())
+        has_rand = bool(g.get("randomized"))
+        if not has_attrs and not has_rand:
+            return prompt, []
+        spec = build_spec_from_guided_payload(
+            prompt=prompt,
+            task=action,
+            guided=g,
+            model_preference=model_id,
+            width=width,
+            height=height,
+            frames=frames,
+        )
+        compiled = compile_prompt_for_model(spec, model_id)
+        errors = [c["message"] for c in compiled.conflicts if c.get("severity") == "error"]
+        if errors:
+            raise ValueError(errors[0])
+        if compiled.unsupported_capabilities:
+            raise ValueError(compiled.unsupported_capabilities[0])
+        return compiled.positive or prompt, list(compiled.warnings)
+
     def forge_state(self) -> dict[str, Any]:
         """Everything the Free builder screen shows, in one local call (no network)."""
         settings = self._settings()
@@ -1126,6 +1166,7 @@ class StudioMixin:
             "max_prompt_chars": ob.PROMPT_MAX_CHARS,
             "engine_state": engine["state"],
             "engine_message": engine["message"],
+            "guided": guided_ui_payload("all"),
         }
 
     def forge_price(self, options: dict[str, Any]) -> dict[str, Any]:
@@ -1139,7 +1180,18 @@ class StudioMixin:
             video_model = "a14b"
         vram_mode = ob.vram_mode_choice(options.get("vram_mode"))
         image = str(options.get("image") or "").strip()
+        guided = options.get("guided") if isinstance(options.get("guided"), dict) else None
+        guided_warnings: list[str] = []
         try:
+            reg_model = f"flux2_{photo_model}" if action == "photo" else ("wan22_a14b" if video_model == "a14b" else "wan22_5b")
+            if guided:
+                prompt, guided_warnings = self._compile_guided_prompt(
+                    prompt=prompt,
+                    action=action,
+                    guided=guided,
+                    model_id=reg_model,
+                    frames=1 if action == "photo" else local_engine.FRAMES,
+                )
             if not prompt and action == "photo":
                 raise ValueError("Describe what you want first.")
             phrase = depicts_minor(prompt)
@@ -1182,11 +1234,14 @@ class StudioMixin:
             "shots": shots,
             "minutes": minutes,
             "photo_first": action == "scene" and not image,
-            "warnings": (
-                ["The 9B model is non-commercial: only for testing and research."]
-                if photo_model == "9b"
-                else []
-            ),
+            "warnings": [
+                *(
+                    ["The 9B model is non-commercial: only for testing and research."]
+                    if photo_model == "9b"
+                    else []
+                ),
+                *guided_warnings,
+            ],
             "limit_error": None,
             "needs_talker": False,
         }
@@ -1208,8 +1263,17 @@ class StudioMixin:
         vram_mode = ob.vram_mode_choice(options.get("vram_mode"))
         shape = str(options.get("shape") or "")
         image = str(options.get("image") or "").strip()
+        guided = options.get("guided") if isinstance(options.get("guided"), dict) else None
         try:
             if action == "photo":
+                if guided:
+                    prompt, _ = self._compile_guided_prompt(
+                        prompt=prompt,
+                        action="photo",
+                        guided=guided,
+                        model_id=f"flux2_{photo_model}",
+                        frames=1,
+                    )
                 count = max(1, min(int(options.get("count") or 1), 4))
                 short_label = ob.PHOTO_MODELS[photo_model]["label"].split(" (")[0]
                 items = [
@@ -1218,6 +1282,7 @@ class StudioMixin:
                         shape=shape,
                         photo_model=photo_model,
                         label=f"Avatar photo {index} of {count} · {short_label} · your GPU",
+                        extra_runtime={"guided_mode": bool(guided)},
                     )
                     for index in range(1, count + 1)
                 ]
@@ -1227,6 +1292,26 @@ class StudioMixin:
                 shots = self._forge_shots(options)
                 if not shots:
                     raise ValueError("Describe at least one shot (it becomes the video scene).")
+                if guided:
+                    reg_vid = "wan22_a14b" if video_model == "a14b" else "wan22_5b"
+                    shots = [
+                        self._compile_guided_prompt(
+                            prompt=shot_text,
+                            action="scene",
+                            guided=guided,
+                            model_id=reg_vid,
+                            frames=local_engine.FRAMES,
+                        )[0]
+                        for shot_text in shots
+                    ]
+                    if not image:
+                        prompt, _ = self._compile_guided_prompt(
+                            prompt=prompt,
+                            action="photo",
+                            guided=guided,
+                            model_id=f"flux2_{photo_model}",
+                            frames=1,
+                        )
                 if image and not Path(image).expanduser().is_file():
                     raise ValueError("That start picture isn't on this computer anymore.")
                 photo_minutes = ob.PHOTO_MODELS[photo_model]["estimated_minutes"]

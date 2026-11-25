@@ -292,6 +292,17 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
     <div class="tiny" id="forgeCount">0 / 8000</div>
     <div class="chips" id="forgeIdeas" style="margin-top:8px"></div>
   </div>
+  <details class="card" id="forgeGuided" style="margin-top:12px">
+    <summary class="row" style="cursor:pointer;list-style:none;justify-content:space-between"><span class="label" style="margin:0">Guided creative options <small style="text-transform:none">(optional)</small></span><span class="tiny" id="forgeGuidedSummary">Automatic · click to refine</span></summary>
+    <div style="margin-top:12px;display:grid;gap:10px">
+      <div class="row" style="justify-content:space-between">
+        <div class="row" style="flex:1;min-width:220px"><span class="tiny">Scene recipe:</span><select id="forgeGuidedRecipe" style="max-width:260px"><option value="">None (choose individually)</option></select></div>
+        <button type="button" class="mini" onclick="forgeGuidedReset()">Reset unlocked</button>
+      </div>
+      <div class="pair" id="forgeGuidedGrid"></div>
+      <p class="tiny">Leave any option on Automatic, pick a specific look, tap 🎲 to randomize it, or 🔒 to keep it locked across runs.</p>
+    </div>
+  </details>
   <div class="card" style="margin-top:14px">
     <span class="label">Start picture <small style="text-transform:none">(optional)</small></span>
     <div class="thumbs" id="forgeImages"></div>
@@ -402,7 +413,7 @@ const ST_DEFAULT_ANGLES=['identity_three_quarter_left','identity_three_quarter_r
 const MOVE_IDEAS=['She smiles warmly and nods.','She waves hello to the camera.','She explains something with natural hand gestures.','She turns to face the camera and smiles.','She laughs naturally, then looks back at the camera.'];
 const st={data:null,engine:null,thumbs:new Map(),recipe:null,look:'natural',actVideo:'',moveImage:'',sceneImage:'',actImage:'',anglesImage:'',sceneShots:[''],priceTimer:null,sig:{},talkerTimer:null,lastJobs:0,noteUntil:{},libKind:'all',libItems:[],libShown:60,libImages:[],pickShown:{},pickExpanded:{},presenterAddOpen:false,
   opts:{stCount:'4',stTalkMode:'type',stActBody:'body',stActShape:'tall',moveEngine:'best',moveSeconds:'5',moveShape:'tall',sceneShape:'tall',forgeAction:'scene',forgeCount:'2'},engineChosen:false,
-  forge:{data:null,image:'',shots:[],edited:false,priceTimer:null,noteUntil:0}};
+  forge:{data:null,image:'',shots:[],edited:false,priceTimer:null,noteUntil:0,guided:{attributes:{},locked:{},randomized:{},seed:41001}}};
 const SCENE_IDEAS=['She walks into the room and smiles at the camera.','She sits down at the desk and opens a laptop.','She explains a point with natural hand gestures.','The camera slowly pushes in as she keeps talking.','She laughs, then turns back to the camera.'];
 // Each shot starts from the previous shot's last frame, so every line begins where the last one ended:
 // a 12-shot lesson that stitches into about one minute of continuous video.
@@ -441,7 +452,7 @@ function stChipInit(){document.querySelectorAll('.chips[data-chips]').forEach(gr
 function stChipSet(name,value){const group=document.querySelector(`.chips[data-chips="${name}"]`);if(!group)return;group.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x.dataset.v===value));st.opts[name]=value;
   if(name==='stTalkMode'){$('talkTypeBox').style.display=value==='type'?'block':'none';$('talkVoBox').style.display=value==='voiceover'?'block':'none'}
   if(name==='moveEngine'){const local=value==='local';$('moveTen').disabled=local;if(local&&st.opts.moveSeconds!=='5')stChipSet('moveSeconds','5')}
-  if(name==='forgeAction'){$('forgeShotCard').style.display=value==='photo'?'none':'block';$('forgeCountWrap').style.display=value==='photo'?'block':'none'}
+  if(name==='forgeAction'){$('forgeShotCard').style.display=value==='photo'?'none':'block';$('forgeCountWrap').style.display=value==='photo'?'block':'none';forgeRenderGuided()}
   stPriceSoon()}
 function stLookChips(){const root=$('stLook');root.innerHTML='';((st.data&&st.data.looks)||[]).forEach(l=>{const b=document.createElement('button');b.type='button';b.className=l.id===st.look?'on':'';b.innerHTML=`${esc(l.label)}<small>${esc(l.hint)}</small>`;b.onclick=()=>{st.look=l.id;stLookChips();stPriceSoon()};root.appendChild(b)})}
 function stOptions(action){
@@ -712,9 +723,73 @@ const FORGE_IDEAS=[
  'A calm news anchor in her 40s, neat bob and soft smile, behind a desk. She looks into the camera, introduces the story, gestures at a screen beside her, and closes with a small nod.'];
 function forgeNote(text,kind){const el=$('noteForge');if(!el)return;el.className='note'+(kind?' '+kind:'');el.textContent=text||''}
 function forgeMinutes(n){n=Number(n)||0;if(n<60)return `${n} min`;const h=Math.floor(n/60),m=Math.round(n%60);return m?`${h} h ${m} min`:`${h} h`}
+function forgeGuidedPayload(){
+  const g=st.forge.guided,action=st.opts.forgeAction||'scene',want=action==='photo'?'image':'video';
+  const cats=((st.forge.data&&st.forge.data.guided&&st.forge.data.guided.categories)||[]).filter(c=>(c.applies_to||[]).includes(want));
+  const allowed=new Set(cats.map(c=>c.id));
+  const attributes={},locked=[],randomized=[];
+  Object.entries(g.attributes).forEach(([k,v])=>{if(allowed.has(k)&&v)attributes[k]=v});
+  Object.keys(g.locked).forEach(k=>{if(allowed.has(k)&&g.locked[k])locked.push(k)});
+  Object.keys(g.randomized).forEach(k=>{if(allowed.has(k)&&g.randomized[k]&&!g.locked[k])randomized.push(k)});
+  if(!Object.keys(attributes).length&&!randomized.length)return null;
+  return {attributes,locked,randomized,seed:g.seed||41001};
+}
+function forgeUpdateGuidedSummary(){
+  const el=$('forgeGuidedSummary');if(!el)return;
+  const p=forgeGuidedPayload();
+  if(!p){el.textContent='Automatic · click to refine';return}
+  const bits=[];
+  const nA=Object.keys(p.attributes).length,nR=p.randomized.length,nL=p.locked.length;
+  if(nA)bits.push(`${nA} set`);if(nR)bits.push(`${nR} random`);if(nL)bits.push(`${nL} locked`);
+  el.textContent='Guided · '+bits.join(', ');
+}
+function forgeRenderGuided(){
+  const lib=st.forge.data&&st.forge.data.guided,grid=$('forgeGuidedGrid'),recSel=$('forgeGuidedRecipe');
+  if(!lib||!grid)return;
+  const action=st.opts.forgeAction||'scene',want=action==='photo'?'image':'video',g=st.forge.guided;
+  if(recSel&&recSel.options.length<=1){
+    (lib.recipes||[]).forEach(r=>{const o=document.createElement('option');o.value=r.id;o.textContent=r.label;recSel.appendChild(o)});
+    recSel.onchange=()=>forgeApplyRecipe(recSel.value);
+  }
+  const cats=(lib.categories||[]).filter(c=>(c.applies_to||[]).includes(want));
+  grid.innerHTML='';
+  cats.forEach(c=>{
+    const wrap=document.createElement('div');
+    const isLocked=!!g.locked[c.id],isRand=!!g.randomized[c.id]&&!isLocked,curVal=g.attributes[c.id]||'';
+    wrap.innerHTML=`<div class="row" style="justify-content:space-between"><span class="label" style="margin:0">${esc(c.label)}</span><div class="row" style="gap:4px"><button type="button" class="mini${isRand?' use':''}" data-act="rand" title="Randomize this attribute">🎲</button><button type="button" class="mini${isLocked?' use':''}" data-act="lock" title="Lock this attribute across runs">🔒</button></div></div>`;
+    const sel=document.createElement('select');
+    sel.innerHTML=`<option value="">Automatic</option>`+(c.options||[]).map(o=>`<option value="${esc(o.id)}">${esc(o.label)}</option>`).join('');
+    sel.value=curVal;sel.disabled=isRand;
+    sel.onchange=()=>{g.attributes[c.id]=sel.value;if(sel.value)g.randomized[c.id]=false;forgeUpdateGuidedSummary();forgePriceSoon()};
+    wrap.querySelector('[data-act="rand"]').onclick=()=>{g.randomized[c.id]=!g.randomized[c.id];if(g.randomized[c.id]){g.locked[c.id]=false;g.attributes[c.id]=''}forgeRenderGuided();forgePriceSoon()};
+    wrap.querySelector('[data-act="lock"]').onclick=()=>{g.locked[c.id]=!g.locked[c.id];if(g.locked[c.id])g.randomized[c.id]=false;forgeRenderGuided();forgePriceSoon()};
+    wrap.appendChild(sel);grid.appendChild(wrap);
+  });
+  forgeUpdateGuidedSummary();
+}
+function forgeApplyRecipe(recipeId){
+  const lib=st.forge.data&&st.forge.data.guided;if(!lib)return;
+  const recipe=(lib.recipes||[]).find(r=>r.id===recipeId);if(!recipe)return;
+  const g=st.forge.guided,catsById=Object.fromEntries((lib.categories||[]).map(c=>[c.id,c]));
+  Object.entries(recipe.attributes||{}).forEach(([k,val])=>{
+    if(g.locked[k])return;
+    const cat=catsById[k];if(!cat)return;
+    const match=(cat.options||[]).find(o=>o.value===val||o.id===val);
+    g.attributes[k]=match?match.id:val;g.randomized[k]=false;
+  });
+  forgeRenderGuided();forgePriceSoon();
+}
+function forgeGuidedReset(){
+  const g=st.forge.guided;
+  Object.keys(g.attributes).forEach(k=>{if(!g.locked[k])delete g.attributes[k]});
+  Object.keys(g.randomized).forEach(k=>{if(!g.locked[k])delete g.randomized[k]});
+  if($('forgeGuidedRecipe'))$('forgeGuidedRecipe').value='';
+  forgeRenderGuided();forgePriceSoon();
+}
 function forgeOptions(){const o={action:st.opts.forgeAction||'scene',prompt:$('forgePrompt').value,photo_model:$('forgePhotoModel').value||'4b',video_model:$('forgeVideoModel').value||'a14b',vram_mode:$('forgeVram').value||'balanced',image:st.forge.image};
   if(o.action==='photo')o.count=Number(st.opts.forgeCount);
   if(o.action==='scene'&&st.forge.edited)o.shots=st.forge.shots.map(t=>t.trim()).filter(Boolean);
+  const g=forgeGuidedPayload();if(g)o.guided=g;
   return o}
 function forgeSplit(){
   const text=($('forgePrompt').value||'').replace(/\s+/g,' ').trim();
@@ -791,6 +866,7 @@ async function forgeLoad(){
   $('forgeVramHint').textContent=$('forgeVram').value==='cpu_offload'?'Text encoders move to the CPU: more VRAM for the model, a bit slower.':'Weights stream between RAM and VRAM; the photo encoder always runs on the CPU.';
   await stLoadImages();  // so "Choose from My stuff…" has the pictures to offer
   stPickImages('forgeImages',()=>st.forge.image,v=>st.forge.image=v);
+  forgeRenderGuided();
   if(!st.forge.edited&&!st.forge.shots.length)forgeSplit();
   forgeRender();forgePriceSoon();
 }

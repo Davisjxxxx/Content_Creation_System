@@ -208,6 +208,7 @@ class GPUMemoryManager:
         reason: str,
         force: bool = False,
         unload_models: bool = True,
+        respect_retention: bool = False,
         wait_s: float = 8.0,
     ) -> dict[str, Any]:
         """Clean local Python garbage and, when needed, ask ComfyUI to free VRAM."""
@@ -219,11 +220,13 @@ class GPUMemoryManager:
         should_clean = force or (self.enabled and over_threshold)
         # ComfyUI 0.46's /free handler defaults unset/false unload_models to free_memory=True,
         # which unloads all loaded models anyway. When a caller intentionally asks to retain
-        # warm models (unload_models=False) and VRAM is safely below the cleanup threshold,
-        # skip /free so models actually remain resident; escalate to a full unload if VRAM
-        # reaches or exceeds the threshold.
-        effective_unload = unload_models or over_threshold
-        models_retained = bool(not unload_models and not over_threshold)
+        # warm models (unload_models=False):
+        # - If ResourcePlanner explicitly authorized retention (respect_retention=True), do NOT
+        #   evict solely because total GPU VRAM exceeds the fixed 85% mark (FLUX.2 9B legitimately
+        #   rests at ~85.5-90.4% total VRAM including desktop overhead).
+        # - Otherwise (legacy callers without planner context), escalate to full unload at >=85%.
+        effective_unload = unload_models or (over_threshold and not respect_retention)
+        models_retained = bool(not effective_unload)
         requested = False
         error = ""
 
