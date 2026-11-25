@@ -205,13 +205,14 @@ class AvatarV2Client:
         frames: int | None = None,
         seed: int | None = None,
         references: list[str] | None = None,
+        subject_references: list[dict[str, Any]] | None = None,
         attributes: dict[str, str] | None = None,
         label: str = "",
         wait: bool = False,
         poll_interval_s: float = 0.25,
         timeout_s: float = 1800.0,
     ) -> GenerationResult:
-        """Submit a natural-language prompt (with optional references/attributes) via StructuredPromptSpec."""
+        """Submit a natural-language prompt (with optional references/subject_references/attributes) via StructuredPromptSpec."""
         constraints: dict[str, Any] = {"local_only": True}
         if model_id:
             constraints["model_preference"] = str(model_id)
@@ -225,6 +226,36 @@ class AvatarV2Client:
             constraints["frames"] = 81
         if seed is not None:
             constraints["seed"] = int(seed)
+
+        ref_items: list[dict[str, Any]] = [
+            {
+                "asset_id": f"ref_{idx}",
+                "path": str(ref),
+                "role": "start_frame" if task in {"video_generate", "video_scene"} else "identity",
+            }
+            for idx, ref in enumerate(references or [])
+            if str(ref or "").strip()
+        ]
+        for s_idx, sref in enumerate(subject_references or []):
+            if not isinstance(sref, dict) or not str(sref.get("path") or "").strip():
+                continue
+            ref_items.append(
+                {
+                    "asset_id": str(sref.get("asset_id") or sref.get("ref_id") or f"sref_{s_idx}"),
+                    "path": str(sref["path"]),
+                    "role": str(sref.get("role") or "front_body"),
+                    "subject_id": str(sref.get("subject_id") or "primary"),
+                    "view_orientation": str(sref.get("view_orientation") or ""),
+                    "source_provenance": str(sref.get("source_provenance") or "script"),
+                    "asset_fingerprint": str(sref.get("asset_fingerprint") or ""),
+                    "preserve_identity": bool(sref.get("preserve_identity", True)),
+                    "preserve_appearance": bool(sref.get("preserve_appearance", True)),
+                    "preserve_wardrobe": bool(sref.get("preserve_wardrobe", True)),
+                    "locked_attributes": list(sref.get("locked_attributes") or []),
+                    "locked": bool(sref.get("locked", False)),
+                }
+            )
+
         spec_dict: dict[str, Any] = {
             "original_prompt": str(prompt or ""),
             "intent": {
@@ -234,15 +265,7 @@ class AvatarV2Client:
             "excluded_attributes": [
                 part.strip() for part in str(negative_prompt or "").split(",") if part.strip()
             ],
-            "reference_assets": [
-                {
-                    "asset_id": f"ref_{idx}",
-                    "path": str(ref),
-                    "role": "start_frame" if task in {"video_generate", "video_scene"} else "identity",
-                }
-                for idx, ref in enumerate(references or [])
-                if str(ref or "").strip()
-            ],
+            "reference_assets": ref_items,
             "constraints": constraints,
         }
         for key, val in (attributes or {}).items():
@@ -267,6 +290,7 @@ class AvatarV2Client:
         seed: int | None = None,
         negative_prompt: str = "",
         references: list[str] | None = None,
+        subject_references: list[dict[str, Any]] | None = None,
         attributes: dict[str, str] | None = None,
         label: str = "",
         wait: bool = True,
@@ -281,6 +305,7 @@ class AvatarV2Client:
             seed=seed,
             negative_prompt=negative_prompt,
             references=references,
+            subject_references=subject_references,
             attributes=attributes,
             label=label,
             wait=wait,
@@ -317,6 +342,7 @@ class AvatarV2Client:
         frames: int = 81,
         seed: int | None = None,
         negative_prompt: str = "",
+        subject_references: list[dict[str, Any]] | None = None,
         attributes: dict[str, str] | None = None,
         label: str = "",
         wait: bool = True,
@@ -331,6 +357,7 @@ class AvatarV2Client:
             seed=seed,
             negative_prompt=negative_prompt,
             references=[start_image],
+            subject_references=subject_references,
             attributes=attributes,
             label=label,
             wait=wait,

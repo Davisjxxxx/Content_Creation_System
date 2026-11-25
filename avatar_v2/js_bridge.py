@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 JS_API_METHODS: tuple[str, ...] = (
     # The simple Studio app (Make / My stuff / Settings) calls exactly these.
-    "cancel_queue_item", "choose_files", "comfyui_start", "comfyui_stop", "engine_status", "forge_go",
+    "cancel_queue_item", "character_profiles", "choose_files", "comfyui_start", "comfyui_stop", "engine_status", "forge_go",
     "forge_price", "forge_state", "get_state", "open_output_dir",
     "open_path", "pick_local_images", "runway_check", "runway_save_key", "save_settings",
     "script_control", "script_select",

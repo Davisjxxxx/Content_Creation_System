@@ -415,3 +415,149 @@ def default_adherence_suite() -> list[AdherenceBenchmarkCase]:
             seed=61003,
         ),
     ]
+
+
+# --------------------------------------------------------------------------- Sprint 5 (Phase K): Multi-view reference suite
+
+
+MULTI_VIEW_CONSISTENCY_DIMENSIONS: tuple[str, ...] = (
+    "subject_identity",
+    "appearance",
+    "visible_proportion",
+    "wardrobe",
+    "requested_orientation",
+    "reference_adherence",
+    "temporal_consistency",
+)
+
+
+@dataclass(frozen=True)
+class MultiViewBenchmarkCase:
+    """Controlled multi-view reference consistency comparison case (human-evaluated, never fabricated)."""
+
+    case_id: str
+    condition: Literal[
+        "starter_only",
+        "starter_plus_front",
+        "starter_plus_front_back",
+        "multi_perspective",
+        "conditioned_intermediate_keyframes",
+        "conditioned_video",
+    ]
+    target_model: Literal["flux2_9b", "wan22_14b"]
+    title: str
+    prompt: str
+    reference_roles: tuple[str, ...]
+    expected_orientation: str
+    mandatory_requirements: tuple[tuple[str, str], ...]
+    seed: int
+    human_evaluation_required: bool = True
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "case_id": self.case_id,
+            "condition": self.condition,
+            "target_model": self.target_model,
+            "title": self.title,
+            "prompt": self.prompt,
+            "reference_roles": list(self.reference_roles),
+            "expected_orientation": self.expected_orientation,
+            "mandatory_requirements": [{"id": rid, "description": desc} for rid, desc in self.mandatory_requirements],
+            "consistency_dimensions": list(MULTI_VIEW_CONSISTENCY_DIMENSIONS),
+            "seed": self.seed,
+            "human_evaluation_required": self.human_evaluation_required,
+        }
+
+
+def multi_view_reference_suite() -> list[MultiViewBenchmarkCase]:
+    """Return the 6 Sprint 5 multi-view reference comparison cases (starter vs multi-view vs video)."""
+    return [
+        MultiViewBenchmarkCase(
+            case_id="mv_01_starter_only",
+            condition="starter_only",
+            target_model="flux2_9b",
+            title="Baseline: starter image only (rear-view request)",
+            prompt="Full-length candid photo of the same adult subject seen from behind walking down a sunlit gallery hallway, matching her hair and outfit.",
+            reference_roles=("primary_starter",),
+            expected_orientation="back",
+            mandatory_requirements=(
+                ("requested_rear_orientation", "Subject is genuinely oriented facing away from the camera"),
+                ("wardrobe_consistency", "Outfit color and garment structure match the starter photo"),
+                ("hair_appearance", "Hair color and length match the starter photo without invented accessories"),
+            ),
+            seed=71001,
+        ),
+        MultiViewBenchmarkCase(
+            case_id="mv_02_starter_plus_front",
+            condition="starter_plus_front",
+            target_model="flux2_9b",
+            title="Starter + front body reference (new environment portrait)",
+            prompt="Full-length natural photo of the same adult subject standing in a sunlit modern bookstore, facing forward with a relaxed posture.",
+            reference_roles=("primary_starter", "front_body"),
+            expected_orientation="front",
+            mandatory_requirements=(
+                ("subject_identity", "Facial identity matches reference cleanly"),
+                ("visible_proportion", "Body proportions match front body reference"),
+                ("new_environment", "Subject is cleanly placed in the sunlit bookstore environment"),
+            ),
+            seed=71002,
+        ),
+        MultiViewBenchmarkCase(
+            case_id="mv_03_starter_front_back",
+            condition="starter_plus_front_back",
+            target_model="flux2_9b",
+            title="Starter + front & back references (rear view fidelity)",
+            prompt="Full-length natural photo of the same adult subject seen from behind in a sunlit modern gallery, matching the back of her outfit and hairstyle.",
+            reference_roles=("primary_starter", "front_body", "back_body"),
+            expected_orientation="back",
+            mandatory_requirements=(
+                ("requested_rear_orientation", "Subject faces away cleanly"),
+                ("back_detail_adherence", "Rear hairstyle and back garment details match back_body reference instead of being invented"),
+            ),
+            seed=71003,
+        ),
+        MultiViewBenchmarkCase(
+            case_id="mv_04_multi_perspective",
+            condition="multi_perspective",
+            target_model="flux2_9b",
+            title="Multi-perspective references (side profile consistency)",
+            prompt="Medium-full left side profile photo of the same adult subject walking across a bright studio floor, soft natural daylight.",
+            reference_roles=("face_identity", "front_body", "left_side", "back_body", "appearance_wardrobe"),
+            expected_orientation="left",
+            mandatory_requirements=(
+                ("side_profile_orientation", "Subject is rendered in clear left side profile"),
+                ("identity_wardrobe_match", "Profile silhouette, hair, and wardrobe match supplied references"),
+            ),
+            seed=71004,
+        ),
+        MultiViewBenchmarkCase(
+            case_id="mv_05_conditioned_keyframes",
+            condition="conditioned_intermediate_keyframes",
+            target_model="flux2_9b",
+            title="Reference-conditioned front -> side -> back keyframes",
+            prompt="Rear three-quarter view of the same adult subject turning away from the camera in the same studio lighting and wardrobe.",
+            reference_roles=("primary_starter", "front_body", "left_side", "back_body", "rear_three_quarter"),
+            expected_orientation="rear_three_quarter",
+            mandatory_requirements=(
+                ("keyframe_continuity", "Lighting, background, wardrobe, and hair remain consistent across start and end keyframes"),
+                ("rear_3q_orientation", "Subject achieves requested rear three-quarter orientation"),
+            ),
+            seed=71005,
+        ),
+        MultiViewBenchmarkCase(
+            case_id="mv_06_conditioned_video",
+            condition="conditioned_video",
+            target_model="wan22_14b",
+            title="Reference-conditioned video: subject turning from front to back",
+            prompt="Starting from a front-facing stance, the adult subject smoothly turns to her left and walks away from the camera while keeping consistent wardrobe, hairstyle, and natural motion.",
+            reference_roles=("primary_starter", "front_body", "left_side", "back_body"),
+            expected_orientation="turn_front_to_back",
+            mandatory_requirements=(
+                ("smooth_turn", "Subject smoothly turns from front to back without limb popping or morphing"),
+                ("temporal_wardrobe", "Wardrobe and hair remain coherent across the turn"),
+                ("identity_retention", "Identity stays consistent before and during the turn"),
+            ),
+            seed=72001,
+        ),
+    ]
+

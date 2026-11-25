@@ -46,6 +46,15 @@ GenerationTask = Literal[
 ]
 InputMode = Literal["automatic", "guided", "script"]
 ReferenceRole = Literal[
+    "primary_starter",
+    "face_identity",
+    "front_body",
+    "back_body",
+    "left_side",
+    "right_side",
+    "front_three_quarter",
+    "rear_three_quarter",
+    "appearance_wardrobe",
     "identity",
     "style",
     "scene",
@@ -125,11 +134,19 @@ class SubjectAttributeSpec(BaseModel):
 
 
 class ReferenceAssetItem(BaseModel):
-    """One reference image, video, or audio asset bound to a semantic role."""
+    """One reference image, video, or audio asset bound to a semantic role and optional subject."""
 
     asset_id: str
     role: ReferenceRole
     path: str
+    subject_id: str = "primary"
+    view_orientation: str = ""
+    source_provenance: str = ""
+    asset_fingerprint: str = ""
+    preserve_identity: bool = True
+    preserve_appearance: bool = True
+    preserve_wardrobe: bool = True
+    locked_attributes: list[str] = Field(default_factory=list)
     weight: float = Field(default=1.0, ge=0.0, le=2.0)
     locked: bool = False
     description: str = ""
@@ -551,6 +568,45 @@ class StructuredPromptSpec(BaseModel):
                     message="Cloud model preference conflicts with local_only=True.",
                 )
             )
+
+        # 5b. Multi-view subject reference consistency checks (Sprint 5, Phase E).
+        starters = [ref for ref in self.reference_assets if ref.role in {"primary_starter", "start_frame"}]
+        if len(starters) > 1 and len({r.path for r in starters}) > 1:
+            conflicts.append(
+                PromptConflict(
+                    code="competing_starter_frames",
+                    severity="error",
+                    fields=["reference_assets"],
+                    message="Multiple distinct primary_starter/start_frame assets conflict; designate one starter image and assign view roles to supplemental references.",
+                )
+            )
+        singular_views = {"front_body", "back_body", "left_side", "right_side", "front_three_quarter", "rear_three_quarter"}
+        by_subj_role: dict[tuple[str, str], set[str]] = {}
+        by_subj_path: dict[tuple[str, str], set[str]] = {}
+        for ref in self.reference_assets:
+            if ref.role in singular_views:
+                by_subj_role.setdefault((ref.subject_id, ref.role), set()).add(ref.path)
+            by_subj_path.setdefault((ref.subject_id, ref.path), set()).add(ref.role)
+        for (subj_id, role), paths in by_subj_role.items():
+            if len(paths) > 1:
+                conflicts.append(
+                    PromptConflict(
+                        code="duplicate_singular_subject_view",
+                        severity="error",
+                        fields=["reference_assets"],
+                        message=f"Subject '{subj_id}' has multiple conflicting images assigned to singular role '{role}'.",
+                    )
+                )
+        for (subj_id, path), assigned in by_subj_path.items():
+            if {"front_body", "back_body"} <= assigned or {"left_side", "right_side"} <= assigned:
+                conflicts.append(
+                    PromptConflict(
+                        code="contradictory_subject_view_orientation",
+                        severity="error",
+                        fields=["reference_assets"],
+                        message=f"Same reference '{path}' is assigned to opposite views ({', '.join(sorted(assigned))}) for subject '{subj_id}'.",
+                    )
+                )
 
         # 6. Mandatory adult-safety policy check (avatar_v2.policy.depicts_minor).
         combined_text = " ".join(txt for _fp, txt in active_texts)

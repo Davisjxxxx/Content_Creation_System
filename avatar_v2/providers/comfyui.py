@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from ..models import ProviderConfig, RenderJob
-from ..workflows_builder import BUILTIN_BUILDERS
+from ..workflows_builder import BUILTIN_BUILDERS, with_tiled_vae, with_wan_end_frame
 
 
 class ComfyUIExecutionError(RuntimeError):
@@ -39,7 +39,7 @@ def replace_placeholders(value: Any, mapping: dict[str, Any]) -> Any:
     return value
 
 
-_DYNAMIC_ASSET = re.compile(r"^(IDENTITY_REF|BODY_REF|HAIR_REF|WARDROBE_REF|H3_PICTURE|H3_VIDEO|H3_AUDIO)_\d+$")
+_DYNAMIC_ASSET = re.compile(r"^(REF_IMAGE|IDENTITY_REF|BODY_REF|HAIR_REF|WARDROBE_REF|H3_PICTURE|H3_VIDEO|H3_AUDIO)_\d+$")
 
 
 def _is_asset_key(key: str) -> bool:
@@ -187,7 +187,12 @@ class ComfyUIProvider:
             return builder(mapping)
         workflow = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
         mapping = self._stage_assets(job) if stage_assets else dict(job.asset_map)
-        return replace_placeholders(workflow, mapping)
+        resolved = replace_placeholders(workflow, mapping)
+        if mapping.get("LAST_FRAME"):
+            resolved = with_wan_end_frame(resolved, str(mapping["LAST_FRAME"]))
+        if mapping.get("TILED_VAE"):
+            resolved = with_tiled_vae(resolved)
+        return resolved
 
     def queue(self, workflow: dict[str, Any]) -> str:
         with httpx.Client(timeout=30) as client:

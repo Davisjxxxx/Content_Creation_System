@@ -48,6 +48,14 @@ from .render_queue import QueuedRender
 from .script_broker import BrokerSubmitContext
 from .script_runner import SandboxUnavailableError, ScriptRunManager
 from .secret_store import secret_status
+from .subject_references import (
+    ROLE_CATALOG,
+    CharacterProfile,
+    CharacterProfileStore,
+    SubjectReferenceItem,
+    SubjectReferenceSet,
+    select_relevant_references,
+)
 from .voiceover import segment_script
 
 STUDIO_ACTIONS = ("presenter", "angles", "voiceover", "sample", "talk", "act", "move", "sharpen", "scene")
@@ -382,6 +390,161 @@ class StudioMixin:
             "error": batch["errors"][0] if (not batch["items"] and batch["errors"]) else "",
         }
 
+    # ------------------------------------------------------------------ Character Profiles & Multi-View Refs (Sprint 5)
+
+    def _character_profile_store(self) -> CharacterProfileStore:
+        return CharacterProfileStore(_desktop().APP_HOME / "character_profiles.json")
+
+    def character_profiles(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """CRUD for lightweight local Character Profiles (never alters or deletes original assets)."""
+        opts = dict(options or {})
+        action = str(opts.get("action") or "list").strip().lower()
+        store = self._character_profile_store()
+        mgr = self._reference_manager()
+
+        if action == "list":
+            profiles = store.list_profiles()
+            # Re-authorize saved profile reference paths for thumbnail preview on reload.
+            for prof in profiles:
+                rset = prof.get("reference_set") or {}
+                paths = [r.get("path") for r in (rset.get("references") or []) if isinstance(r, dict) and r.get("path")]
+                if isinstance(rset.get("starter_image"), dict) and rset["starter_image"].get("path"):
+                    paths.append(rset["starter_image"]["path"])
+                existing = [p for p in paths if Path(str(p)).is_file()]
+                if existing:
+                    mgr.register_selected(existing, workflow="multi_reference")
+            return {"ok": True, "profiles": profiles}
+
+        if action == "delete":
+            pid = str(opts.get("profile_id") or "").strip()
+            if not pid:
+                return {"ok": False, "error": "Select a profile to remove."}
+            removed = store.delete_profile(pid)
+            return {"ok": removed, "profiles": store.list_profiles(), "error": "" if removed else "Profile not found."}
+
+        if action == "save":
+            name = " ".join(str(opts.get("name") or "").split())[:80]
+            if not name:
+                return {"ok": False, "error": "Enter a name for this Character Profile."}
+            raw_refs = opts.get("references") or []
+            starter_path = str(opts.get("starter_image") or "").strip()
+            starter_item = None
+            if starter_path:
+                checked = mgr.authorize_existing(starter_path, workflow="multi_reference")
+                if not checked.ok:
+                    return {"ok": False, "error": checked.error}
+                starter_item = SubjectReferenceItem(
+                    role="primary_starter",
+                    path=checked.path,
+                    source_provenance="my_stuff" if checked.source == "my_stuff" else "local",
+                    asset_fingerprint=checked.sha256,
+                    width=checked.width,
+                    height=checked.height,
+                )
+            items: list[SubjectReferenceItem] = []
+            for entry in raw_refs:
+                if not isinstance(entry, dict) or not str(entry.get("path") or "").strip():
+                    continue
+                checked = mgr.authorize_existing(str(entry["path"]), workflow="multi_reference")
+                if not checked.ok:
+                    return {"ok": False, "error": checked.error}
+                items.append(
+                    SubjectReferenceItem(
+                        role=str(entry.get("role") or "front_body"),  # type: ignore[arg-type]
+                        subject_id=str(entry.get("subject_id") or "primary"),
+                        path=checked.path,
+                        source_provenance="my_stuff" if checked.source == "my_stuff" else "local",
+                        asset_fingerprint=checked.sha256,
+                        width=checked.width,
+                        height=checked.height,
+                        preserve_identity=bool(entry.get("preserve_identity", True)),
+                        preserve_appearance=bool(entry.get("preserve_appearance", True)),
+                        preserve_wardrobe=bool(entry.get("preserve_wardrobe", True)),
+                        locked=bool(entry.get("locked", False)),
+                    )
+                )
+            if not items and starter_item is None:
+                return {"ok": False, "error": "Add at least one reference image before saving a Character Profile."}
+            ref_set = SubjectReferenceSet(
+                starter_image=starter_item,
+                references=items,
+                preserve_identity=bool(opts.get("preserve_identity", True)),
+                preserve_appearance=bool(opts.get("preserve_appearance", True)),
+                preserve_wardrobe=bool(opts.get("preserve_wardrobe", True)),
+            )
+            profile_kwargs: dict[str, Any] = {
+                "name": name,
+                "reference_set": ref_set,
+                "appearance_attributes": dict(opts.get("appearance_attributes") or {}),
+                "locked_attributes": list(opts.get("locked_attributes") or []),
+            }
+            if opts.get("profile_id"):
+                profile_kwargs["profile_id"] = str(opts["profile_id"])
+            try:
+                saved = store.save_profile(CharacterProfile(**profile_kwargs))
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True, "profile": saved.model_dump(), "profiles": store.list_profiles()}
+
+        return {"ok": False, "error": f"Unknown character_profiles action '{action}'."}
+
+    def _resolve_subject_references(
+        self,
+        *,
+        starter_image: str,
+        raw_subject_refs: dict[str, Any] | None,
+        prompt: str,
+        task: str,
+        workflow_supports_multiref: bool,
+        stage: bool = False,
+    ) -> tuple[list[str], list[str], dict[str, Any] | None]:
+        """Validate, detect conflicts, select relevant multi-view references, and optionally stage them."""
+        if not isinstance(raw_subject_refs, dict):
+            return [], [], None
+        entries = [e for e in (raw_subject_refs.get("references") or []) if isinstance(e, dict) and str(e.get("path") or "").strip()]
+        if not entries:
+            return [], [], None
+        mgr = self._reference_manager()
+        starter_item = (
+            SubjectReferenceItem(role="primary_starter", path=starter_image)
+            if starter_image and Path(starter_image).is_file()
+            else None
+        )
+        items: list[SubjectReferenceItem] = []
+        for entry in entries:
+            items.append(
+                SubjectReferenceItem(
+                    role=str(entry.get("role") or "front_body"),  # type: ignore[arg-type]
+                    subject_id=str(entry.get("subject_id") or "primary"),
+                    path=str(entry["path"]),
+                    preserve_identity=bool(raw_subject_refs.get("preserve_identity", True)),
+                    preserve_appearance=bool(raw_subject_refs.get("preserve_appearance", True)),
+                    preserve_wardrobe=bool(raw_subject_refs.get("preserve_wardrobe", True)),
+                    locked=bool(entry.get("locked", False)),
+                )
+            )
+        ref_set = SubjectReferenceSet(
+            starter_image=starter_item,
+            references=items,
+            preserve_identity=bool(raw_subject_refs.get("preserve_identity", True)),
+            preserve_appearance=bool(raw_subject_refs.get("preserve_appearance", True)),
+            preserve_wardrobe=bool(raw_subject_refs.get("preserve_wardrobe", True)),
+        )
+        conflicts = [c for c in ref_set.detect_conflicts(check_disk=True) if c.severity == "error"]
+        if conflicts:
+            raise ValueError(conflicts[0].message)
+        if stage:
+            ref_set = ref_set.stage_all(mgr, require_authorization=False)
+        selection = select_relevant_references(
+            ref_set,
+            prompt=prompt,
+            task=task,
+            max_supplemental=4,
+            workflow_supports_multiref=workflow_supports_multiref,
+        )
+        selected_paths = [str(r["path"]) for r in selection["selected"]]
+        return selected_paths, list(selection["workflow_limitations"]), selection
+
     # ------------------------------------------------------------------ Script mode (Sprint 4)
 
     def _script_manager(self) -> ScriptRunManager:
@@ -412,6 +575,7 @@ class StudioMixin:
                 action="script_photo",
                 label=ctx.label,
                 extra_runtime={"script_run_id": ctx.run_id, "script_item": ctx.item_index},
+                reference_images=ctx.staged_references,
             )
             if ctx.compiled_negative:
                 item.job.asset_map["NEGATIVE_PROMPT"] = ctx.compiled_negative
@@ -1269,6 +1433,7 @@ class StudioMixin:
         label: str,
         action: str = "forge_photo",
         extra_runtime: dict[str, Any] | None = None,
+        reference_images: list[str] | None = None,
     ) -> QueuedRender:
         """One avatar photo made offline: FLUX.2 klein through ComfyUI (free)."""
         info = ob.inspect(self._settings())
@@ -1312,6 +1477,9 @@ class StudioMixin:
                 **ob.image_placeholders(photo_model),
             }
         )
+        for r_idx, r_path in enumerate((reference_images or [])[:4], start=1):
+            if r_path and Path(r_path).is_file():
+                job.asset_map[f"REF_IMAGE_{r_idx}"] = str(r_path)
         runtime: dict[str, Any] = {
             "provider": "comfyui",
             "profile": local_engine.PROFILE,
@@ -1423,6 +1591,8 @@ class StudioMixin:
             "engine_state": engine["state"],
             "engine_message": engine["message"],
             "guided": guided_ui_payload("all"),
+            "reference_roles": [r for r in ROLE_CATALOG if r["id"] != "primary_starter"],
+            "character_profiles": self._character_profile_store().list_profiles(),
         }
 
     def forge_price(self, options: dict[str, Any]) -> dict[str, Any]:
@@ -1437,7 +1607,9 @@ class StudioMixin:
         vram_mode = ob.vram_mode_choice(options.get("vram_mode"))
         image = str(options.get("image") or "").strip()
         guided = options.get("guided") if isinstance(options.get("guided"), dict) else None
+        subject_refs = options.get("subject_references") if isinstance(options.get("subject_references"), dict) else None
         guided_warnings: list[str] = []
+        ref_warnings: list[str] = []
         try:
             reg_model = f"flux2_{photo_model}" if action == "photo" else ("wan22_a14b" if video_model == "a14b" else "wan22_5b")
             if guided:
@@ -1447,6 +1619,15 @@ class StudioMixin:
                     guided=guided,
                     model_id=reg_model,
                     frames=1 if action == "photo" else local_engine.FRAMES,
+                )
+            if subject_refs:
+                _sel, ref_warnings, _meta = self._resolve_subject_references(
+                    starter_image=image,
+                    raw_subject_refs=subject_refs,
+                    prompt=prompt,
+                    task="image_generate" if action == "photo" else "video_scene",
+                    workflow_supports_multiref=(action == "photo" or not image),
+                    stage=False,
                 )
             if not prompt and action == "photo":
                 raise ValueError("Describe what you want first.")
@@ -1497,6 +1678,7 @@ class StudioMixin:
                     else []
                 ),
                 *guided_warnings,
+                *ref_warnings,
             ],
             "limit_error": None,
             "needs_talker": False,
@@ -1520,7 +1702,19 @@ class StudioMixin:
         shape = str(options.get("shape") or "")
         image = str(options.get("image") or "").strip()
         guided = options.get("guided") if isinstance(options.get("guided"), dict) else None
+        subject_refs = options.get("subject_references") if isinstance(options.get("subject_references"), dict) else None
         try:
+            staged_subject_refs: list[str] = []
+            ref_selection_meta: dict[str, Any] | None = None
+            if subject_refs:
+                staged_subject_refs, _ref_warns, ref_selection_meta = self._resolve_subject_references(
+                    starter_image=image,
+                    raw_subject_refs=subject_refs,
+                    prompt=prompt,
+                    task="image_generate" if action == "photo" else "video_scene",
+                    workflow_supports_multiref=(action == "photo" or not image),
+                    stage=True,
+                )
             if action == "photo":
                 if guided:
                     prompt, _ = self._compile_guided_prompt(
@@ -1532,13 +1726,22 @@ class StudioMixin:
                     )
                 count = max(1, min(int(options.get("count") or 1), 4))
                 short_label = ob.PHOTO_MODELS[photo_model]["label"].split(" (")[0]
+                photo_refs = list(staged_subject_refs)
+                if image and Path(image).expanduser().is_file():
+                    staged_starter = self._stage_reference_if_external(image, workflow="multi_reference")
+                    if staged_starter not in photo_refs:
+                        photo_refs.insert(0, staged_starter)
                 items = [
                     self._forge_photo_item(
                         prompt=prompt,
                         shape=shape,
                         photo_model=photo_model,
                         label=f"Avatar photo {index} of {count} · {short_label} · your GPU",
-                        extra_runtime={"guided_mode": bool(guided)},
+                        extra_runtime={
+                            "guided_mode": bool(guided),
+                            "reference_selection": ref_selection_meta,
+                        },
+                        reference_images=photo_refs,
                     )
                     for index in range(1, count + 1)
                 ]
@@ -1591,6 +1794,7 @@ class StudioMixin:
                             label=f"Scene start photo · {ob.PHOTO_MODELS[photo_model]['label'].split(' (')[0]} · your GPU",
                             extra_runtime={
                                 "candidate_qa": True,
+                                "reference_selection": ref_selection_meta,
                                 "forge_scene": {
                                     "shots": shots,
                                     "shape": shape,
@@ -1598,6 +1802,7 @@ class StudioMixin:
                                     "vram_mode": vram_mode,
                                 },
                             },
+                            reference_images=staged_subject_refs,
                         )
                     ]
                     total_minutes = photo_minutes + len(shots) * local_engine.VIDEO_MODELS[video_model]["estimated_minutes"]

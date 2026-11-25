@@ -297,6 +297,7 @@ class ScriptRunManager:
 
         self._lock = threading.RLock()
         self._selected_report: ScriptInspectionReport | None = None
+        self._selected_bytes: bytes | None = None
         self._selected_configs: list[str] = []
         self._active_broker: GenerationBroker | None = None
         self._active_proc: subprocess.Popen[str] | None = None
@@ -308,10 +309,13 @@ class ScriptRunManager:
 
     def select_script(self, script_path: str | Path) -> dict[str, Any]:
         """Statically inspect a selected Python script without executing it."""
-        report = inspect_script(script_path)
+        path_obj = Path(script_path).expanduser()
+        raw_bytes = path_obj.read_bytes() if path_obj.is_file() else None
+        report = inspect_script(path_obj)
         probe = probe_sandbox_support(bwrap_override=self._bwrap_override)
         with self._lock:
             self._selected_report = report
+            self._selected_bytes = raw_bytes if report.ok else None
             self._selected_configs = []
         return {
             "ok": report.ok,
@@ -347,19 +351,52 @@ class ScriptRunManager:
         config_files: list[str] | None = None,
         limits: SandboxLimits = SandboxLimits(),
         allow_review_classification: bool = False,
+        expected_sha256: str | None = None,
     ) -> dict[str, Any]:
-        """Explicitly authorize and launch a Python script inside Bubblewrap isolation."""
+        """Explicitly authorize and launch a Python script inside Bubblewrap isolation.
+
+        Enforces content-hash integrity so the exact validated bytes are snapshotted read-only
+        into the sandbox and post-validation script mutations are refused cleanly.
+        """
         with self._lock:
             if self._active_record is not None and self._active_record.status in {"running", "paused"}:
                 return {"ok": False, "error": "A script run is already active. Stop it before starting another."}
+            selected_report = self._selected_report
 
         target = Path(script_path).expanduser() if script_path else (
-            Path(self._selected_report.script_path) if self._selected_report else None
+            Path(selected_report.script_path) if selected_report else None
         )
         if target is None or not target.is_file():
             return {"ok": False, "error": "Select a valid Python (.py) script first."}
 
-        report = inspect_script(target)
+        # Read bytes once and inspect from the exact same bytes (TOCTOU-proof!).
+        import hashlib
+        from .script_inspector import inspect_script_source
+
+        raw_bytes = target.read_bytes()
+        live_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+
+        # Verify against previously validated hash if caller passed expected_sha256 OR ran selected script.
+        pin_sha = expected_sha256 or (
+            selected_report.sha256
+            if selected_report is not None and str(target.resolve()) == selected_report.script_path
+            else None
+        )
+        if pin_sha and live_sha256 != pin_sha:
+            return {
+                "ok": False,
+                "code": "script_mutated",
+                "error": (
+                    "The script file changed on disk after static validation "
+                    f"(expected {pin_sha[:12]}, got {live_sha256[:12]}). Re-select and inspect it before running."
+                ),
+            }
+
+        report = inspect_script_source(
+            raw_bytes.decode("utf-8", errors="replace"),
+            script_path=str(target.resolve()),
+            sha256=live_sha256,
+        )
         if not report.ok or not report.syntax_valid:
             return {"ok": False, "error": report.error or "Script failed static validation.", "report": report.public()}
         if report.classification == "unsupported":
@@ -386,12 +423,19 @@ class ScriptRunManager:
         run_id = f"srun_{secrets.token_hex(6)}"
         temp_root = Path(tempfile.mkdtemp(prefix=f"avatar_v2_{run_id}_"))
         sdk_dir = temp_root / "sdk"
+        script_snap_dir = temp_root / "script"
         broker_dir = temp_root / "broker"
         refs_dir = temp_root / "refs"
         configs_dir = temp_root / "configs"
         sdk_dir.mkdir(parents=True, exist_ok=True)
+        script_snap_dir.mkdir(parents=True, exist_ok=True)
         broker_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(broker_dir, 0o700)
+
+        # Write exact validated bytes into an immutable snapshot file for Bubblewrap bind-mount.
+        script_snapshot = script_snap_dir / target.name
+        script_snapshot.write_bytes(raw_bytes)
+        os.chmod(script_snapshot, 0o400)
 
         # Stage read-only standalone SDK module as /sdk/avatar_v2_sdk.py
         shutil.copy2(SDK_CLIENT_SOURCE, sdk_dir / "avatar_v2_sdk.py")
@@ -440,7 +484,7 @@ class ScriptRunManager:
             bwrap_path=probe.bwrap_path,
             prlimit_path=probe.prlimit_path,
             python_exe=self._python_exe,
-            script_host_path=target.resolve(),
+            script_host_path=script_snapshot,
             sdk_dir=sdk_dir,
             broker_dir=broker_dir,
             broker_sock_name=sock_name,

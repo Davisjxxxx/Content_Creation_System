@@ -97,6 +97,31 @@ def with_tiled_vae(
     return updated
 
 
+def with_wan_end_frame(graph: dict[str, Any], end_image_name: str) -> dict[str, Any]:
+    """Upgrade a WanImageToVideo graph to WanFirstLastFrameToVideo with an explicit end keyframe.
+
+    Verified against live ComfyUI 0.46 ``/object_info/WanFirstLastFrameToVideo`` schema:
+    identical required inputs and ``(positive, negative, latent)`` outputs plus optional ``end_image``.
+    Enables FLUX.2-conditioned front -> back or angle-change keyframes to guide Wan 2.2 turns.
+    """
+    end_clean = str(end_image_name or "").strip()
+    if not end_clean:
+        return dict(graph)
+    updated: dict[str, Any] = {k: (dict(v) if isinstance(v, dict) else v) for k, v in graph.items()}
+    numeric_ids = [int(k) for k in updated if str(k).isdigit()]
+    end_node_id = str(max(numeric_ids, default=100) + 1)
+    upgraded = False
+    for node_id, node in list(updated.items()):
+        if isinstance(node, dict) and node.get("class_type") == "WanImageToVideo":
+            inputs = dict(node.get("inputs") or {})
+            inputs["end_image"] = _link(end_node_id)
+            updated[node_id] = {**node, "class_type": "WanFirstLastFrameToVideo", "inputs": inputs}
+            upgraded = True
+    if upgraded:
+        updated[end_node_id] = _node("LoadImage", image=end_clean)
+    return updated
+
+
 def wan_frame_count(duration_s: float) -> int:
     """Snap a duration to a valid Wan 2.2 frame count (4k+1 grid, 16 fps)."""
     requested = max(WAN_FRAME_OFFSET, round(float(duration_s) * WAN_FPS))
@@ -603,6 +628,62 @@ def build_flux2_txt2img_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
     )
     neg_id = next_id
     next_id += 1
+
+    # Optional FLUX.2 native multi-reference conditioning via chained ReferenceLatent nodes
+    # (verified against live ComfyUI 0.46 /object_info/ReferenceLatent & ImageScaleToTotalPixels).
+    # Adaptive pixel budget prevents quadratic attention latency spikes when 2-4 refs are chained
+    # (empirically calibrated on RTX 4070 8 GB: 0 refs=227s, 1x1.0MP=401s, 2x1.0MP=607s).
+    active_ref_files = [
+        ref_file
+        for ref_slot in (f"REF_IMAGE_{i}" for i in range(1, 5))
+        if (ref_file := _stage_entry(mapping, ref_slot))
+    ]
+    if mapping.get("REF_MEGAPIXELS") not in (None, ""):
+        ref_megapixels = float(mapping["REF_MEGAPIXELS"])
+    elif len(active_ref_files) <= 1:
+        ref_megapixels = 1.0
+    elif len(active_ref_files) == 2:
+        ref_megapixels = 0.65
+    else:
+        ref_megapixels = 0.5
+    for ref_file in active_ref_files:
+        graph[str(next_id)] = _node("LoadImage", image=ref_file)
+        load_ref_id = next_id
+        next_id += 1
+
+        graph[str(next_id)] = _node(
+            "ImageScaleToTotalPixels",
+            image=_link(load_ref_id),
+            upscale_method="lanczos",
+            megapixels=ref_megapixels,
+            resolution_steps=16,
+        )
+        scaled_ref_id = next_id
+        next_id += 1
+
+        graph[str(next_id)] = _node(
+            "VAEEncode",
+            pixels=_link(scaled_ref_id),
+            vae=_link(vae_id),
+        )
+        ref_lat_id = next_id
+        next_id += 1
+
+        graph[str(next_id)] = _node(
+            "ReferenceLatent",
+            conditioning=_link(pos_id),
+            latent=_link(ref_lat_id),
+        )
+        pos_id = next_id
+        next_id += 1
+
+        graph[str(next_id)] = _node(
+            "ReferenceLatent",
+            conditioning=_link(neg_id),
+            latent=_link(ref_lat_id),
+        )
+        neg_id = next_id
+        next_id += 1
 
     graph[str(next_id)] = _node(
         "EmptySD3LatentImage",

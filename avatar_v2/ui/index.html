@@ -314,6 +314,33 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
     <div class="thumbs" id="forgeImages"></div>
     <p class="tiny">One clear front photo works best. Leave it empty and the builder designs the person from your words first, then builds the scene around them.</p>
   </div>
+  <details class="card" id="forgeSubjectRefs" style="margin-top:12px">
+    <summary class="row" style="cursor:pointer;list-style:none;justify-content:space-between"><span class="label" style="margin:0">Subject references <small style="text-transform:none">(optional multi-view angles &amp; profiles)</small></span><span class="tiny" id="forgeSubjRefsSummary">None · click to add angles</span></summary>
+    <div style="margin-top:12px;display:grid;gap:10px">
+      <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <span class="tiny">Character profile:</span>
+          <select id="charProfileSel" style="max-width:210px" onchange="charProfileLoad(this.value)"><option value="">None (custom references)</option></select>
+          <input id="charProfileName" type="text" placeholder="Profile name" style="max-width:150px">
+          <button type="button" class="mini" onclick="charProfileSave()">Save profile</button>
+          <button type="button" class="mini" id="charProfileDel" onclick="charProfileDelete()" disabled>Remove</button>
+        </div>
+        <div class="row" style="gap:10px">
+          <label class="tiny" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="subjKeepId" checked onchange="forgePriceSoon()"> Identity</label>
+          <label class="tiny" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="subjKeepApp" checked onchange="forgePriceSoon()"> Appearance</label>
+          <label class="tiny" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="subjKeepWard" checked onchange="forgePriceSoon()"> Wardrobe</label>
+        </div>
+      </div>
+      <div class="thumbs" id="subjRefsGrid"></div>
+      <div class="row" style="gap:6px;flex-wrap:wrap">
+        <select id="subjAddRole" style="max-width:200px"></select>
+        <button type="button" class="mini use" onclick="subjRefAddLocal()">+ Browse local files…</button>
+        <button type="button" class="mini" onclick="subjRefToggleMyStuff()">+ Add from My stuff…</button>
+      </div>
+      <div class="thumbs" id="subjMyStuffGrid" style="display:none"></div>
+      <p class="tiny">Assign any views you have (front, back, left/right side, 3/4, face, or wardrobe). Original files are never altered. Multi-view references guide angle fidelity and do not form an exact 3D reconstruction.</p>
+    </div>
+  </details>
   <div class="pair" style="margin:14px 0">
     <div><span class="label">What to make</span><div class="chips" data-chips="forgeAction"><button data-v="scene" class="on">Video scene<small>split into shots, stitched into one video</small></button><button data-v="photo">Avatar photo<small>one portrait to keep and reuse</small></button></div></div>
     <div><span class="label">Photo model</span><select id="forgePhotoModel"></select><span class="tiny" id="forgePhotoHint"></span></div>
@@ -468,7 +495,7 @@ const ST_DEFAULT_ANGLES=['identity_three_quarter_left','identity_three_quarter_r
 const MOVE_IDEAS=['She smiles warmly and nods.','She waves hello to the camera.','She explains something with natural hand gestures.','She turns to face the camera and smiles.','She laughs naturally, then looks back at the camera.'];
 const st={data:null,engine:null,thumbs:new Map(),localMeta:new Map(),recipe:null,look:'natural',actVideo:'',moveImage:'',sceneImage:'',actImage:'',anglesImage:'',sceneShots:[''],priceTimer:null,sig:{},talkerTimer:null,lastJobs:0,noteUntil:{},libKind:'all',libItems:[],libShown:60,libImages:[],pickShown:{},pickExpanded:{},presenterAddOpen:false,
   opts:{stCount:'4',stTalkMode:'type',stActBody:'body',stActShape:'tall',moveEngine:'best',moveSeconds:'5',moveShape:'tall',sceneShape:'tall',forgeAction:'scene',forgeCount:'2',forgeInputMode:'automatic'},engineChosen:false,
-  forge:{data:null,image:'',shots:[],edited:false,priceTimer:null,noteUntil:0,guided:{attributes:{},locked:{},randomized:{},seed:41001}},
+  forge:{data:null,image:'',shots:[],edited:false,priceTimer:null,noteUntil:0,guided:{attributes:{},locked:{},randomized:{},seed:41001},subjectRefs:[],profiles:[],myStuffOpen:false},
   script:{report:null,sandbox:null,configs:[],refs:[],run:null,record:null}};
 const SCENE_IDEAS=['She walks into the room and smiles at the camera.','She sits down at the desk and opens a laptop.','She explains a point with natural hand gestures.','The camera slowly pushes in as she keeps talking.','She laughs, then turns back to the camera.'];
 // Each shot starts from the previous shot's last frame, so every line begins where the last one ended:
@@ -940,10 +967,117 @@ function forgeGuidedReset(){
   if($('forgeGuidedRecipe'))$('forgeGuidedRecipe').value='';
   forgeRenderGuided();forgePriceSoon();
 }
+function forgeSubjectRefsPayload(){
+  const refs=(st.forge.subjectRefs||[]).filter(r=>r&&r.path);
+  if(!refs.length)return null;
+  return {
+    references:refs.map(r=>({role:r.role||'front_body',path:r.path,subject_id:r.subject_id||'primary',locked:!!r.locked})),
+    preserve_identity:!!($('subjKeepId')?$('subjKeepId').checked:true),
+    preserve_appearance:!!($('subjKeepApp')?$('subjKeepApp').checked:true),
+    preserve_wardrobe:!!($('subjKeepWard')?$('subjKeepWard').checked:true)
+  };
+}
+function subjRolesList(){return (st.forge.data&&st.forge.data.reference_roles)||[{id:'face_identity',label:'Facial identity'},{id:'front_body',label:'Front body'},{id:'back_body',label:'Back body'},{id:'left_side',label:'Left side'},{id:'right_side',label:'Right side'},{id:'front_three_quarter',label:'Front three-quarter'},{id:'rear_three_quarter',label:'Rear three-quarter'},{id:'appearance_wardrobe',label:'Appearance / wardrobe'}]}
+function subjRender(){
+  const roles=subjRolesList(),addSel=$('subjAddRole'),grid=$('subjRefsGrid'),sum=$('forgeSubjRefsSummary');
+  if(addSel&&addSel.options.length!==roles.length){
+    addSel.innerHTML=roles.map(r=>`<option value="${esc(r.id)}">${esc(r.label)}</option>`).join('');
+  }
+  const pSel=$('charProfileSel'),profs=st.forge.profiles||[];
+  if(pSel){
+    const keep=pSel.value;
+    pSel.innerHTML='<option value="">None (custom references)</option>'+profs.map(p=>`<option value="${esc(p.profile_id)}">${esc(p.name)}</option>`).join('');
+    if(profs.some(p=>p.profile_id===keep))pSel.value=keep;
+    if($('charProfileDel'))$('charProfileDel').disabled=!pSel.value;
+  }
+  if(!grid)return;
+  const refs=st.forge.subjectRefs||[];
+  if(sum)sum.textContent=refs.length?`${refs.length} reference${refs.length===1?'':'s'} assigned`:'None · click to add angles';
+  grid.innerHTML='';
+  if(!refs.length){grid.innerHTML='<div class="empty">No supplemental subject views yet.</div>';return}
+  refs.forEach((item,idx)=>{
+    const roleLabel=(roles.find(r=>r.id===item.role)||{}).label||item.role;
+    const tile=makeTile(item.path,'image',{badge:roleLabel,selected:true,
+      onOpen:()=>viewerOpen([{path:item.path,title:`${roleLabel} · ${base(item.path)}`}],0),
+      actions:[
+        {label:'Replace',run:()=>subjRefReplaceLocal(idx)},
+        {label:'Remove',run:()=>{st.forge.subjectRefs.splice(idx,1);subjRender();forgePriceSoon()}}
+      ]});
+    const sel=document.createElement('select');
+    sel.style.marginTop='6px';sel.style.width='100%';
+    sel.innerHTML=roles.map(r=>`<option value="${esc(r.id)}"${r.id===item.role?' selected':''}>${esc(r.label)}</option>`).join('');
+    sel.onchange=()=>{st.forge.subjectRefs[idx].role=sel.value;subjRender();forgePriceSoon()};
+    tile.querySelector('.meta').appendChild(sel);
+    grid.appendChild(tile);
+  });
+}
+async function subjRefAddLocal(){
+  let r;try{r=await window.pywebview.api.pick_local_images({workflow:'multi_reference',multiple:true})}catch(e){r={ok:false,error:String(e)}}
+  if(!r||r.cancelled)return;
+  if(!r.ok){say(r.error||'Could not add local reference.','err');return}
+  const role=($('subjAddRole')&&$('subjAddRole').value)||'front_body';
+  (r.items||[]).forEach(it=>{st.localMeta.set(it.path,it);st.forge.subjectRefs.push({role,path:it.path,subject_id:'primary'})});
+  subjRender();forgePriceSoon();
+}
+async function subjRefReplaceLocal(idx){
+  let r;try{r=await window.pywebview.api.pick_local_images({workflow:'multi_reference',multiple:false})}catch(e){r={ok:false,error:String(e)}}
+  if(!r||r.cancelled||!r.ok||!(r.items&&r.items.length))return;
+  st.localMeta.set(r.items[0].path,r.items[0]);
+  st.forge.subjectRefs[idx].path=r.items[0].path;
+  subjRender();forgePriceSoon();
+}
+async function subjRefToggleMyStuff(){
+  st.forge.myStuffOpen=!st.forge.myStuffOpen;
+  const root=$('subjMyStuffGrid');if(!root)return;
+  if(!st.forge.myStuffOpen){root.style.display='none';root.innerHTML='';return}
+  root.style.display='grid';root.innerHTML='<div class="empty">Loading My stuff…</div>';
+  await stLoadImages();root.innerHTML='';
+  if(!st.libImages.length){root.innerHTML='<div class="empty">Nothing in My stuff yet.</div>';return}
+  st.libImages.slice(0,36).forEach(x=>root.appendChild(makeTile(x.path,'image',{badge:x.label||base(x.path),
+    onOpen:()=>{const role=($('subjAddRole')&&$('subjAddRole').value)||'front_body';st.forge.subjectRefs.push({role,path:x.path,subject_id:'primary'});st.forge.myStuffOpen=false;root.style.display='none';subjRender();forgePriceSoon()}})));
+}
+async function charProfilesRefresh(){
+  let r;try{r=await window.pywebview.api.character_profiles({action:'list'})}catch(e){return}
+  if(r&&r.ok){st.forge.profiles=r.profiles||[];subjRender()}
+}
+function charProfileLoad(pid){
+  const prof=(st.forge.profiles||[]).find(p=>p.profile_id===pid);
+  if($('charProfileDel'))$('charProfileDel').disabled=!prof;
+  if(!prof)return;
+  const rset=prof.reference_set||{};
+  if(rset.starter_image&&rset.starter_image.path){st.forge.image=rset.starter_image.path;stPickImages('forgeImages',()=>st.forge.image,v=>st.forge.image=v,{workflow:'image_to_video',onChange:forgePriceSoon})}
+  st.forge.subjectRefs=(rset.references||[]).map(x=>({role:x.role,path:x.path,subject_id:x.subject_id||'primary',locked:!!x.locked}));
+  if($('charProfileName'))$('charProfileName').value=prof.name||'';
+  if($('subjKeepId'))$('subjKeepId').checked=rset.preserve_identity!==false;
+  if($('subjKeepApp'))$('subjKeepApp').checked=rset.preserve_appearance!==false;
+  if($('subjKeepWard'))$('subjKeepWard').checked=rset.preserve_wardrobe!==false;
+  subjRender();forgePriceSoon();
+}
+async function charProfileSave(){
+  const name=($('charProfileName')&&$('charProfileName').value||'').trim();
+  const payload={action:'save',name,starter_image:st.forge.image,references:st.forge.subjectRefs,
+    preserve_identity:!!($('subjKeepId')&&$('subjKeepId').checked),
+    preserve_appearance:!!($('subjKeepApp')&&$('subjKeepApp').checked),
+    preserve_wardrobe:!!($('subjKeepWard')&&$('subjKeepWard').checked)};
+  let r;try{r=await window.pywebview.api.character_profiles(payload)}catch(e){r={ok:false,error:String(e)}}
+  if(!r||!r.ok){say((r&&r.error)||'Could not save Character Profile.','err');return}
+  st.forge.profiles=r.profiles||[];subjRender();
+  if($('charProfileSel')&&r.profile)$('charProfileSel').value=r.profile.profile_id;
+  if($('charProfileDel'))$('charProfileDel').disabled=false;
+  say(`Saved Character Profile "${name}"`,'ok');
+}
+async function charProfileDelete(){
+  const pid=$('charProfileSel')&&$('charProfileSel').value;if(!pid)return;
+  let r;try{r=await window.pywebview.api.character_profiles({action:'delete',profile_id:pid})}catch(e){r={ok:false,error:String(e)}}
+  if(!r||!r.ok){say((r&&r.error)||'Could not remove Character Profile.','err');return}
+  st.forge.profiles=r.profiles||[];if($('charProfileSel'))$('charProfileSel').value='';if($('charProfileName'))$('charProfileName').value='';
+  subjRender();say('Removed Character Profile (original images untouched).','ok');
+}
 function forgeOptions(){const o={action:st.opts.forgeAction||'scene',prompt:$('forgePrompt').value,photo_model:$('forgePhotoModel').value||'4b',video_model:$('forgeVideoModel').value||'a14b',vram_mode:$('forgeVram').value||'balanced',image:st.forge.image};
   if(o.action==='photo')o.count=Number(st.opts.forgeCount);
   if(o.action==='scene'&&st.forge.edited)o.shots=st.forge.shots.map(t=>t.trim()).filter(Boolean);
   const g=forgeGuidedPayload();if(g)o.guided=g;
+  const sr=forgeSubjectRefsPayload();if(sr)o.subject_references=sr;
   return o}
 function forgeSplit(){
   const text=($('forgePrompt').value||'').replace(/\s+/g,' ').trim();
@@ -1063,7 +1197,9 @@ async function scriptAddConfig(){
   if(r.ok){st.script.configs=r.configs||[];scriptRender()}else scriptNote(r.error||'Could not add config.','err');
 }
 async function scriptAction(action){
-  const payload={action,max_items:Number($('scriptMaxItems').value)||10,extended_authorized:!!($('scriptExtended')&&$('scriptExtended').checked),references:st.script.refs,photo_model:$('forgePhotoModel').value||'4b',acknowledge_review:!!($('scriptAckReview')&&$('scriptAckReview').checked)};
+  const subjPaths=(st.forge.subjectRefs||[]).map(r=>r.path).filter(Boolean);
+  const mergedRefs=[...new Set([...(st.script.refs||[]),...subjPaths])];
+  const payload={action,max_items:Number($('scriptMaxItems').value)||10,extended_authorized:!!($('scriptExtended')&&$('scriptExtended').checked),references:mergedRefs,subject_references:forgeSubjectRefsPayload(),photo_model:$('forgePhotoModel').value||'4b',acknowledge_review:!!($('scriptAckReview')&&$('scriptAckReview').checked)};
   let r;try{r=await window.pywebview.api.script_control(payload)}catch(e){r={ok:false,error:String(e)}}
   if(!r||!r.ok){scriptNote((r&&r.error)||'Script action failed.','err');return}
   if(r.record)st.script.record=r.record;
@@ -1101,6 +1237,9 @@ async function forgeLoad(){
   await stLoadImages();  // so "Choose from My stuff…" has the pictures to offer
   stPickImages('forgeImages',()=>st.forge.image,v=>st.forge.image=v,{workflow:'image_to_video',onChange:forgePriceSoon});
   forgeRenderGuided();
+  st.forge.profiles=r.character_profiles||[];
+  subjRender();
+  charProfilesRefresh();
   scriptRender();
   if(!st.forge.edited&&!st.forge.shots.length)forgeSplit();
   forgeRender();forgePriceSoon();
@@ -1249,7 +1388,15 @@ async function runUiTest(){
     for(const v of ['make','forge','library','settings']){view(v);await wait(400);report.views[v]=$('view-'+v).classList.contains('active')}
     view('make');openRecipe(null);await wait(300);
     report.checks.tiles=$('tiles').querySelectorAll('.tile').length;
-    view('forge');await wait(400);report.checks.forge_prompt=!!$('forgePrompt');report.checks.forge_shots=$('forgeShots').querySelectorAll('textarea').length;report.checks.forge_models=!!$('forgePhotoModel').value&&!!$('forgeVideoModel').value;view('make');
+    view('forge');await wait(400);report.checks.forge_prompt=!!$('forgePrompt');report.checks.forge_shots=$('forgeShots').querySelectorAll('textarea').length;report.checks.forge_models=!!$('forgePhotoModel').value&&!!$('forgeVideoModel').value;
+    stChipSet('forgeInputMode','guided');await wait(150);report.checks.guided_opens=$('forgeGuided').open===true&&$('forgeGuidedGrid').children.length>0;
+    $('forgeSubjectRefs').open=true;await wait(100);report.checks.subject_refs_roles=$('subjAddRole').options.length>=8;
+    const profList=await api.character_profiles({action:'list'});report.checks.character_profiles_ok=profList&&profList.ok===true;
+    stChipSet('forgeInputMode','script');await wait(250);report.checks.script_panel_shown=!$('forgeScriptPanel').hidden&&$('forgePromptPanels').hidden;
+    const scStatus=await api.script_control({action:'status'});report.checks.script_sandbox_available=!!(scStatus&&scStatus.ok&&scStatus.sandbox&&scStatus.sandbox.available);
+    report.checks.browse_local_present=$('forgeImages').textContent.indexOf('Browse local')>=0||$('scriptRefs').textContent.indexOf('Browse local')>=0;
+    stChipSet('forgeInputMode','automatic');await wait(150);report.checks.automatic_restored=!$('forgePromptPanels').hidden&&$('forgeScriptPanel').hidden;
+    view('make');
     for(const r of RECIPES){openRecipe(r.id);await wait(250);report.recipes[r.id]={shown:!$('recipe-'+r.id).hidden,steps:$('recipe-'+r.id).querySelectorAll('.steps>li').length}}
     openRecipe(null);
     const s=await api.studio_state(),price=await api.studio_price({action:'presenter',count:4,look:'natural'}),voice=await api.studio_price({action:'voiceover',script:'Hello and welcome.'}),move=await api.studio_price({action:'move'});

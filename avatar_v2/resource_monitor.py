@@ -564,7 +564,9 @@ class ResourceGuard:
         if host_stats.pswpin is not None and host_stats.pswpout is not None:
             total_pages = host_stats.pswpin + host_stats.pswpout
             if self._last_sample_ts is not None and self._last_swap_pages is not None:
-                dt = max(ts - self._last_sample_ts, 0.001)
+                # Floor dt at 1.0s so a single background page fault during sub-second calls
+                # never gets amplified into a false-positive high pages/sec swap thrashing spike.
+                dt = max(ts - self._last_sample_ts, 1.0)
                 swap_rate = max(total_pages - self._last_swap_pages, 0) / dt
             self._last_sample_ts = ts
             self._last_swap_pages = total_pages
