@@ -286,6 +286,12 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
 <!-- ============================== FREE BUILDER ============================== -->
 <div id="view-forge" class="view">
   <div class="top"><div><div class="eyebrow">Your GPU · free, no credits</div><h2>Build with your GPU</h2><p class="lead">Type what you want and it happens offline on this computer. A long scene prompt is split into shots and stitched into one video. Runway stays in Make as the final polish gate.</p></div></div>
+  <div class="chips" data-chips="forgeInputMode" id="forgeModeBar" style="margin-bottom:14px">
+    <button data-v="automatic" class="on">Automatic<small>natural-language prompt</small></button>
+    <button data-v="guided">Guided<small>optional structured attributes</small></button>
+    <button data-v="script">Script<small>import &amp; run a Python script</small></button>
+  </div>
+  <div id="forgePromptPanels">
   <div class="card">
     <span class="label">Describe it</span>
     <textarea id="forgePrompt" rows="6" maxlength="8000" placeholder="A confident course instructor in her late 30s, warm smile, shoulder-length brown hair and a navy blazer. She sits at a desk and greets the camera. Then she explains today's lesson with natural hand gestures…"></textarea>
@@ -304,7 +310,7 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
     </div>
   </details>
   <div class="card" style="margin-top:14px">
-    <span class="label">Start picture <small style="text-transform:none">(optional)</small></span>
+    <span class="label">Start picture <small style="text-transform:none">(optional · My stuff or local files)</small></span>
     <div class="thumbs" id="forgeImages"></div>
     <p class="tiny">One clear front photo works best. Leave it empty and the builder designs the person from your words first, then builds the scene around them.</p>
   </div>
@@ -323,6 +329,55 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
   </div>
   <button class="btn primary go" id="goForge" onclick="forgeGo()">Make it</button>
   <div class="note" id="noteForge"></div>
+  </div>
+
+  <div id="forgeScriptPanel" hidden>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div>
+          <span class="label" style="margin:0">Python generation script</span>
+          <div class="tiny" id="scriptFileMeta">No script selected. Selecting a file inspects it statically and never runs it automatically.</div>
+        </div>
+        <div class="row">
+          <button type="button" class="btn" id="scriptPickBtn" onclick="scriptSelect()">Select Python file…</button>
+          <button type="button" class="mini" id="scriptAddCfgBtn" onclick="scriptAddConfig()" disabled>Add config file…</button>
+        </div>
+      </div>
+      <div id="scriptValidationBox" style="margin-top:12px;display:none">
+        <div class="row" style="gap:8px;margin-bottom:6px">
+          <span class="badge" id="scriptStatusBadge" style="position:static">Unchecked</span>
+          <span class="tiny" id="scriptBackendInfo"></span>
+        </div>
+        <div class="tiny" id="scriptConfigsInfo"></div>
+        <ul id="scriptFindings" class="tiny" style="margin:8px 0 0 18px;padding:0;display:grid;gap:4px"></ul>
+        <p class="tiny" id="scriptDisclaimer" style="margin-top:8px;opacity:.85"></p>
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <span class="label">Reference assets <small style="text-transform:none">(optional · My stuff or local files)</small></span>
+      <div class="thumbs" id="scriptRefs"></div>
+      <p class="tiny">Selected images are mounted read-only for the script run without modifying original files.</p>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div class="row" style="gap:10px">
+          <label class="tiny" style="display:flex;align-items:center;gap:6px">Run limit <input id="scriptMaxItems" type="number" min="1" max="10" value="10" style="width:74px"></label>
+          <label class="tiny" style="display:flex;align-items:center;gap:6px"><input id="scriptExtended" type="checkbox" onchange="scriptToggleExtended()"> Authorize extended run (up to 200)</label>
+          <label class="tiny" id="scriptReviewWrap" style="display:none;align-items:center;gap:6px"><input id="scriptAckReview" type="checkbox" onchange="scriptSyncButtons()"> Acknowledge review findings</label>
+        </div>
+        <div class="row" style="gap:6px">
+          <button type="button" class="btn primary" id="scriptStartBtn" onclick="scriptAction('start')" disabled>Start</button>
+          <button type="button" class="btn" id="scriptExtractBtn" onclick="scriptAction('run_extracted')" style="display:none">Run extracted prompts</button>
+          <button type="button" class="mini" id="scriptPauseBtn" onclick="scriptAction('pause')" disabled>Pause</button>
+          <button type="button" class="mini" id="scriptResumeBtn" onclick="scriptAction('resume')" disabled>Resume</button>
+          <button type="button" class="mini" id="scriptStopBtn" onclick="scriptAction('stop')" disabled>Stop</button>
+        </div>
+      </div>
+      <div class="tiny" id="scriptProgress" style="margin-top:10px">Idle · local-only execution (cloud inference disabled).</div>
+      <div class="note" id="noteScript"></div>
+    </div>
+  </div>
+
   <div class="out" id="forgeJobsWrap" style="display:none"><h3>Working on it</h3><div class="jobs" id="forgeJobs"></div></div>
   <div class="out"><h3>Your builds</h3><p class="tiny" id="forgePickHint">Click any photo to see it full size — "Presenter option" makes it her for future recipes.</p><div class="thumbs" id="forgeResults"></div></div>
 </div>
@@ -411,9 +466,10 @@ const ST_NOTE={presenter:'notePresenter',angles:'noteAngles',voiceover:'noteVoic
 const ST_VERB={presenter:o=>o.count>1?`Make ${o.count} options`:'Make 1 option',angles:o=>`Make ${o.slots.length} photo${o.slots.length===1?'':'s'}`,voiceover:()=>'Make voiceover',talk:()=>'Make talking video',act:()=>'Make it',move:()=>'Make clip',scene:o=>`Make scene · ${o.shots.length} shot${o.shots.length===1?'':'s'}`};
 const ST_DEFAULT_ANGLES=['identity_three_quarter_left','identity_three_quarter_right','presenter_expression_smile'];
 const MOVE_IDEAS=['She smiles warmly and nods.','She waves hello to the camera.','She explains something with natural hand gestures.','She turns to face the camera and smiles.','She laughs naturally, then looks back at the camera.'];
-const st={data:null,engine:null,thumbs:new Map(),recipe:null,look:'natural',actVideo:'',moveImage:'',sceneImage:'',actImage:'',anglesImage:'',sceneShots:[''],priceTimer:null,sig:{},talkerTimer:null,lastJobs:0,noteUntil:{},libKind:'all',libItems:[],libShown:60,libImages:[],pickShown:{},pickExpanded:{},presenterAddOpen:false,
-  opts:{stCount:'4',stTalkMode:'type',stActBody:'body',stActShape:'tall',moveEngine:'best',moveSeconds:'5',moveShape:'tall',sceneShape:'tall',forgeAction:'scene',forgeCount:'2'},engineChosen:false,
-  forge:{data:null,image:'',shots:[],edited:false,priceTimer:null,noteUntil:0,guided:{attributes:{},locked:{},randomized:{},seed:41001}}};
+const st={data:null,engine:null,thumbs:new Map(),localMeta:new Map(),recipe:null,look:'natural',actVideo:'',moveImage:'',sceneImage:'',actImage:'',anglesImage:'',sceneShots:[''],priceTimer:null,sig:{},talkerTimer:null,lastJobs:0,noteUntil:{},libKind:'all',libItems:[],libShown:60,libImages:[],pickShown:{},pickExpanded:{},presenterAddOpen:false,
+  opts:{stCount:'4',stTalkMode:'type',stActBody:'body',stActShape:'tall',moveEngine:'best',moveSeconds:'5',moveShape:'tall',sceneShape:'tall',forgeAction:'scene',forgeCount:'2',forgeInputMode:'automatic'},engineChosen:false,
+  forge:{data:null,image:'',shots:[],edited:false,priceTimer:null,noteUntil:0,guided:{attributes:{},locked:{},randomized:{},seed:41001}},
+  script:{report:null,sandbox:null,configs:[],refs:[],run:null,record:null}};
 const SCENE_IDEAS=['She walks into the room and smiles at the camera.','She sits down at the desk and opens a laptop.','She explains a point with natural hand gestures.','The camera slowly pushes in as she keeps talking.','She laughs, then turns back to the camera.'];
 // Each shot starts from the previous shot's last frame, so every line begins where the last one ended:
 // a 12-shot lesson that stitches into about one minute of continuous video.
@@ -453,6 +509,14 @@ function stChipSet(name,value){const group=document.querySelector(`.chips[data-c
   if(name==='stTalkMode'){$('talkTypeBox').style.display=value==='type'?'block':'none';$('talkVoBox').style.display=value==='voiceover'?'block':'none'}
   if(name==='moveEngine'){const local=value==='local';$('moveTen').disabled=local;if(local&&st.opts.moveSeconds!=='5')stChipSet('moveSeconds','5')}
   if(name==='forgeAction'){$('forgeShotCard').style.display=value==='photo'?'none':'block';$('forgeCountWrap').style.display=value==='photo'?'block':'none';forgeRenderGuided()}
+  if(name==='forgeInputMode'){
+    const isScript=value==='script';
+    $('forgePromptPanels').hidden=isScript;
+    $('forgeScriptPanel').hidden=!isScript;
+    if(value==='guided')$('forgeGuided').open=true;
+    if(value==='automatic')$('forgeGuided').open=false;
+    if(isScript)scriptRefreshStatus();
+  }
   stPriceSoon()}
 function stLookChips(){const root=$('stLook');root.innerHTML='';((st.data&&st.data.looks)||[]).forEach(l=>{const b=document.createElement('button');b.type='button';b.className=l.id===st.look?'on':'';b.innerHTML=`${esc(l.label)}<small>${esc(l.hint)}</small>`;b.onclick=()=>{st.look=l.id;stLookChips();stPriceSoon()};root.appendChild(b)})}
 function stOptions(action){
@@ -519,41 +583,131 @@ function stAnimate(path){st.moveImage=path;view('make');openRecipe('move');st.no
 function stSceneFrom(path){st.sceneImage=path;view('make');openRecipe('scene');st.noteUntil.scene=Date.now()+8000;stNote('scene','Starting from '+base(path)+'.','ok')}
 async function stLoadImages(){let r;try{r=await window.pywebview.api.studio_library('image')}catch(e){r=null}
   st.libImages=(r&&r.items)||[]}
+async function stPickLocalImages(rootId,getChosen,setChosen,opts){
+  opts=opts||{};
+  let r;try{r=await window.pywebview.api.pick_local_images({workflow:opts.workflow||'single_start',multiple:!!opts.multiple})}catch(e){r={ok:false,error:String(e)}}
+  if(!r||r.cancelled)return;
+  if(!r.ok){say(r.error||'Could not select local image.','err');return}
+  (r.items||[]).forEach(it=>st.localMeta.set(it.path,it));
+  if(r.errors&&r.errors.length)say(r.errors.join(' '),'err');
+  if(opts.multiple){
+    const cur=Array.isArray(getChosen())?getChosen().slice():[];
+    (r.items||[]).forEach(it=>{if(!cur.includes(it.path))cur.push(it.path)});
+    setChosen(cur.slice(0,r.max_images||8));
+  }else if(r.items&&r.items.length){
+    setChosen(r.items[0].path);
+  }
+  stPickImages(rootId,getChosen,setChosen,opts);
+  if(opts.onChange)opts.onChange();else stPriceSoon();
+}
+function stAttachDropzone(root,rootId,getChosen,setChosen,opts){
+  if(root.dataset.dropReady==='1')return;
+  root.dataset.dropReady='1';
+  root.addEventListener('dragover',ev=>{ev.preventDefault();root.style.outline='1px dashed var(--accent,#7c5cff)'});
+  root.addEventListener('dragleave',()=>{root.style.outline=''});
+  root.addEventListener('drop',async ev=>{
+    ev.preventDefault();root.style.outline='';
+    const files=ev.dataTransfer&&ev.dataTransfer.files;
+    if(!files||!files.length)return;
+    const droppedPath=files[0]&&(files[0].path||'');
+    if(droppedPath){
+      const check=await window.pywebview.api.pick_local_images({action:'validate',path:droppedPath,workflow:opts.workflow||'single_start'});
+      if(check&&check.ok&&check.item){
+        st.localMeta.set(check.item.path,check.item);
+        if(opts.multiple){const cur=Array.isArray(getChosen())?getChosen().slice():[];if(!cur.includes(check.item.path))cur.push(check.item.path);setChosen(cur)}
+        else setChosen(check.item.path);
+        stPickImages(rootId,getChosen,setChosen,opts);if(opts.onChange)opts.onChange();else stPriceSoon();return;
+      }
+    }
+    say('Use "Browse local files…" to choose images directly from Pictures, Downloads, or external drives.','ok');
+    stPickLocalImages(rootId,getChosen,setChosen,opts);
+  });
+}
 function stPickImages(rootId,getChosen,setChosen,opts){
   opts=opts||{};const d=st.data,root=$(rootId);if(!root||!d)return;
+  stAttachDropzone(root,rootId,getChosen,setChosen,opts);
+  const metaBadge=(path,fallback)=>{const m=st.localMeta.get(path);return m?`Local · ${m.width}×${m.height}`:(fallback||base(path))};
+  if(opts.multiple){
+    const chosenList=Array.isArray(getChosen())?getChosen().filter(Boolean):[];
+    const options=st.pickExpanded[rootId]
+      ?st.libImages.map(x=>({path:x.path,label:x.label||base(x.path)}))
+      :[];
+    const sig=['multi',chosenList,st.pickExpanded[rootId],st.libImages.length,st.pickShown[rootId]||36];
+    if(!stSig('pick:'+rootId,sig))return;
+    root.innerHTML='';
+    chosenList.forEach(p=>{
+      const label=metaBadge(p,base(p));
+      root.appendChild(makeTile(p,'image',{badge:label,selected:true,
+        onOpen:()=>viewerOpen([{path:p,title:base(p)}],0),
+        actions:[
+          {label:'🔍 Full size',run:()=>viewerOpen([{path:p,title:base(p)}],0)},
+          {label:'Remove',run:()=>{setChosen(chosenList.filter(x=>x!==p));stPickImages(rootId,getChosen,setChosen,opts);if(opts.onChange)opts.onChange()}}
+        ]}));
+    });
+    if(!chosenList.length&&!st.pickExpanded[rootId]){const e=document.createElement('div');e.className='empty';e.textContent='No reference images selected.';root.appendChild(e)}
+    if(st.pickExpanded[rootId]){
+      const limit=st.pickShown[rootId]||36;
+      options.filter(o=>!chosenList.includes(o.path)).slice(0,limit).forEach(o=>root.appendChild(makeTile(o.path,'image',{badge:o.label,
+        onOpen:()=>{setChosen([...chosenList,o.path]);stPickImages(rootId,getChosen,setChosen,opts);if(opts.onChange)opts.onChange()},
+        actions:[{label:'🔍 Full size',run:()=>viewerOpen([{path:o.path,title:o.label}],0)}]})));
+    }
+    const bar=document.createElement('div');bar.className='row';bar.style.marginTop='8px';bar.style.gridColumn='1 / -1';
+    const bLoc=document.createElement('button');bLoc.type='button';bLoc.className='mini use';bLoc.textContent='Browse local files…';bLoc.title='Pick local PNG, JPEG, or WebP files without importing to My stuff';
+    bLoc.onclick=()=>stPickLocalImages(rootId,getChosen,setChosen,opts);bar.appendChild(bLoc);
+    const bLib=document.createElement('button');bLib.type='button';bLib.className='mini';bLib.textContent=st.pickExpanded[rootId]?'Hide My stuff':'Choose from My stuff…';
+    bLib.onclick=()=>{st.pickExpanded[rootId]=!st.pickExpanded[rootId];stPickImages(rootId,getChosen,setChosen,opts)};bar.appendChild(bLib);
+    if(chosenList.length){const bClr=document.createElement('button');bClr.type='button';bClr.className='mini';bClr.textContent='Clear all';bClr.onclick=()=>{setChosen([]);stPickImages(rootId,getChosen,setChosen,opts);if(opts.onChange)opts.onChange()};bar.appendChild(bClr)}
+    root.appendChild(bar);return;
+  }
   const chosen=getChosen();
   const compact=[...(d.master?[{path:d.master,label:'Her master photo'}]:[]),...d.photos.map(p=>({path:p.path,label:p.label}))];
   const options=st.pickExpanded[rootId]
     ?[...compact,...st.libImages.filter(x=>!compact.some(c=>c.path===x.path)).map(x=>({path:x.path,label:x.label||base(x.path)}))]
     :compact;
-  if(chosen&&!options.some(o=>o.path===chosen))options.unshift({path:chosen,label:base(chosen)});
+  if(chosen&&!options.some(o=>o.path===chosen))options.unshift({path:chosen,label:metaBadge(chosen,base(chosen))});
   const sig=[d.master,d.photos.length,chosen,st.pickExpanded[rootId],st.libImages.length,st.pickShown[rootId]||48,opts.requirePick];
   if(!stSig('pick:'+rootId,sig))return;
   root.innerHTML='';
   if(chosen){  // one clear choice: hide every other picture until they ask to change it
-    const label=(options.find(o=>o.path===chosen)||{}).label||base(chosen);
+    const label=metaBadge(chosen,(options.find(o=>o.path===chosen)||{}).label||base(chosen));
     root.appendChild(makeTile(chosen,'image',{badge:label,selected:true,
-      onOpen:()=>viewerOpen([{path:chosen,title:label}],0),
-      actions:[{label:'🔍 Full size',run:()=>viewerOpen([{path:chosen,title:label}],0)}]}));
-    const b=document.createElement('button');b.type='button';b.className='mini';b.style.marginTop='8px';
-    b.textContent='Change…';b.title='Pick a different picture';
-    b.onclick=()=>{setChosen('');stPickImages(rootId,getChosen,setChosen,opts)};
-    root.appendChild(b);return;
+      onOpen:()=>viewerOpen([{path:chosen,title:base(chosen)}],0),
+      actions:[{label:'🔍 Full size',run:()=>viewerOpen([{path:chosen,title:base(chosen)}],0)}]}));
+    const bar=document.createElement('div');bar.className='row';bar.style.marginTop='8px';bar.style.gridColumn='1 / -1';
+    const b=document.createElement('button');b.type='button';b.className='mini';
+    b.textContent='Change…';b.title='Pick a different picture from My stuff';
+    b.onclick=()=>{setChosen('');stPickImages(rootId,getChosen,setChosen,opts);if(opts.onChange)opts.onChange();else stPriceSoon()};
+    bar.appendChild(b);
+    const bLoc=document.createElement('button');bLoc.type='button';bLoc.className='mini';
+    bLoc.textContent='Browse local files…';bLoc.title='Replace with an image from Pictures, Downloads, or another folder';
+    bLoc.onclick=()=>stPickLocalImages(rootId,getChosen,setChosen,opts);
+    bar.appendChild(bLoc);
+    const bRem=document.createElement('button');bRem.type='button';bRem.className='mini';
+    bRem.textContent='Remove';bRem.title='Clear selected image';
+    bRem.onclick=()=>{setChosen('');stPickImages(rootId,getChosen,setChosen,opts);if(opts.onChange)opts.onChange();else stPriceSoon()};
+    bar.appendChild(bRem);
+    root.appendChild(bar);return;
   }
   const hint=opts.requirePick?'Pick the photo to start from:':(!d.master?'No presenter is set — pick the photo to start from:':'');
-  if(hint){const h=document.createElement('div');h.className='tiny';h.style.marginBottom='6px';h.textContent=hint;root.appendChild(h)}
+  if(hint){const h=document.createElement('div');h.className='tiny';h.style.marginBottom='6px';h.style.gridColumn='1 / -1';h.textContent=hint;root.appendChild(h)}
   const sel=opts.requirePick?chosen:(chosen||d.master||''),limit=st.pickExpanded[rootId]?(st.pickShown[rootId]||48):1e9;
   options.slice(0,limit).forEach(o=>root.appendChild(makeTile(o.path,'image',{badge:o.label,selected:o.path===sel,
-    onOpen:()=>{setChosen(o.path);stPickImages(rootId,getChosen,setChosen,opts);stPriceSoon()},
+    onOpen:()=>{setChosen(o.path);stPickImages(rootId,getChosen,setChosen,opts);if(opts.onChange)opts.onChange();else stPriceSoon()},
     actions:[{label:'🔍 Full size',run:()=>viewerOpen([{path:o.path,title:o.label}],0)}]})));
-  if(!options.length){const e=document.createElement('div');e.className='empty';e.textContent='Nothing here yet.';root.appendChild(e)}
+  if(!options.length){const e=document.createElement('div');e.className='empty';e.textContent='Nothing here yet — browse local files or make a photo first.';root.appendChild(e)}
   if(st.pickExpanded[rootId]&&options.length>limit){const b=document.createElement('button');b.className='btn';b.style.marginTop='8px';
     b.textContent=`Show all (${options.length-limit} more)`;b.onclick=()=>{st.pickShown[rootId]=1e9;stPickImages(rootId,getChosen,setChosen,opts)};root.appendChild(b)}
-  const t=document.createElement('button');t.type='button';t.className='mini';t.style.marginTop='8px';
+  const bar=document.createElement('div');bar.className='row';bar.style.marginTop='8px';bar.style.gridColumn='1 / -1';
+  const bLoc=document.createElement('button');bLoc.type='button';bLoc.className='mini use';
+  bLoc.textContent='Browse local files…';bLoc.title='Pick any local PNG, JPEG, or WebP file directly from your computer';
+  bLoc.onclick=()=>stPickLocalImages(rootId,getChosen,setChosen,opts);
+  bar.appendChild(bLoc);
+  const t=document.createElement('button');t.type='button';t.className='mini';
   t.textContent=st.pickExpanded[rootId]?'Just her photos':'Choose from My stuff…';
   t.title='Pick any picture in My stuff as the start';
   t.onclick=()=>{st.pickExpanded[rootId]=!st.pickExpanded[rootId];st.pickShown[rootId]=48;stPickImages(rootId,getChosen,setChosen,opts)};
-  root.appendChild(t);
+  bar.appendChild(t);
+  root.appendChild(bar);
 }
 function sceneRenderShots(){const root=$('sceneShots');root.innerHTML='';st.sceneShots.forEach((text,i)=>{const row=document.createElement('div');row.className='shot';row.innerHTML=`<span class="label">Shot ${i+1}</span><textarea rows="2" placeholder="${i===0?'She smiles at the camera and starts explaining…':'What happens next…'}"></textarea>`;const ta=row.querySelector('textarea');ta.value=text;ta.oninput=()=>{st.sceneShots[i]=ta.value;stPriceSoon()};ta.onfocus=()=>{st.sceneFocus=i};
     if(st.sceneShots.length>1){const x=document.createElement('button');x.className='mini';x.textContent='✕';x.title='Remove this shot';x.onclick=()=>{st.sceneShots.splice(i,1);sceneRenderShots();stPriceSoon()};row.appendChild(x)}root.appendChild(row)});
@@ -702,8 +856,8 @@ function stRender(first){
   if(stSig('picks',[d.master,d.pending_master]))stRenderPicks();
   if(stSig('angles',d.angles))$('stAngles').innerHTML=d.angles.map(a=>`<label><input type="checkbox" value="${esc(a.id)}"${ST_DEFAULT_ANGLES.includes(a.id)?' checked':''}>${esc(a.label)}</label>`).join('');
   if(stSig('photos',[d.master,d.photos,d.pending_photos]))stRenderPhotos();
-  stPickImages('moveImages',()=>st.moveImage,v=>st.moveImage=v);stPickImages('sceneImages',()=>st.sceneImage,v=>st.sceneImage=v,{requirePick:true});
-  stPickImages('anglesImages',()=>st.anglesImage,v=>st.anglesImage=v);stPickImages('actImages',()=>st.actImage,v=>st.actImage=v);
+  stPickImages('moveImages',()=>st.moveImage,v=>st.moveImage=v,{workflow:'image_to_video'});stPickImages('sceneImages',()=>st.sceneImage,v=>st.sceneImage=v,{requirePick:true});
+  stPickImages('anglesImages',()=>st.anglesImage,v=>st.anglesImage=v,{workflow:'avatar_generation'});stPickImages('actImages',()=>st.actImage,v=>st.actImage=v,{workflow:'character_reference'});
   if(stSig('voices',[d.voices,d.voice]))stFillSelect('stVoice',d.voices.map(v=>({value:v,label:v})),d.voice);
   if(stSig('narrations',d.narrations))stRenderNarrations();
   if(stSig('talker',[d.talker,d.talker_voices]))stRenderTalker();
@@ -837,14 +991,94 @@ async function forgeGo(){
   }else{st.forge.noteUntil=Date.now()+15000;forgeNote(r.error||'Something went wrong.','err');log('free builder: '+(r.error||'error'))}
   await stLoad();forgePriceSoon();
 }
-function forgeResultItems(){const out=[];(st.data.results||[]).forEach(r=>{if(r.status!=='done')return;if(['forge_photo','forge_scene'].indexOf(r.action)<0)return;
+function forgeResultItems(){const out=[];(st.data.results||[]).forEach(r=>{if(r.status!=='done')return;if(['forge_photo','forge_scene','script_photo','script_video'].indexOf(r.action)<0)return;
   r.outputs.forEach(o=>{if(r.action==='forge_scene'&&o.kind==='video'&&!o.name.startsWith('scene_'))return;out.push({...o,result:r})})});return out}
 function forgeRender(){
   const jobs=(st.data&&st.data.jobs)||[];
-  const mine=jobs.filter(j=>['forge_photo','forge_scene'].indexOf(j.action)>=0);
+  const mine=jobs.filter(j=>['forge_photo','forge_scene','script_photo','script_video'].indexOf(j.action)>=0);
   $('forgeJobsWrap').style.display=mine.length?'block':'none';
   $('forgeJobs').innerHTML=mine.map(j=>{const p=typeof j.progress==='number'?` · ${Math.round(j.progress*100)}%`:'';return `<div class="job"><div class="spin"></div><span>${esc(j.label||'Job')}</span><b class="tiny">${j.status==='running'?'making it'+p:'waiting in line'}</b>${j.status==='queued'?`<button class="mini" onclick="forgeCancel('${j.id}')" title="Stop this before it starts">✕</button>`:''}</div>`}).join('');
   renderResultTiles($('forgeResults'),forgeResultItems(),24);
+  if(st.opts.forgeInputMode==='script')scriptRefreshStatus();
+}
+function scriptNote(text,kind){const el=$('noteScript');if(!el)return;el.className='note'+(kind?' '+kind:'');el.textContent=text||''}
+function scriptToggleExtended(){
+  const ext=!!($('scriptExtended')&&$('scriptExtended').checked),inp=$('scriptMaxItems');
+  if(!inp)return;
+  inp.max=ext?'200':'10';
+  if(!ext&&Number(inp.value)>10)inp.value='10';
+}
+function scriptSyncButtons(){
+  const rep=st.script.report,sb=st.script.sandbox,run=st.script.run,rec=st.script.record;
+  const active=!!(rec&&(rec.status==='running'||rec.status==='paused'));
+  const paused=!!(rec&&rec.status==='paused');
+  const needsAck=!!(rep&&rep.classification==='requires_review');
+  const acked=!!($('scriptAckReview')&&$('scriptAckReview').checked);
+  const canSandbox=!!(rep&&rep.ok&&sb&&sb.available&&!active&&(rep.classification==='compatible_native'||(needsAck&&acked)));
+  const canExtract=!!(rep&&rep.extraction_summary&&rep.extraction_summary.has_extractable_data&&!active);
+  if($('scriptStartBtn'))$('scriptStartBtn').disabled=!canSandbox;
+  if($('scriptExtractBtn'))$('scriptExtractBtn').style.display=canExtract?'inline-block':'none';
+  if($('scriptAddCfgBtn'))$('scriptAddCfgBtn').disabled=!rep||active;
+  if($('scriptPauseBtn'))$('scriptPauseBtn').disabled=!active||paused;
+  if($('scriptResumeBtn'))$('scriptResumeBtn').disabled=!paused;
+  if($('scriptStopBtn'))$('scriptStopBtn').disabled=!active;
+  if($('scriptReviewWrap'))$('scriptReviewWrap').style.display=needsAck?'flex':'none';
+}
+function scriptRender(){
+  const rep=st.script.report,sb=st.script.sandbox,run=st.script.run,rec=st.script.record;
+  if(rep){
+    $('scriptFileMeta').textContent=`${rep.filename} · ${rep.line_count} lines · sha256:${(rep.sha256||'').slice(0,12)}`;
+    $('scriptValidationBox').style.display='block';
+    const labels={compatible_native:'Compatible native SDK',statically_extractable:'Statically extractable library',potentially_compatible_legacy:'Legacy script (extractable / Sprint 5 adapter)',requires_review:'Requires review',unsupported:'Unsupported'};
+    $('scriptStatusBadge').textContent=labels[rep.classification]||rep.classification;
+    const sbTxt=sb?(sb.available?`Sandbox ready (${sb.bwrap_version||'bwrap'})`:`Sandbox unavailable: ${sb.error}`):'';
+    $('scriptBackendInfo').textContent=`Backend: ${rep.expected_backend||'unknown'}${sbTxt?' · '+sbTxt:''}`;
+    const cfgs=[...(rep.config_references||[]),...(st.script.configs||[]).map(c=>base(c))];
+    $('scriptConfigsInfo').textContent=cfgs.length?`Config files: ${[...new Set(cfgs)].join(', ')}`:'No external config files detected.';
+    const items=[];
+    if(rep.error)items.push(rep.error);
+    (rep.recommended_actions||[]).forEach(a=>items.push(a));
+    (rep.unsupported_apis||[]).forEach(u=>items.push('Unsupported: '+u));
+    (rep.findings||[]).slice(0,6).forEach(f=>items.push(`Line ${f.line}: ${f.message}`));
+    $('scriptFindings').innerHTML=items.map(t=>`<li>${esc(t)}</li>`).join('');
+    $('scriptDisclaimer').textContent=rep.safety_disclaimer||'';
+  }
+  if(run&&rec){
+    $('scriptProgress').textContent=`${rec.status.toUpperCase()} · ${run.completed}/${run.max_items} completed (${run.submitted} submitted, ${run.active} active) · ${rec.sandbox_mode}`;
+  }
+  stPickImages('scriptRefs',()=>st.script.refs,v=>st.script.refs=v,{multiple:true,workflow:'script',onChange:()=>scriptSyncButtons()});
+  scriptSyncButtons();
+}
+async function scriptSelect(){
+  let r;try{r=await window.pywebview.api.script_select({})}catch(e){r={ok:false,error:String(e)}}
+  if(!r||r.cancelled)return;
+  st.script.report=r.report||null;st.script.sandbox=r.sandbox||null;st.script.configs=[];
+  if($('scriptAckReview'))$('scriptAckReview').checked=false;
+  scriptNote(r.ok?'Static inspection complete. Nothing was executed — review findings and click Start to run.':'Static inspection found issues: '+(r.report&&r.report.error||r.error||'invalid script'),r.ok?'ok':'err');
+  scriptRender();
+}
+async function scriptAddConfig(){
+  let r;try{r=await window.pywebview.api.script_control({action:'add_config'})}catch(e){r={ok:false,error:String(e)}}
+  if(!r||r.cancelled)return;
+  if(r.ok){st.script.configs=r.configs||[];scriptRender()}else scriptNote(r.error||'Could not add config.','err');
+}
+async function scriptAction(action){
+  const payload={action,max_items:Number($('scriptMaxItems').value)||10,extended_authorized:!!($('scriptExtended')&&$('scriptExtended').checked),references:st.script.refs,photo_model:$('forgePhotoModel').value||'4b',acknowledge_review:!!($('scriptAckReview')&&$('scriptAckReview').checked)};
+  let r;try{r=await window.pywebview.api.script_control(payload)}catch(e){r={ok:false,error:String(e)}}
+  if(!r||!r.ok){scriptNote((r&&r.error)||'Script action failed.','err');return}
+  if(r.record)st.script.record=r.record;
+  if(r.status)st.script.run=r.status;
+  scriptNote(action==='start'?'Sandboxed script started (network off, local-only broker).':action==='run_extracted'?'Running statically extracted prompts through Avatar V2 (zero script code executed).':action==='pause'?'Paused at next generation boundary.':action==='resume'?'Resumed script run.':'Stopped script run (completed outputs preserved).','ok');
+  scriptRender();await stLoad();
+}
+async function scriptRefreshStatus(){
+  let r;try{r=await window.pywebview.api.script_control({action:'status'})}catch(e){return}
+  if(!r||!r.ok)return;
+  if(r.sandbox)st.script.sandbox=r.sandbox;
+  if(r.selected&&!st.script.report)st.script.report=r.selected;
+  if(r.configs)st.script.configs=r.configs;
+  st.script.record=r.record||null;st.script.run=r.run||null;
+  scriptRender();
 }
 async function forgeCancel(id){let r;try{r=await window.pywebview.api.cancel_queue_item(id)}catch(e){r={ok:false,error:String(e)}}
   if(!r.ok){forgeNote(r.error||'Could not cancel it.','err');return}
@@ -865,8 +1099,9 @@ async function forgeLoad(){
   stFillSelect('forgeVram',(r.vram_modes||[]).map(m=>({value:m.id,label:m.label})),'balanced');
   $('forgeVramHint').textContent=$('forgeVram').value==='cpu_offload'?'Text encoders move to the CPU: more VRAM for the model, a bit slower.':'Weights stream between RAM and VRAM; the photo encoder always runs on the CPU.';
   await stLoadImages();  // so "Choose from My stuff…" has the pictures to offer
-  stPickImages('forgeImages',()=>st.forge.image,v=>st.forge.image=v);
+  stPickImages('forgeImages',()=>st.forge.image,v=>st.forge.image=v,{workflow:'image_to_video',onChange:forgePriceSoon});
   forgeRenderGuided();
+  scriptRender();
   if(!st.forge.edited&&!st.forge.shots.length)forgeSplit();
   forgeRender();forgePriceSoon();
 }

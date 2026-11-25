@@ -267,18 +267,32 @@ class ResourcePlanner:
                 wan_clip = "default"
                 rationale.append("Standard Wan 2.2 DynamicVRAM / block streaming path.")
 
-        # VAE decoding strategy: tiled automatically for high-res stills, extended frames, Wan 5B 48-ch VAE, or tight VRAM.
+        # VAE decoding strategy: tiled automatically for high-res stills, extended frames, Wan 5B 48-ch VAE,
+        # or tight VRAM on non-warm starts. On a healthy warm same-model FLUX.2 still, free VRAM is naturally
+        # low (~1-1.5 GB) specifically because the 9B weights are already resident; avoid unnecessary tiling
+        # unless resolution exceeds TILED_STILL_PIXELS or system pressure is elevated (live benchmark gate).
         pixels = int(request.width) * int(request.height)
+        warm_flux_still = (
+            spec.family == "flux2"
+            and transition.transition_kind == "same_model"
+            and not pressure_elevated
+            and pixels <= TILED_STILL_PIXELS
+        )
         if (
             pixels > TILED_STILL_PIXELS
             or request.frames > 81
             or spec.model_id == "wan22_5b"
-            or gpu_free_mb < TIGHT_VRAM_FREE_MB
+            or (gpu_free_mb < TIGHT_VRAM_FREE_MB and not warm_flux_still)
         ):
             vae_strategy: VAEStrategy = "tiled"
             rationale.append("Selected VAEDecodeTiled to bound VAE peak VRAM safely.")
         else:
             vae_strategy = "standard"
+            if warm_flux_still and gpu_free_mb < TIGHT_VRAM_FREE_MB:
+                rationale.append(
+                    "Kept standard VAE on healthy warm FLUX.2 still (low free VRAM reflects resident weights; "
+                    "subject to live tiled-vs-untiled benchmark verification)."
+                )
 
         # Zero-contention local VLM / LLM scheduling:
         # If ComfyUI is actively running or another GPU job is immediately queued using the same model,

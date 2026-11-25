@@ -219,15 +219,28 @@ class Wan22PromptCompiler:
         # 1. Explicit original user prompt first (preserves user wording verbatim).
         _add(spec.original_prompt)
 
-        # 2. Motion & camera dynamics next (highest leverage for Wan 2.2 temporal adherence).
-        if spec.motion.value.strip():
-            _add(spec.motion.value)
-        if spec.camera_movement.value.strip():
-            _add(spec.camera_movement.value)
+        # 2. Motion & camera ordering adapts to the Wan variant:
+        # - 4-step Lightning/Turbo (CFG=1.0) prioritizes immediate motion & camera directives first
+        #   so distilled temporal experts do not freeze on the initial frame.
+        # - Standard / higher-step Wan variants (strong CFG > 1.0, e.g. Fun-Control) balance
+        #   subject + scene context alongside motion while honoring negative prompts natively.
+        is_distilled_cfg1 = model.negative_prompt_strength == "ignored_cfg1"
+        if is_distilled_cfg1:
+            if spec.motion.value.strip():
+                _add(spec.motion.value)
+            if spec.camera_movement.value.strip():
+                _add(spec.camera_movement.value)
+            for sc in _subject_clauses(spec):
+                _add(sc)
+        else:
+            for sc in _subject_clauses(spec):
+                _add(sc)
+            if spec.motion.value.strip():
+                _add(spec.motion.value)
+            if spec.camera_movement.value.strip():
+                _add(spec.camera_movement.value)
 
-        # 3. Subject continuity, framing, setting, lighting, atmosphere, and visual style.
-        for sc in _subject_clauses(spec):
-            _add(sc)
+        # 3. Framing, setting, lighting, atmosphere, materials, and visual style.
         for field_name in (
             "composition",
             "camera_perspective",
@@ -252,7 +265,7 @@ class Wan22PromptCompiler:
             warnings.append("Stripped legacy SDXL (token:weight) syntax into natural motion prose for Wan 2.2 UMT5 encoder.")
 
         negative_terms = _dedupe_clauses(spec.excluded_attributes)
-        if negative_terms and model.negative_prompt_strength == "ignored_cfg1":
+        if negative_terms and is_distilled_cfg1:
             warnings.append(
                 f"{model.label} runs at CFG 1.0 (4-step Lightning/Turbo), where negative prompts have no effect; express critical constraints positively in the prompt."
             )

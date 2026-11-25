@@ -38,7 +38,15 @@ from .presenter import MOTION_REALISM, NO_TEXT, compile_presenter_prompt
 from .prompt_compilers import compile_prompt_for_model
 from .prompt_library import build_spec_from_guided_payload, guided_ui_payload
 from .providers import runway as runway_api
+from .reference_picker import (
+    LocalReferenceManager,
+    WORKFLOW_REFERENCE_LIMITS,
+    default_browse_directory,
+    validate_local_image,
+)
 from .render_queue import QueuedRender
+from .script_broker import BrokerSubmitContext
+from .script_runner import SandboxUnavailableError, ScriptRunManager
 from .secret_store import secret_status
 from .voiceover import segment_script
 
@@ -290,6 +298,246 @@ def _choice(value: Any, allowed: dict[str, Any] | tuple[str, ...], default: str)
 class StudioMixin:
     # ------------------------------------------------------------------ helpers
 
+    def _reference_manager(self) -> LocalReferenceManager:
+        """Shared LocalReferenceManager guarding external file access and controlled job staging."""
+        mgr: LocalReferenceManager | None = getattr(self, "_local_ref_manager", None)
+        app_home = _desktop().APP_HOME
+        if mgr is None:
+            mgr = LocalReferenceManager(staging_dir=app_home / "staged_refs")
+            self._local_ref_manager = mgr
+        mgr.add_trusted_root(app_home)
+        try:
+            mgr.add_trusted_root(self._archive_dir())
+        except Exception:
+            pass
+        try:
+            out_dir = str(self._settings().get("comfyui_output") or "").strip()
+            if out_dir:
+                mgr.add_trusted_root(Path(out_dir))
+        except Exception:
+            pass
+        return mgr
+
+    def _stage_reference_if_external(self, path: str, *, workflow: str = "single_start") -> str:
+        """Validate and stage an external reference image for a queued job without mutating the original."""
+        cleaned = str(path or "").strip()
+        if not cleaned:
+            return ""
+        mgr = self._reference_manager()
+        staged = mgr.stage_for_job(cleaned, workflow=workflow, require_authorization=False)
+        return str(staged["staged_path"])
+
+    def _remember_directory(self, setting_key: str, path: str | Path) -> None:
+        try:
+            parent = Path(path).expanduser().resolve().parent
+            if not parent.is_dir():
+                return
+            d = _desktop()
+            settings = self._settings()
+            if settings.get(setting_key) != str(parent):
+                settings[setting_key] = str(parent)
+                d._write_json(d.CONFIG_PATH, settings)
+        except Exception:
+            pass
+
+    def pick_local_images(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Shared native local reference-image selector (My Stuff alternative, no import required).
+
+        Prevents unrestricted filesystem access: only paths returned by the native OS file
+        dialog (or already inside trusted Avatar V2 roots) are authorized for preview and queueing.
+        """
+        opts = dict(options or {})
+        workflow = str(opts.get("workflow") or "single_start")
+        if workflow not in WORKFLOW_REFERENCE_LIMITS:
+            workflow = "single_start"
+        rule = WORKFLOW_REFERENCE_LIMITS[workflow]
+        action = str(opts.get("action") or "browse")
+        mgr = self._reference_manager()
+
+        if action == "validate":
+            raw_path = str(opts.get("path") or "").strip()
+            checked = mgr.authorize_existing(raw_path, workflow=workflow)
+            return {
+                "ok": checked.ok,
+                "item": checked.public() if checked.ok else None,
+                "error": checked.error,
+            }
+
+        multiple = bool(opts.get("multiple")) and int(rule["max_images"]) > 1
+        settings = self._settings()
+        start_dir = default_browse_directory(str(settings.get("last_image_dir") or ""))
+        selected = self.choose_files("image", multiple=multiple, directory=start_dir)
+        if not selected:
+            return {"ok": True, "cancelled": True, "items": [], "errors": [], "workflow": workflow}
+
+        self._remember_directory("last_image_dir", selected[0])
+        batch = mgr.register_selected(selected, workflow=workflow)
+        return {
+            "ok": bool(batch["items"]),
+            "cancelled": False,
+            "workflow": workflow,
+            "max_images": batch["max_images"],
+            "items": batch["items"],
+            "errors": batch["errors"],
+            "error": batch["errors"][0] if (not batch["items"] and batch["errors"]) else "",
+        }
+
+    # ------------------------------------------------------------------ Script mode (Sprint 4)
+
+    def _script_manager(self) -> ScriptRunManager:
+        mgr: ScriptRunManager | None = getattr(self, "_script_run_manager", None)
+        if mgr is None:
+            mgr = ScriptRunManager(
+                runs_dir=_desktop().APP_HOME / "script_runs",
+                submit_fn=self._script_submit_job,
+                status_fn=self._script_job_status,
+                cancel_fn=self._script_cancel_job,
+                reference_manager=self._reference_manager(),
+                planner=getattr(self.queue, "resource_planner", None),
+            )
+            self._script_run_manager = mgr
+        return mgr
+
+    def _script_submit_job(self, ctx: BrokerSubmitContext) -> str:
+        """Route a validated SDK BrokerSubmitContext through existing RenderQueue builders."""
+        engine = self.engine_status()
+        if engine["state"] != "ready":
+            raise RuntimeError(engine["message"] + " Start the GPU engine before running scripts.")
+        if ctx.model_id.startswith("flux2_"):
+            photo_model = "9b" if ctx.model_id == "flux2_9b" else "4b"
+            item = self._forge_photo_item(
+                prompt=ctx.compiled_positive,
+                shape="portrait",
+                photo_model=photo_model,
+                action="script_photo",
+                label=ctx.label,
+                extra_runtime={"script_run_id": ctx.run_id, "script_item": ctx.item_index},
+            )
+            if ctx.compiled_negative:
+                item.job.asset_map["NEGATIVE_PROMPT"] = ctx.compiled_negative
+            if ctx.spec.constraints.width and ctx.spec.constraints.height:
+                item.job.asset_map["WIDTH"] = int(ctx.spec.constraints.width)
+                item.job.asset_map["HEIGHT"] = int(ctx.spec.constraints.height)
+            if ctx.spec.constraints.seed is not None:
+                item.job.asset_map["SEED"] = int(ctx.spec.constraints.seed)
+        else:
+            video_model = "5b" if ctx.model_id == "wan22_5b" else "a14b"
+            start_img = ctx.staged_references[0] if ctx.staged_references else ""
+            item = self._local_wan_item(
+                image=start_img,
+                text=ctx.compiled_positive,
+                shape="tall",
+                label=ctx.label,
+                action="script_video",
+                video_model=video_model,
+                vram_mode="cpu_offload" if ctx.execution_plan.wan_clip_device == "cpu" else "balanced",
+                verbatim=True,
+            )
+            item.runtime.update({"script_run_id": ctx.run_id, "script_item": ctx.item_index})
+            if ctx.spec.constraints.seed is not None:
+                item.job.asset_map["WAN_SEED"] = int(ctx.spec.constraints.seed)
+        return self.queue.add(item)
+
+    def _script_job_status(self, job_id: str) -> dict[str, Any]:
+        for entry in self.queue.list():
+            if entry.get("id") == job_id:
+                return {
+                    "status": entry.get("status") or "queued",
+                    "outputs": list(entry.get("outputs") or []),
+                    "error": entry.get("error_message") or entry.get("error") or "",
+                }
+        hist = _desktop().HISTORY_DIR / f"{job_id}.json"
+        if hist.is_file():
+            try:
+                data = json.loads(hist.read_text(encoding="utf-8"))
+                return {
+                    "status": data.get("status") or "done",
+                    "outputs": list(data.get("outputs") or []),
+                    "error": data.get("error_message") or data.get("error") or "",
+                }
+            except (OSError, json.JSONDecodeError):
+                pass
+        return {"status": "unknown", "outputs": [], "error": ""}
+
+    def _script_cancel_job(self, job_id: str) -> bool:
+        try:
+            return bool(self.queue.cancel(job_id))
+        except Exception:
+            return False
+
+    def script_select(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Select a local Python script via native dialog and statically inspect it (NEVER executes)."""
+        opts = dict(options or {})
+        settings = self._settings()
+        start_dir = default_browse_directory(str(settings.get("last_script_dir") or ""))
+        selected = self.choose_files("python", multiple=False, directory=start_dir)
+        if not selected:
+            return {"ok": True, "cancelled": True, "executed": False}
+        chosen = selected[0]
+        self._remember_directory("last_script_dir", chosen)
+        result = self._script_manager().select_script(chosen)
+        result["cancelled"] = False
+        return result
+
+    def script_control(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Host-enforced lifecycle controller for Script mode (status/start/run_extracted/pause/resume/stop/add_config)."""
+        opts = dict(options or {})
+        action = str(opts.get("action") or "status").strip().lower()
+        mgr = self._script_manager()
+
+        if action == "status":
+            return mgr.status()
+        if action == "pause":
+            return mgr.pause()
+        if action == "resume":
+            return mgr.resume()
+        if action == "stop":
+            return mgr.stop()
+        if action == "add_config":
+            settings = self._settings()
+            start_dir = default_browse_directory(str(settings.get("last_script_dir") or ""))
+            files = self.choose_files("config", multiple=True, directory=start_dir)
+            if not files:
+                return {"ok": True, "cancelled": True, "configs": mgr.status().get("configs") or []}
+            self._remember_directory("last_script_dir", files[0])
+            res = mgr.add_config_files(files)
+            res["cancelled"] = False
+            return res
+
+        raw_refs = [str(r) for r in (opts.get("references") or []) if str(r or "").strip()]
+        ref_mgr = self._reference_manager()
+        verified_refs: list[str] = []
+        for ref in raw_refs:
+            checked = ref_mgr.authorize_existing(ref, workflow="script")
+            if not checked.ok:
+                return {"ok": False, "error": checked.error}
+            verified_refs.append(checked.path)
+
+        max_items = int(opts.get("max_items") or 10)
+        extended = bool(opts.get("extended_authorized"))
+
+        if action == "run_extracted":
+            photo_model = ob.photo_model_choice(opts.get("photo_model"))
+            return mgr.start_extracted_run(
+                max_items=max_items,
+                extended_authorized=extended,
+                model_id=f"flux2_{photo_model}",
+                references=verified_refs,
+            )
+
+        if action == "start":
+            try:
+                return mgr.start_sandboxed_run(
+                    max_items=max_items,
+                    extended_authorized=extended,
+                    references=verified_refs,
+                    allow_review_classification=bool(opts.get("acknowledge_review")),
+                )
+            except SandboxUnavailableError as exc:
+                return {"ok": False, "error": str(exc), "code": "sandbox_unavailable"}
+
+        return {"ok": False, "error": f"Unknown script action '{action}'."}
+
     def _studio_profile(self) -> AvatarProfile | None:
         """The BRAND presenter's vault profile, created on first use (local only)."""
         library = self._library_or_none()
@@ -384,6 +632,7 @@ class StudioMixin:
             anchor = str(options.get("image") or "").strip() or need_master()
             if not Path(anchor).is_file():
                 raise ValueError("Pick a start photo first (step 1).")
+            anchor = self._stage_reference_if_external(anchor, workflow="avatar_generation")
             # The same face as the chosen picture, from the ticked angles. Her master photo is the
             # default; any picture in My stuff can be the anchor instead.
             avatar["identity_refs"] = [anchor]
@@ -425,6 +674,7 @@ class StudioMixin:
             character = str(options.get("image") or "").strip() or need_master()
             if not Path(character).is_file():
                 raise ValueError("Pick a start photo first (step 1).")
+            character = self._stage_reference_if_external(character, workflow="character_reference")
             video = str(options.get("video") or "").strip()
             if not video:
                 raise ValueError("Choose the video of you acting it out.")
@@ -441,6 +691,8 @@ class StudioMixin:
             label = "Act-it-out video"
         elif action == "move":
             image = str(options.get("image") or "").strip() or need_master()
+            if Path(image).is_file():
+                image = self._stage_reference_if_external(image, workflow="image_to_video")
             seconds = 10 if int(options.get("seconds") or 5) >= 10 else 5
             shot["user_prompt"] = " ".join(str(options.get("motion") or "").split())[:1000] or DEFAULT_MOTION  # Runway video models allow up to 1000
             shot["references"] = {"init_image": image}
@@ -456,6 +708,8 @@ class StudioMixin:
             label = f"Motion clip · {seconds} s"
         else:  # sharpen
             image = str(options.get("image") or "").strip() or need_master()
+            if Path(image).is_file():
+                image = self._stage_reference_if_external(image, workflow="image_edit")
             runway = {"task": "upscale", "image": image, "scale_factor": 2, "flavor": "photo"}
             label = "Sharper photo"
         return {
@@ -496,6 +750,7 @@ class StudioMixin:
             )
         if not image or not Path(image).is_file():
             raise ValueError("Pick a start picture first.")
+        image = self._stage_reference_if_external(image, workflow="image_to_video")
         text = " ".join(str(text or "").split())[:ob.PROMPT_MAX_CHARS] or DEFAULT_MOTION
         phrase = depicts_minor(text)
         if phrase:
@@ -597,6 +852,7 @@ class StudioMixin:
         image = str(options.get("image") or "").strip()  # a blank slate: never default to the master photo
         if not image or not Path(image).is_file():
             raise ValueError("Pick a start picture first (step 1).")
+        image = self._stage_reference_if_external(image, workflow="image_to_video")
         shots = [" ".join(str(text or "").split()) for text in options.get("shots") or []]
         shots = [text for text in shots if text][:SCENE_MAX_SHOTS]
         if not shots:
@@ -1366,6 +1622,8 @@ class StudioMixin:
         source = Path(str(path or "")).expanduser()
         kind = _kind(str(source))
         if kind == "image":
+            if not self._reference_manager().is_path_authorized(source):
+                return {"ok": False, "error": "That image was not selected through Avatar V2."}
             return self.reference_thumbnail(str(source))
         if kind != "video" or not source.is_file():
             return {"ok": False, "error": "No preview for this file."}
@@ -1402,6 +1660,8 @@ class StudioMixin:
         source = Path(str(path or "")).expanduser()
         if _kind(str(source)) != "image" or not source.is_file():
             return {"ok": False, "error": "That photo is no longer on this computer."}
+        if not self._reference_manager().is_path_authorized(source):
+            return {"ok": False, "error": "That photo was not selected through Avatar V2."}
         try:
             with Image.open(source) as opened:
                 image = ImageOps.exif_transpose(opened).convert("RGB")

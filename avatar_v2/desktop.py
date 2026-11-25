@@ -101,6 +101,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "gpu_threshold": 0.85,
     "gpu_check_interval_s": 5,
     "preferred_output_dir": "",
+    "last_image_dir": "",
+    "last_script_dir": "",
     "adult_prompt_custom": {},
     "vision_classifier_url": "http://127.0.0.1:11434",
     "vision_classifier_model": "qwen3-vl:8b-instruct",
@@ -367,7 +369,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         _write_json(CONFIG_PATH, settings)
         return {"ok": True, "item": {**item, "custom": True}, "presets": adult_prompt_presets_payload(customs)}
 
-    def choose_files(self, kind: str, multiple: bool = True) -> list[str]:
+    def choose_files(self, kind: str, multiple: bool = True, directory: str = "") -> list[str]:
         if self._self_window is None:
             return []
         import webview
@@ -380,13 +382,17 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             "video": ("Video (*.mp4;*.mov;*.webm;*.mkv)",),
             "audio": ("Audio (*.wav;*.mp3;*.flac;*.m4a;*.ogg)",),
             "workflow": ("ComfyUI API JSON (*.json)",),
+            "python": ("Python scripts (*.py)", "All files (*.*)"),
+            "config": ("Config & prompt libraries (*.json;*.yaml;*.yml;*.toml)", "All files (*.*)"),
             "all": ("All files (*.*)",),
         }
-        result = self._self_window.create_file_dialog(
-            webview.OPEN_DIALOG,
-            allow_multiple=multiple,
-            file_types=filters.get(kind, ("All files (*.*)",)),
-        )
+        kwargs: dict[str, Any] = {
+            "allow_multiple": multiple,
+            "file_types": filters.get(kind, ("All files (*.*)",)),
+        }
+        if directory and Path(directory).expanduser().is_dir():
+            kwargs["directory"] = str(Path(directory).expanduser())
+        result = self._self_window.create_file_dialog(webview.OPEN_DIALOG, **kwargs)
         return [str(Path(p)) for p in (result or [])]
 
     def choose_folder(self) -> str:
@@ -1771,6 +1777,12 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         force-killed if it hasn't exited within the grace period — so closing the app always
         frees the GPU for videos, games, or other GPU work.
         """
+        try:
+            mgr = getattr(self, "_script_run_manager", None)
+            if mgr is not None:
+                mgr.stop()
+        except Exception:
+            pass
         try:
             self._close_media_server()
         except Exception:

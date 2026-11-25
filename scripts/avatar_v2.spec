@@ -13,6 +13,7 @@ a = Analysis(
     datas=[
         (os.path.join(os.path.dirname(SPECPATH), "avatar_v2", "ui", "index.html"), "avatar_v2/ui"),
         (os.path.join(os.path.dirname(SPECPATH), "avatar_v2", "data", "prompt_libraries.json"), "avatar_v2/data"),
+        (os.path.join(os.path.dirname(SPECPATH), "avatar_v2", "sdk_client.py"), "avatar_v2"),
         (os.path.join(os.path.dirname(SPECPATH), "workflows", "animatediff_sd15_api.json"), "workflows"),
         (os.path.join(os.path.dirname(SPECPATH), "workflows", "animatediff_sdxl_api.json"), "workflows"),
         (os.path.join(os.path.dirname(SPECPATH), "workflows", "wan22_i2v_14b_gguf_api.json"), "workflows"),
