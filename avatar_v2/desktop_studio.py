@@ -1984,6 +1984,7 @@ class StudioMixin:
             receipt = item.get("cloud_receipt") or {}
             qa_data = item.get("candidate_qa") if isinstance(item.get("candidate_qa"), dict) else {}
             inspection = qa_data.get("inspection") if isinstance(qa_data.get("inspection"), dict) else None
+            correction = qa_data.get("correction") if isinstance(qa_data.get("correction"), dict) else None
             results.append(
                 {
                     "id": item.get("id"),
@@ -1998,6 +1999,7 @@ class StudioMixin:
                     "local": local,
                     "source": source,
                     "inspection": inspection,
+                    "correction": correction,
                 }
             )
             if len(results) >= limit:

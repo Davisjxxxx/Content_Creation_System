@@ -778,14 +778,16 @@ async function stDelete(path,tile){let r;try{r=await window.pywebview.api.studio
   if($('view-library').classList.contains('active'))libLoad();else stLoad();
   const cur=viewer.items[viewer.index];if(cur&&cur.path===path)viewerClose()}
 function mediaViewerItems(list){return list.filter(x=>x.kind==='image'||x.kind==='video').map(x=>{
-  const r=x.result||x,ins=r&&r.inspection?r.inspection:null;
+  const r=x.result||x,ins=r&&r.inspection?r.inspection:null,cor=r&&r.correction?r.correction:null;
   const baseMeta=stWhen(r?r.finished_at:x.finished_at);
+  const statusLbl=(cor&&cor.ui_status_label)||(ins&&ins.ui_status_label)||'';
   return {
   path:x.path,
   kind:x.kind,
   title:x.result?x.result.label:x.label,
-  meta:ins&&ins.ui_status_label?`${baseMeta} · ${ins.ui_status_label}`:baseMeta,
+  meta:statusLbl?`${baseMeta} · ${statusLbl}`:baseMeta,
   inspection:ins,
+  correction:cor,
   actions:x.kind==='image'?[
     {label:'Make a scene from this',run:async()=>{viewerClose();stSceneFrom(x.path);return 'close'}},
     {label:'Animate this photo',run:async()=>{viewerClose();stAnimate(x.path);return 'close'}},
@@ -1331,13 +1333,16 @@ async function viewerShow(){
   const root=$('viewerActions');root.innerHTML='';(it.actions||[]).forEach(a=>{const b=document.createElement('button');b.className='btn'+(a.primary?' primary':'')+(a.toss?' danger':'');b.textContent=a.label;b.onclick=()=>viewerAct(a);root.appendChild(b)});
   const insBox=$('viewerInspection'),insSum=$('viewerInspectionSummary'),insBody=$('viewerInspectionBody');
   if(insBox&&insSum&&insBody){
-    const ins=it.inspection;
-    if(ins&&ins.ui_status_label){
+    const ins=it.inspection,cor=it.correction;
+    if((ins&&ins.ui_status_label)||(cor&&cor.ui_status_label)){
       insBox.style.display='block';insBox.open=false;
-      insSum.textContent=`Quality check: ${ins.ui_status_label} (${ins.passed_count||0} passed · ${ins.failed_count||0} failed · ${ins.uncertain_count||0} uncertain)`;
-      const rows=(ins.criteria||[]).map(c=>`<div><b>[${esc(c.status)}]</b> ${esc(c.original_requirement||c.criterion_id)}${c.observed_evidence?' — '+esc(c.observed_evidence):''}</div>`).join('');
-      const recs=(ins.recommendations||[]).map(r=>`<div style="margin-top:4px"><i>Recommendation:</i> ${esc(r.recommended_action)}</div>`).join('');
-      insBody.innerHTML=rows+recs||esc(ins.ui_status_label);
+      const topLbl=(cor&&cor.ui_status_label)||(ins&&ins.ui_status_label)||'Generated';
+      const counts=ins?` (${ins.passed_count||0} passed · ${ins.failed_count||0} failed · ${ins.uncertain_count||0} uncertain)`:'';
+      insSum.textContent=`Quality check: ${topLbl}${counts}`;
+      const rows=((ins&&ins.criteria)||[]).map(c=>`<div><b>[${esc(c.status)}]</b> ${esc(c.original_requirement||c.criterion_id)}${c.observed_evidence?' — '+esc(c.observed_evidence):''}</div>`).join('');
+      const corRows=cor&&cor.attempts&&cor.attempts.length?`<div style="margin-top:6px"><b>Corrections (${cor.attempts_executed||0}/${cor.budget_limit||0}):</b> ${esc(cor.best_candidate_reason||cor.stopped_reason)}</div>`+cor.attempts.map(a=>`<div>• Attempt ${a.attempt_number}: ${esc(a.selected_strategy)}${a.is_localized_edit?' (targeted edit)':''} → ${esc(a.final_disposition)}</div>`).join(''):'';
+      const recs=((ins&&ins.recommendations)||[]).map(r=>`<div style="margin-top:4px"><i>Recommendation:</i> ${esc(r.recommended_action)}</div>`).join('');
+      insBody.innerHTML=rows+corRows+recs||esc(topLbl);
     }else{insBox.style.display='none';insBody.innerHTML=''}
   }
   if(isVid){

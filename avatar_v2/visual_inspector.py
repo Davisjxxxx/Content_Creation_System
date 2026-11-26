@@ -37,6 +37,7 @@ from .inspection_contract import (
     ReferenceProvenanceRecord,
     VisualInspectionResult,
     compute_inspection_status,
+    get_verification_eligibility,
 )
 from .ollama_client import (
     DEFAULT_OLLAMA_URL,
@@ -541,6 +542,20 @@ VLM_INSPECTION_SCHEMA: dict[str, Any] = {
             "type": "string",
             "enum": ["front", "rear", "left_profile", "right_profile", "three_quarter", "not_applicable", "uncertain"],
         },
+        "localized_objects": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "state": {"type": "string"},
+                    "horizontal_side": {"type": "string", "enum": ["left", "center", "right", "unknown"]},
+                    "x_center_pct": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+                },
+                "required": ["label", "horizontal_side"],
+            },
+        },
         "criteria": {
             "type": "array",
             "items": {
@@ -567,6 +582,58 @@ _OBSERVED_COUNT_RE = re.compile(
     r"\b(?:there\s+are|counted|only|shows?|visible:?)\s+(?:exact(?:ly)?\s+)?(\d+)\b",
     re.IGNORECASE,
 )
+_SPATIAL_LR_RE = re.compile(
+    r"^(?:the\s+|a\s+|an\s+)?(?P<a>[a-z0-9 \-]{2,40}?)\s+(?:is\s+)?(?:positioned\s+|placed\s+|standing\s+|located\s+)?"
+    r"(?:to\s+the\s+)?(?:viewer'?s\s+)?(?P<dir>left|right)\s+of\s+(?:the\s+|a\s+|an\s+)?(?P<b>[a-z0-9 \-]{2,40})",
+    re.IGNORECASE,
+)
+_STATE_CLOSED_RE = re.compile(r"\bclosed\b", re.IGNORECASE)
+_STATE_OPEN_RE = re.compile(r"\bopen\b", re.IGNORECASE)
+
+
+def _object_x_score(entry: dict[str, Any]) -> float | None:
+    xc = entry.get("x_center_pct")
+    if isinstance(xc, (int, float)) and not isinstance(xc, bool):
+        return float(xc)
+    side = str(entry.get("horizontal_side") or "").lower()
+    if side == "left":
+        return 25.0
+    if side == "center":
+        return 50.0
+    if side == "right":
+        return 75.0
+    return None
+
+
+def _match_localized_object(term: str, localized_objects: list[dict[str, Any]]) -> dict[str, Any] | None:
+    tokens = [t for t in re.findall(r"[a-z0-9]+", term.lower()) if len(t) >= 3 and t not in {"the", "with", "near", "glass", "brass", "ceramic", "coffee"}]
+    if not tokens:
+        tokens = re.findall(r"[a-z0-9]+", term.lower())
+    best = None
+    best_hits = 0
+    for obj in localized_objects:
+        lbl = str(obj.get("label") or "").lower()
+        hits = sum(1 for tok in tokens if tok in lbl or (tok.endswith("s") and tok[:-1] in lbl))
+        if hits > best_hits:
+            best_hits = hits
+            best = obj
+    return best if best_hits > 0 else None
+
+
+def reconcile_inspector_judgments(
+    primary_status: Literal["passed", "failed", "uncertain"],
+    secondary_status: Literal["passed", "failed", "uncertain"],
+    *,
+    secondary_is_deterministic: bool = False,
+) -> tuple[Literal["passed", "failed", "uncertain"], str]:
+    """Reconcile two inspection judgments conservatively; never silently accept on disagreement."""
+    if primary_status == secondary_status:
+        return primary_status, ""
+    if secondary_is_deterministic and secondary_status == "failed":
+        return "failed", "Deterministic/region check refuted holistic VLM pass."
+    if primary_status == "failed" or secondary_status == "failed":
+        return "uncertain", f"Inspector disagreement ({primary_status} vs {secondary_status}); downgraded to uncertain for review."
+    return "uncertain", f"Inspector disagreement ({primary_status} vs {secondary_status}); preserving uncertainty."
 
 
 def _deterministic_cross_check_vlm_criterion(
@@ -578,10 +645,11 @@ def _deterministic_cross_check_vlm_criterion(
     observed_visible_text: list[str],
     expected_typography: list[str],
     failure_description: str,
+    localized_objects: list[dict[str, Any]] | None = None,
 ) -> tuple[Literal["passed", "failed", "uncertain"], str, bool]:
-    """Catch sycophantic VLM self-contradictions via deterministic exact-text and exact-count verification."""
-    if status != "passed":
-        return status, failure_description, False
+    """Catch sycophantic VLM self-contradictions via deterministic exact-text, count, state & bbox checks."""
+    locs = localized_objects or []
+    corroborated = False
 
     # 1. Exact typography spelling verification against VLM's own transcription.
     if criterion.category.lower() == "typography" and expected_typography:
@@ -593,8 +661,10 @@ def _deterministic_cross_check_vlm_criterion(
                 f"not found in transcribed visible text ({observed_visible_text or [observed_evidence[:80]]!r})."
             )
             return "failed", reason, True
+        if status == "passed" and not missing_exact and observed_visible_text:
+            corroborated = True
 
-    # 2. Exact object count verification against VLM's own reported count.
+    # 2. Exact object count & object-state reconciliation (closed vs open, enumerated items).
     req_match = _EXACT_COUNT_RE.search(criterion.description)
     if req_match:
         required_n = int(req_match.group(1))
@@ -609,8 +679,45 @@ def _deterministic_cross_check_vlm_criterion(
                 f"but inspection observed {reported_n} ({observed_evidence[:140]})."
             )
             return "failed", reason, True
+        # Check open-vs-closed state contradiction in localized_objects!
+        if status == "passed" and _STATE_CLOSED_RE.search(criterion.description) and locs:
+            desc_low = criterion.description.lower()
+            matching_items = [
+                obj for obj in locs
+                if any(w in str(obj.get("label") or "").lower() for w in ("notebook", "book", "box", "laptop", "door"))
+                and any(w in desc_low for w in ("notebook", "book", "box", "laptop", "door"))
+            ]
+            if matching_items:
+                open_items = [obj for obj in matching_items if _STATE_OPEN_RE.search(str(obj.get("state") or ""))]
+                if open_items:
+                    reason = (
+                        f"Deterministic object-state cross-check rejected false pass: requirement specified 'closed', "
+                        f"but localized item '{open_items[0].get('label')}' reported state '{open_items[0].get('state')}'."
+                    )
+                    return "failed", reason, True
+                if len(matching_items) == required_n:
+                    corroborated = True
 
-    return status, failure_description, False
+    # 3. Bounding-box / horizontal coordinate reconciliation for viewer-left / viewer-right spatial criteria!
+    sp_match = _SPATIAL_LR_RE.search(criterion.description.strip())
+    if sp_match and locs:
+        obj_a = _match_localized_object(sp_match.group("a"), locs)
+        obj_b = _match_localized_object(sp_match.group("b"), locs)
+        if obj_a is not None and obj_b is not None and obj_a is not obj_b:
+            xa, xb = _object_x_score(obj_a), _object_x_score(obj_b)
+            if xa is not None and xb is not None and abs(xa - xb) >= 5.0:
+                direction = sp_match.group("dir").lower()
+                geom_pass = (xa < xb) if direction == "left" else (xa > xb)
+                if not geom_pass and status == "passed":
+                    reason = (
+                        f"Localized coordinate cross-check rejected false pass: '{obj_a.get('label')}' at x={xa:.1f}% "
+                        f"is NOT {direction} of '{obj_b.get('label')}' at x={xb:.1f}%."
+                    )
+                    return "failed", reason, True
+                if geom_pass and status == "passed":
+                    corroborated = True
+
+    return status, failure_description, corroborated
 
 
 def _needs_vlm_for_criterion(criterion: AcceptanceCriterion, *, ocr_available: bool) -> bool:
@@ -648,6 +755,8 @@ def _build_vlm_user_prompt(
         )
     lines.append(
         "Return JSON with keys: observed_scene_summary, observed_visible_text, observed_orientation, "
+        "localized_objects (list each key object separately with {label, state (e.g. open/closed/handle/handleless), "
+        "horizontal_side (viewer's left|center|right), x_center_pct (0=far viewer-left, 100=far viewer-right)}), "
         "criteria (list of {criterion_id, observed_evidence, observed_count (integer or null), "
         "status: passed|failed|uncertain, confidence_limitations, failure_description}), detected_defects."
     )
@@ -1103,7 +1212,9 @@ class VisualInspector:
                         injection_warnings.extend(detect_image_prompt_injection(obs))
 
                         # Deterministic hybrid cross-check against sycophantic VLM false acceptance!
-                        status, fail_desc, overridden = _deterministic_cross_check_vlm_criterion(
+                        loc_objs = [o for o in (vlm_res.data.get("localized_objects") or []) if isinstance(o, dict)]
+                        pre_status = status
+                        status, fail_desc, corroborated = _deterministic_cross_check_vlm_criterion(
                             c,
                             status=status,
                             observed_evidence=obs,
@@ -1111,9 +1222,11 @@ class VisualInspector:
                             observed_visible_text=vis_texts,
                             expected_typography=record.expected_output.expected_typography,
                             failure_description=fail_desc,
+                            localized_objects=loc_objs,
                         )
-                        if overridden and "deterministic" not in methods_used:
-                            methods_used.append("deterministic")
+                        overridden = status != pre_status
+                        if overridden and "region_localization" not in methods_used:
+                            methods_used.append("region_localization")
 
                         # Rear-view guardrail: if no rear reference was provided for a rear-view reference check,
                         # NEVER falsely mark back-detail adherence as passed!
@@ -1126,13 +1239,22 @@ class VisualInspector:
                             status = "uncertain"
                             lim = (lim + " " if lim else "") + "No back_body reference supplied; rear match cannot be conclusively verified."
 
+                        elig = get_verification_eligibility(c.category)
+                        if elig == "requires_human_review" and status == "passed" and not corroborated:
+                            lim = (
+                                (lim + " " if lim else "")
+                                + f"Category '{c.category}' relies on single-pass VLM judgment without deterministic corroboration; human review recommended."
+                            )
+
                         assessments_by_id[c.criterion_id] = CriterionAssessment(
                             criterion_id=c.criterion_id,
                             original_requirement=c.description,
                             category=c.category,
                             mandatory=c.mandatory,
-                            inspection_method="local_vlm",
-                            assessor="local_vlm",
+                            verification_eligibility=elig,
+                            inspection_method="region_localization" if (overridden or (corroborated and loc_objs)) else "local_vlm",
+                            independent_corroboration=bool(corroborated or overridden),
+                            assessor="region_localization" if overridden else "local_vlm",
                             observed_evidence=obs,
                             status=status,
                             artifact_frame=str(p),

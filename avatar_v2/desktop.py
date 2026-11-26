@@ -918,11 +918,64 @@ class DesktopAPI(StudioMixin, PresenterMixin):
 
         item.runtime["verification_record"]["inspection_result"] = result.model_dump()
         summary = result.compact_ui_summary()
+        correction_summary: dict[str, Any] | None = None
+
+        # Optional host-bounded Sprint 8 automated correction when explicitly requested on local jobs.
+        if (
+            item.runtime.get("auto_correct")
+            and result.overall_decision == "needs_correction"
+            and item.provider_config.provider == "comfyui"
+            and item.status != "cancelled"
+        ):
+            from .correction_engine import CorrectionCoordinator
+            import threading
+
+            cancel_ev = threading.Event()
+            if item.status == "cancelled":
+                cancel_ev.set()
+
+            def _status_cb(label: str) -> None:
+                item.runtime["phase_label"] = label
+                if item.status == "cancelled":
+                    cancel_ev.set()
+
+            def _re_inspect(cand_path: str, ver_rec: GenerationVerificationRecord):
+                p_cand = Path(cand_path)
+                if p_cand.suffix.lower() in VIDEO_SUFFIXES or ver_rec.expected_output.media_kind == "video":
+                    return VideoInspector(ollama_url=ollama_url, planner=planner).inspect_video(
+                        p_cand, ver_rec, use_vlm=use_vlm, preferred_model=preferred_model, comfy_models_warm=False, allow_sequential_gpu=bool(use_vlm)
+                    )
+                return VisualInspector(ollama_url=ollama_url, planner=planner).inspect_image(
+                    p_cand, ver_rec, use_vlm=use_vlm, preferred_model=preferred_model, comfy_models_warm=False, allow_sequential_gpu=bool(use_vlm)
+                )
+
+            gen_hook = item.runtime.get("_corrective_generate_hook")
+            if callable(gen_hook):
+                coordinator = CorrectionCoordinator(planner=planner)
+                session = coordinator.run_bounded_correction(
+                    record=record,
+                    original_output_id=item.id,
+                    original_output_path=str(target),
+                    initial_inspection=result,
+                    generate_fn=gen_hook,
+                    inspect_fn=_re_inspect,
+                    cancel_event=cancel_ev,
+                    status_callback=_status_cb,
+                )
+                item.runtime["verification_record"]["correction_session"] = session.model_dump()
+                for cpath in session.all_candidate_paths:
+                    if cpath and cpath not in item.outputs and Path(cpath).is_file():
+                        item.outputs.append(cpath)
+                correction_summary = session.compact_ui_summary()
+                summary["ui_status"] = session.ui_status
+                summary["ui_status_label"] = session.ui_status_label
+
         return {
             "ok": True,
             "decision": result.overall_decision,
             "advisory": True,
             "inspection": summary,
+            "correction": correction_summary,
         }
 
     def _candidate_qa(self, item: QueuedRender) -> dict[str, Any]:
