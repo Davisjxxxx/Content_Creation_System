@@ -388,3 +388,84 @@ class ResourcePlanner:
             "respect_retention": False,
             "reason": f"post-render:{job_status}",
         }
+
+    def plan_visual_inspection(
+        self,
+        *,
+        requires_vlm: bool,
+        active_generation_running: bool = False,
+        comfy_models_warm: bool = False,
+        current_model_id: str | None = None,
+        upcoming_model_id: str | None = None,
+        snapshot: ResourceSnapshot | None = None,
+        allow_sequential_gpu: bool = False,
+        batch_queue_depth: int = 0,
+    ) -> dict[str, Any]:
+        """Coordinate Sprint 7 visual inspection placement without evicting warm FLUX/Wan weights."""
+        snap = snapshot if snapshot is not None else self.guard.evaluate()
+        if not requires_vlm:
+            return {
+                "execution_mode": "cpu_deterministic_only",
+                "num_gpu": 0,
+                "prefer_lightweight_model": True,
+                "verify_vram_release": False,
+                "evict_comfy_models": False,
+                "reason": "All requirements covered by fast CPU deterministic/structural inspection; VLM not needed.",
+            }
+
+        upcoming_same = bool(current_model_id and upcoming_model_id and current_model_id == upcoming_model_id)
+        if snap.ram_severity == "emergency":
+            return {
+                "execution_mode": "cpu_deterministic_only",
+                "num_gpu": 0,
+                "prefer_lightweight_model": True,
+                "verify_vram_release": False,
+                "evict_comfy_models": False,
+                "reason": "Emergency physical RAM pressure: skipping local VLM and running deterministic checks only.",
+            }
+        if (active_generation_running or comfy_models_warm or upcoming_same) and batch_queue_depth >= 3:
+            return {
+                "execution_mode": "deferred_batch",
+                "num_gpu": 0,
+                "prefer_lightweight_model": True,
+                "verify_vram_release": False,
+                "evict_comfy_models": False,
+                "reason": (
+                    "Multi-job batch queued with warm ComfyUI models: deferring VLM inspection so FLUX/Wan "
+                    "throughput is preserved without cold reloads."
+                ),
+            }
+        if active_generation_running or comfy_models_warm or upcoming_same or snap.temp_severity == "emergency":
+            return {
+                "execution_mode": "cpu_vlm",
+                "num_gpu": 0,
+                "prefer_lightweight_model": True,
+                "verify_vram_release": False,
+                "evict_comfy_models": False,
+                "reason": (
+                    "Warm/active ComfyUI models or GPU thermal limit: running lightweight local VLM on CPU "
+                    "(num_gpu=0) to avoid evicting FLUX/Wan weights."
+                ),
+            }
+
+        gpu_free_mb = min((g.free_mb for g in snap.gpus), default=6500)
+        if allow_sequential_gpu and gpu_free_mb >= 4200:
+            return {
+                "execution_mode": "sequential_gpu_vlm",
+                "num_gpu": -1,
+                "prefer_lightweight_model": gpu_free_mb < 6200,
+                "verify_vram_release": True,
+                "evict_comfy_models": False,
+                "reason": (
+                    f"GPU cold with {gpu_free_mb} MB free VRAM: running sequential GPU VLM with "
+                    "verified VRAM release before any subsequent generation."
+                ),
+            }
+        return {
+            "execution_mode": "cpu_vlm",
+            "num_gpu": 0,
+            "prefer_lightweight_model": True,
+            "verify_vram_release": False,
+            "evict_comfy_models": False,
+            "reason": "Default zero-contention CPU-only local VLM inspection (num_gpu=0).",
+        }

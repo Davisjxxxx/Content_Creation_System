@@ -870,6 +870,61 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    def _run_visual_inspection(self, item: QueuedRender) -> dict[str, Any]:
+        """Run non-intrusive Sprint 7 local visual inspection behind the existing frontend."""
+        from .inspection_contract import GenerationVerificationRecord
+        from .video_inspector import VideoInspector
+        from .visual_inspector import VIDEO_SUFFIXES, VisualInspector
+
+        raw_record = item.runtime.get("verification_record")
+        if not isinstance(raw_record, dict) or not item.outputs:
+            return {"ok": False, "decision": "unavailable", "advisory": True}
+        try:
+            record = GenerationVerificationRecord.model_validate(raw_record)
+        except Exception as exc:
+            return {"ok": False, "decision": "unavailable", "advisory": True, "error": str(exc)}
+
+        target = Path(str(item.outputs[-1])).expanduser()
+        if not target.is_file():
+            return {"ok": False, "decision": "unavailable", "advisory": True, "error": "Output file missing."}
+
+        settings = self._settings()
+        ollama_url = str(settings.get("vision_classifier_url") or DEFAULT_SETTINGS["vision_classifier_url"])
+        preferred_model = str(item.runtime.get("visual_inspection_model") or "") or None
+        use_vlm = bool(item.runtime.get("visual_inspection_vlm", False))
+        planner = getattr(self.queue, "resource_planner", None)
+        comfy_warm = bool(getattr(self.queue, "_last_local_model_id", None))
+
+        if target.suffix.lower() in VIDEO_SUFFIXES or record.expected_output.media_kind == "video":
+            inspector = VideoInspector(ollama_url=ollama_url, planner=planner)
+            result = inspector.inspect_video(
+                target,
+                record,
+                use_vlm=use_vlm,
+                preferred_model=preferred_model,
+                comfy_models_warm=comfy_warm,
+                allow_sequential_gpu=False,
+            )
+        else:
+            inspector_img = VisualInspector(ollama_url=ollama_url, planner=planner)
+            result = inspector_img.inspect_image(
+                target,
+                record,
+                use_vlm=use_vlm,
+                preferred_model=preferred_model,
+                comfy_models_warm=comfy_warm,
+                allow_sequential_gpu=False,
+            )
+
+        item.runtime["verification_record"]["inspection_result"] = result.model_dump()
+        summary = result.compact_ui_summary()
+        return {
+            "ok": True,
+            "decision": result.overall_decision,
+            "advisory": True,
+            "inspection": summary,
+        }
+
     def _candidate_qa(self, item: QueuedRender) -> dict[str, Any]:
         """Compare a finished designer still after H3 has been unloaded."""
         if item.provider_config.provider == "runway":
@@ -881,6 +936,8 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             return self._studio_finish_scene(item)
         if item.runtime.get("studio_voiceover"):
             return self._studio_mux_voiceover(item)
+        if item.runtime.get("verification_record") and not item.runtime.get("candidate_qa_reference"):
+            return self._run_visual_inspection(item)
         source = Path(str(item.runtime.get("candidate_qa_reference") or "")).expanduser()
         candidate = next(
             (

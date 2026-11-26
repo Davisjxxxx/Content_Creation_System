@@ -1982,6 +1982,8 @@ class StudioMixin:
             if not outputs and not failed:
                 continue
             receipt = item.get("cloud_receipt") or {}
+            qa_data = item.get("candidate_qa") if isinstance(item.get("candidate_qa"), dict) else {}
+            inspection = qa_data.get("inspection") if isinstance(qa_data.get("inspection"), dict) else None
             results.append(
                 {
                     "id": item.get("id"),
@@ -1995,6 +1997,7 @@ class StudioMixin:
                     "charge_status": "none" if local else receipt.get("charge_status"),
                     "local": local,
                     "source": source,
+                    "inspection": inspection,
                 }
             )
             if len(results) >= limit:

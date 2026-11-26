@@ -467,7 +467,7 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
     <span class="row" id="viewerSpeedBtns" style="gap:4px"><button class="mini" data-rate="0.25" onclick="viewerSetRate(0.25)">0.25×</button><button class="mini" data-rate="0.5" onclick="viewerSetRate(0.5)">0.5×</button><button class="mini on" data-rate="1" onclick="viewerSetRate(1)">1×</button><button class="mini" data-rate="1.5" onclick="viewerSetRate(1.5)">1.5×</button></span>
     <span class="viewer-time" id="viewerTime">0:00.0 / 0:00.0</span>
   </div>
-  <div class="viewer-bottom"><div class="viewer-actions" id="viewerActions"></div><div class="tiny" id="viewerHelp">← → compare · Enter keep/use · Delete toss · Z or click zoom · Esc close</div></div>
+  <div class="viewer-bottom"><div class="viewer-actions" id="viewerActions"></div><details id="viewerInspection" style="display:none;max-width:520px;font-size:12px;color:var(--muted)"><summary id="viewerInspectionSummary" style="cursor:pointer"></summary><div id="viewerInspectionBody" style="margin-top:6px;line-height:1.45"></div></details><div class="tiny" id="viewerHelp">← → compare · Enter keep/use · Delete toss · Z or click zoom · Esc close</div></div>
 </div>
 
 <script>
@@ -777,11 +777,15 @@ async function stDelete(path,tile){let r;try{r=await window.pywebview.api.studio
   ['moveImage','sceneImage','actImage','anglesImage'].forEach(k=>{if(st[k]===path)st[k]=''});
   if($('view-library').classList.contains('active'))libLoad();else stLoad();
   const cur=viewer.items[viewer.index];if(cur&&cur.path===path)viewerClose()}
-function mediaViewerItems(list){return list.filter(x=>x.kind==='image'||x.kind==='video').map(x=>({
+function mediaViewerItems(list){return list.filter(x=>x.kind==='image'||x.kind==='video').map(x=>{
+  const r=x.result||x,ins=r&&r.inspection?r.inspection:null;
+  const baseMeta=stWhen(r?r.finished_at:x.finished_at);
+  return {
   path:x.path,
   kind:x.kind,
   title:x.result?x.result.label:x.label,
-  meta:stWhen(x.result?x.result.finished_at:x.finished_at),
+  meta:ins&&ins.ui_status_label?`${baseMeta} · ${ins.ui_status_label}`:baseMeta,
+  inspection:ins,
   actions:x.kind==='image'?[
     {label:'Make a scene from this',run:async()=>{viewerClose();stSceneFrom(x.path);return 'close'}},
     {label:'Animate this photo',run:async()=>{viewerClose();stAnimate(x.path);return 'close'}},
@@ -791,17 +795,18 @@ function mediaViewerItems(list){return list.filter(x=>x.kind==='image'||x.kind==
   ]:[
     {label:'Delete',title:'Remove this from My stuff for good',run:async()=>{await stDelete(x.path);return 'close'}}
   ]
-}))}
+}})}
 function renderResultTiles(root,list,limit){
   root.innerHTML='';const items=list.slice(0,limit||60);
   if(!items.length){root.innerHTML='<div class="empty">Nothing here yet.</div>';return}
   const viewable=mediaViewerItems(items);
   items.forEach(x=>{const r=x.result||x;const isImg=x.kind==='image',isVid=x.kind==='video';
     const src=r.source||x.source,origin=src==='old'?' · made with the old app':src==='gpu'?' · free (your GPU)':(r.credits!==null&&r.credits!==undefined?' · '+stCredits(r.credits):'');
+    const qaTag=r.inspection&&r.inspection.ui_status_label?` · ${r.inspection.ui_status_label}`:'';
     let tile;
     const remove=()=>stDelete(x.path,tile);
     const openInViewer=()=>viewerOpen(viewable,Math.max(0,viewable.findIndex(v=>v.path===x.path)));
-    tile=makeTile(x.path,x.kind,{title:r.label,sub:`${stWhen(r.finished_at)}${origin}`,
+    tile=makeTile(x.path,x.kind,{title:r.label,sub:`${stWhen(r.finished_at)}${origin}${qaTag}`,
       onOpen:(isImg||isVid)?openInViewer:()=>openLocalPath(x.path),
       actions:[...(isImg?[{label:'Animate',title:'Use this picture for a moving clip',run:()=>stAnimate(x.path)},{label:'Scene',title:'Make an offline video scene from this picture',run:()=>stSceneFrom(x.path)},{label:'Presenter option',title:'Add this to her face options in the look recipe',run:()=>stPresenterAdd(x.path)}]:isVid?[{label:'Watch',title:'Open in the viewer — stays open so you can replay and review',run:openInViewer}]:[{label:'Play',run:()=>openLocalPath(x.path)}]),{label:'Delete',title:'Remove this from My stuff for good',run:remove}]});
     root.appendChild(tile)});
@@ -1324,6 +1329,17 @@ async function viewerShow(){
   loading.textContent=isVid?'Loading video…':'Loading full size…';loading.style.display='grid';
   $('viewerMeta').textContent=[n>1?`${viewer.index+1} of ${n}`:'',it.meta||''].filter(Boolean).join(' · ');
   const root=$('viewerActions');root.innerHTML='';(it.actions||[]).forEach(a=>{const b=document.createElement('button');b.className='btn'+(a.primary?' primary':'')+(a.toss?' danger':'');b.textContent=a.label;b.onclick=()=>viewerAct(a);root.appendChild(b)});
+  const insBox=$('viewerInspection'),insSum=$('viewerInspectionSummary'),insBody=$('viewerInspectionBody');
+  if(insBox&&insSum&&insBody){
+    const ins=it.inspection;
+    if(ins&&ins.ui_status_label){
+      insBox.style.display='block';insBox.open=false;
+      insSum.textContent=`Quality check: ${ins.ui_status_label} (${ins.passed_count||0} passed · ${ins.failed_count||0} failed · ${ins.uncertain_count||0} uncertain)`;
+      const rows=(ins.criteria||[]).map(c=>`<div><b>[${esc(c.status)}]</b> ${esc(c.original_requirement||c.criterion_id)}${c.observed_evidence?' — '+esc(c.observed_evidence):''}</div>`).join('');
+      const recs=(ins.recommendations||[]).map(r=>`<div style="margin-top:4px"><i>Recommendation:</i> ${esc(r.recommended_action)}</div>`).join('');
+      insBody.innerHTML=rows+recs||esc(ins.ui_status_label);
+    }else{insBox.style.display='none';insBody.innerHTML=''}
+  }
   if(isVid){
     let data=viewer.vid.get(it.path);
     if(!data){let r;try{r=await window.pywebview.api.studio_video(it.path)}catch(e){r={ok:false,error:String(e)}}if(viewer.items[viewer.index]!==it)return;if(!r.ok){loading.textContent=r.error||'Could not open this video.';return}data=r;viewer.vid.set(it.path,r);if(viewer.vid.size>24)viewer.vid.delete(viewer.vid.keys().next().value)}

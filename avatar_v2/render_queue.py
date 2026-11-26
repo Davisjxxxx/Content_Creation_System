@@ -814,11 +814,8 @@ class RenderQueue:
         item.output_hashes = hash_files(item.outputs)
 
     def _run_candidate_qa(self, item: QueuedRender) -> None:
-        if (
-            item.status != "done"
-            or not item.runtime.get("candidate_qa")
-            or self.candidate_qa_runner is None
-        ):
+        has_hook = bool(item.runtime.get("candidate_qa") or item.runtime.get("verification_record"))
+        if item.status != "done" or not has_hook or self.candidate_qa_runner is None:
             return
         try:
             item.candidate_qa = self.candidate_qa_runner(item)
