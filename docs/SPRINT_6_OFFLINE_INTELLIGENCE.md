@@ -1,7 +1,7 @@
 # Sprint 6 — Offline Local Intelligence, Capability-Aware Routing & Visual QA Contract
 
 **Date:** 2026-11-25  
-**Status:** Software-Verified (`384` passing tests, `0` failures); Live Local Ollama Benchmark (`eval_local_llm_intelligence.py`) queued immediately after the running Sprint 5 13-category Prompt Adherence Baseline (`task-641`) finishes so GPU/CPU measurements remain unconfounded.
+**Status:** Software-Verified (`384` passing tests, `0` failures) + Live 4-Model Local Ollama CPU vs Sequential-GPU Benchmark Completed (`~/.avatar_v2/benchmarks/sprint6_local_llm_eval.json`)
 
 ---
 
@@ -47,7 +47,29 @@ Automatic / Guided / Script User Prompt (+ optional starter & SubjectReferenceSe
 - **Untrusted LLM Isolation:** `LocalOllamaClient` enforces loopback-only endpoints (`127.0.0.1` / `localhost`). LLM suggestions are validated against `StructuredPromptSpec.detect_conflicts()`, `policy.depicts_minor`, and unsafe-directive filters (blocking cloud/Runway or shell injection), with deterministic fallback whenever Ollama is offline, slow, or returns malformed JSON.
 - **Explicit Starter Preservation:** Multi-stage video plans never silently overwrite a user-supplied starter image; they distinguish `origin="user_source"` from `origin="generated_intermediate"` in `GenerationVerificationRecord`.
 
-## 4. Pending Live Measurements (Unconfounded Execution Queue)
+## 4. Live Controlled Local Ollama Benchmark Results (`scripts/eval_local_llm_intelligence.py`)
 
-1. Complete Sprint 5 13-category Prompt Adherence Baseline (`task-641`, running live on isolated `:8199`, `adh_01`–`adh_03` already succeeded).
-2. Run `scripts/eval_local_llm_intelligence.py --mode both` on `llama3.2:3b`, `llama3.1:8b`, `qwen3:8b`, and `qwen3.5:9b` (CPU-only `num_gpu=0` vs sequential GPU `keep_alive=0s`) once `:8199` finishes so CPU/GPU timings are completely unconfounded, and record empirical model selection results here.
+Evaluated on the idle workstation across 6 challenging semantic + adversarial prompts (exact counts, typography, spatial relations, editing, front-to-back video turns, and prompt-injection attempting Runway cloud / shell commands). Raw data: `~/.avatar_v2/benchmarks/sprint6_local_llm_eval.json`.
+
+| Model | Mode | JSON Reliability | Intent Accuracy | Prompt Preservation | Safety Compliance | Mean Latency | Post-Call VRAM | Selection Verdict |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| **`qwen3:8b`** (`5.2 GB`) | **Sequential GPU** | **`1.00`** | **`1.00`** | **`1.00`** | **`1.00`** | **`4.22 s`** | `6,312 MB`* | **Primary default (cold GPU / sequential)** |
+| **`qwen3:8b`** (`5.2 GB`) | **CPU (`num_gpu=0`)** | **`1.00`** | **`1.00`** | **`1.00`** | **`1.00`** | `24.20 s` | **`802 MB`** | **Primary 8B CPU fallback (0 MB VRAM)** |
+| **`llama3.2:3b`** (`2.0 GB`) | **CPU (`num_gpu=0`)** | **`1.00`** | **`1.00`** | **`1.00`** | **`1.00`** | **`13.67 s`** | **`813 MB`** | **Fastest CPU-only option when ComfyUI is warm** |
+| **`llama3.2:3b`** (`2.0 GB`) | Sequential GPU | `1.00` | `1.00` | `1.00` | `1.00` | `6.20 s` | `3,615 MB`* | Good secondary GPU fallback |
+| **`llama3.1:8b`** (`4.9 GB`) | CPU (`num_gpu=0`) | `1.00` | `1.00` | `1.00` | `1.00` | `25.08 s` | `862 MB` | Strong runner-up |
+| **`llama3.1:8b`** (`4.9 GB`) | Sequential GPU | `1.00` | `1.00` | `1.00` | `1.00` | `5.79 s` | `6,186 MB`* | Strong runner-up |
+| `qwen3.5:9b` (`6.6 GB`) | CPU (`num_gpu=0`) | `0.833` | `1.00` | `1.00` | `1.00` | `37.64 s` | `802 MB` | **Deprioritized** (slowest + 1 CPU timeout) |
+| `qwen3.5:9b` (`6.6 GB`) | Sequential GPU | `1.00` | `1.00` | `1.00` | `1.00` | `14.97 s` | `6,958 MB`* | **Deprioritized** (3.5× slower than `qwen3:8b`) |
+
+*\*Note on GPU `post_vram`: Ollama unloads GPU weights asynchronously shortly after returning HTTP 200. When ComfyUI has warm FLUX.2 9B weights resident (`5.5 GB` VRAM), running an 8B LLM on GPU would evict FLUX.2 9B (costing `+20s` cold reload + `+4.2 GB` RSS), completely erasing any LLM GPU speedup. Therefore `choose_llm_execution_schedule()` defaults to **CPU-only (`num_gpu=0`) whenever ComfyUI is warm or active** (`0 MB` VRAM disruption), and only permits sequential GPU (`keep_alive=0`) when the GPU is already cold.*
+
+**Empirical Model Selection Justification (Section 3):**
+- Selected **`qwen3:8b`** as primary structured-intelligence model and **`llama3.2:3b`** as fast lightweight CPU option strictly on measured latency + 100% JSON/intent/safety reliability — explicitly deprioritizing newer/larger `qwen3.5:9b` based on measured data.
+- **No model downloads required.**
+
+## 5. Known Limitations & Next-Sprint Readiness
+
+- Formal human scoring (`passed` / `subjective_quality_1_to_5`) of the immutable 13-category baseline and multi-view outputs remains a human evaluation step (intentionally never fabricated).
+- Adaptive multi-reference pixel budgets (`1.0 / 0.65 / 0.5 MP`) are empirically calibrated provisional defaults for 8 GB VRAM; formal A/B human quality comparison at `0.5 MP` vs `1.0 MP` can be evaluated further as needed.
+- Sprint 7 (Local VLM Visual Inspection using installed `qwen3-vl:8b-instruct` / `4b` / `2b`) and Sprint 8 (Bounded Corrective Regeneration) integrate directly against `GenerationVerificationRecord` (`avatar_v2/inspection_contract.py`).

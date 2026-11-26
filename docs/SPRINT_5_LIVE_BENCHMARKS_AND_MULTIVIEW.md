@@ -82,6 +82,24 @@ Raw data & outputs: `~/.avatar_v2/benchmarks/phase_a2_multiview_adherence/phase_
 
 ---
 
-## 4. 13-Category Prompt Adherence Baseline (`phase_a2_adherence_results.json`)
+## 4. 13-Category Prompt Adherence Baseline — Closed & Immutable (`13 / 13` Executions Succeeded, `0` OOM)
 
-Status: Executing live on isolated ComfyUI `:8199` (`task-641`) across all 10 FLUX.2 9B cases + 3 Wan 2.2 14B cases; objective requirement checklists and subjective `1–5` visual quality scores are preserved unfilled (`null`) for honest human evaluation (never fabricated).
+Raw immutable baseline & outputs: `~/.avatar_v2/benchmarks/phase_a2_multiview_adherence/phase_a2_adherence_results.json` (do **not** overwrite with improved Sprint 6–8 runs).
+
+| Case ID | Category | Model | Elapsed (s) | Peak VRAM (MB) | Peak RSS (MB) | Temp | Execution vs Adherence Note |
+|---|---|---|---:|---:|---:|---:|---|
+| `adh_01_photorealism` | photorealism | FLUX.2 9B | `253.02` | `7,425` | `13,969` | `72°C` | Executed OK; human rubric unfilled (`null`) |
+| `adh_02_composition` | composition | FLUX.2 9B | `230.58` | `7,433` | `13,691` | `73°C` | Executed OK; human rubric unfilled (`null`) |
+| `adh_03_quantities` | object_quantities | FLUX.2 9B | `228.74` | `7,191` | `13,329` | `71°C` | **Executed OK, adherence gap observed:** rendered 2 mugs + 2 bowls instead of exact requested count (baseline target for Sprints 7–8) |
+| `adh_04_spatial` | spatial_relationships | FLUX.2 9B | `229.59` | `7,446` | `13,282` | `72°C` | Executed OK; visually verified lamp left, green vase right, tall fern behind |
+| `adh_05_colors` | colors | FLUX.2 9B | `227.70` | `7,498` | `13,691` | `72°C` | Executed OK; human rubric unfilled (`null`) |
+| `adh_06_clothing` | clothing_appearance | FLUX.2 9B | `227.45` | `7,113` | `13,279` | `72°C` | Executed OK; human rubric unfilled (`null`) |
+| `adh_07_typography` | typography | FLUX.2 9B | `228.44` | `7,277` | `13,616` | `72°C` | Executed OK; visually verified crisp `"STUDIO 04"` door plaque |
+| `adh_08_character_consistency` | character_consistency | FLUX.2 9B (1 ref) | `402.77` | `6,167` | `14,120` | `72°C` | Executed OK; human rubric unfilled (`null`) |
+| `adh_09_reference_adherence` | reference_adherence | FLUX.2 9B (1 ref) | `401.61` | `6,232` | `14,032` | `72°C` | Executed OK; human rubric unfilled (`null`) |
+| `adh_10_complex_nl` | complex_natural_language | FLUX.2 9B | `227.46` | `7,466` | `13,695` | `71°C` | Executed OK; visually verified architect, blueprints, silver pencil, dual tungsten/twilight, zero electronics |
+| `adh_11_video_motion` | video_motion | Wan 2.2 14B | `309.55` | `7,738` | `35,998` | `73°C` | Executed OK (cold after `/free`); human rubric unfilled (`null`) |
+| `adh_12_camera_movement` | camera_movement | Wan 2.2 14B | `281.88` | `7,756` | `35,093` | `75°C` | Executed OK (warm consecutive Wan 14B: `-27.7s`); human rubric unfilled (`null`) |
+| `adh_13_temporal_consistency` | temporal_consistency | Wan 2.2 14B | `278.86` | `7,744` | `30,321` | `73°C` | Executed OK (warm consecutive Wan 14B: `-30.7s`); human rubric unfilled (`null`) |
+
+**Repeated Stability Finding:** Across 10 consecutive FLUX.2 9B stills + 3 consecutive Wan 2.2 14B clips (~1 hour continuous run), warm FLUX.2 9B latency stayed tightly bounded (`227.45–230.58s`, `<1.4%` variance), host RSS stayed flat (`13.3–13.7 GB`, zero memory leak), and GPU temperature held `71–75°C`. Total live GPU trials across Phase A1 + A2: **`36 / 36` succeeded (`0` OOM, `0` crashes)**.

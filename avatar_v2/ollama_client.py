@@ -25,14 +25,18 @@ from .resource_monitor import ResourceSnapshot
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
-# Preference order for fast, reliable structured-JSON instruction models already installed locally.
+# Empirically ordered installed local text models (Sprint 6 live benchmark on RTX 4070 + i9-13980HX):
+# - qwen3:8b: 100% JSON/intent/safety, fastest 8B (4.2s GPU / 24.2s CPU)
+# - llama3.1:8b: 100% JSON/intent/safety (5.8s GPU / 25.1s CPU)
+# - llama3.2:3b: 100% JSON/intent/safety, fastest lightweight CPU (13.7s CPU / 0 MB VRAM)
+# - qwen3.5:9b deprioritized (37.6s CPU with 83.3% JSON reliability, 15.0s GPU)
 PREFERRED_TEXT_MODELS: tuple[str, ...] = (
-    "llama3.1:8b",
     "qwen3:8b",
-    "qwen3.5:9b",
+    "llama3.1:8b",
+    "llama3.2:3b",
     "ministral-3:8b",
     "mistral:7b-instruct-q4_K_M",
-    "llama3.2:3b",
+    "qwen3.5:9b",
 )
 
 _THINKING_FAMILIES = frozenset({"qwen3", "qwen35", "deepseek-r1"})
@@ -259,11 +263,12 @@ class LocalOllamaClient:
         if sched.mode == "disabled":
             return LLMCallResult(ok=False, model=model, mode=sched.mode, latency_ms=0.0, error=sched.reason)
 
+        keep_alive_val: int | str = 0 if str(sched.keep_alive) in {"0", "0s"} else sched.keep_alive
         body: dict[str, Any] = {
             "model": model,
             "stream": False,
             "format": "json",
-            "keep_alive": sched.keep_alive,
+            "keep_alive": keep_alive_val,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
