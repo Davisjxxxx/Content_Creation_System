@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -262,10 +263,14 @@ def _reference_bindings(job: RenderJob, resolved: dict[str, Any] | None = None) 
     return summary
 
 
+_RUNWAY_BUDGET_LOCK = threading.Lock()
+
+
 class DesktopAPI(StudioMixin, PresenterMixin):
     def __init__(self) -> None:
         self._self_window = None
         self._owned_comfy_handle: OwnedProcessHandle | None = None
+        self._runway_budget_lock = threading.Lock()
         APP_HOME.mkdir(parents=True, exist_ok=True)
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
         HISTORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -893,14 +898,20 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         from .ollama_client import verify_ollama_vram_released
         from . import offline_builder as ob
 
-        # Charge shared script run budget if this job originated from Script mode!
+        # Charge shared script run budget if this job originated from Script mode (RC-11 fail-closed)!
         script_run_id = str(item.runtime.get("script_run_id") or "")
-        if script_run_id and hasattr(self, "_script_run_manager") and self._script_run_manager is not None:
-            broker = getattr(self._script_run_manager, "_active_broker", None)
+        if script_run_id:
+            from .script_broker import charge_durable_script_budget
+
+            mgr = getattr(self, "_script_run_manager", None)
+            broker = getattr(mgr, "_active_broker", None) if mgr is not None else None
             if broker is not None and getattr(broker, "run_id", "") == script_run_id:
                 ok_budget, reason = broker.charge_corrective_attempt(item.id, note=step.strategy)
-                if not ok_budget:
-                    raise RuntimeError(reason)
+            else:
+                runs_dir = getattr(mgr, "runs_dir", None) if mgr is not None else (APP_HOME / "script_runs")
+                ok_budget, reason = charge_durable_script_budget(runs_dir, script_run_id, item.id, note=step.strategy)
+            if not ok_budget:
+                raise RuntimeError(reason)
 
         # Always verify Ollama VRAM is released before submitting an incompatible ComfyUI job!
         settings = self._settings()
@@ -2708,37 +2719,38 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             builds = self._runway_builds(payload)
         except (runway_api.RunwayError, PolicyError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
-        settings = builds[0]["build"]["settings"]
-        missing_key = self._runway_gate(settings)
-        if missing_key:
-            return {"ok": False, "error": missing_key}
-        total = sum(entry["build"]["estimate"]["credits"] for entry in builds)
-        limit_error = self._runway_limit_error(builds, settings, total)
-        if limit_error:
-            return {"ok": False, "error": limit_error, "budget": self._budget_status(settings, total)}
-        budget = self._budget_status(settings, total)
-        base_label = str(payload.get("label") or "").strip()
-        items = []
-        for entry in builds:
-            build = entry["build"]
-            label = base_label or f"runway · {build['model'].label}"
-            if entry["label"]:
-                label = f"{base_label or ('presenter variation' if entry['key'] else 'runway still')} · {entry['label']}"
-            items.append(self._runway_queue_item(build, payload, label))
-        queue_ids = self.queue.add_many(items)
-        return {
-            "ok": True,
-            "queue_id": queue_ids[0],
-            "queued": [
-                {"queue_id": queue_id, "variation": entry["key"], "label": entry["label"]}
-                for queue_id, entry in zip(queue_ids, builds)
-            ],
-            "total_credits": total,
-            "budget": budget,
-            "unresolved": self._unresolved_summary(),
-            "runtime": builds[0]["build"]["runtime"],
-            "warnings": builds[0]["build"]["warnings"],
-        }
+        with getattr(self, "_runway_budget_lock", _RUNWAY_BUDGET_LOCK):
+            settings = builds[0]["build"]["settings"]
+            missing_key = self._runway_gate(settings)
+            if missing_key:
+                return {"ok": False, "error": missing_key}
+            total = sum(entry["build"]["estimate"]["credits"] for entry in builds)
+            limit_error = self._runway_limit_error(builds, settings, total)
+            if limit_error:
+                return {"ok": False, "error": limit_error, "budget": self._budget_status(settings, total)}
+            budget = self._budget_status(settings, total)
+            base_label = str(payload.get("label") or "").strip()
+            items = []
+            for entry in builds:
+                build = entry["build"]
+                label = base_label or f"runway · {build['model'].label}"
+                if entry["label"]:
+                    label = f"{base_label or ('presenter variation' if entry['key'] else 'runway still')} · {entry['label']}"
+                items.append(self._runway_queue_item(build, payload, label))
+            queue_ids = self.queue.add_many(items)
+            return {
+                "ok": True,
+                "queue_id": queue_ids[0],
+                "queued": [
+                    {"queue_id": queue_id, "variation": entry["key"], "label": entry["label"]}
+                    for queue_id, entry in zip(queue_ids, builds)
+                ],
+                "total_credits": total,
+                "budget": budget,
+                "unresolved": self._unresolved_summary(),
+                "runtime": builds[0]["build"]["runtime"],
+                "warnings": builds[0]["build"]["warnings"],
+            }
 
     def _runway_avatar_index(self) -> dict[str, Any]:
         data = _read_json(RUNWAY_AVATARS_PATH, {})

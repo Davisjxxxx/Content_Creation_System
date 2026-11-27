@@ -109,16 +109,27 @@ class SandboxProbe:
         return asdict(self)
 
 
-def probe_sandbox_support(*, bwrap_override: str | None = None) -> SandboxProbe:
-    """Verify actual operating-system Bubblewrap support without modifying system security config."""
+def probe_sandbox_support(
+    *,
+    bwrap_override: str | None = None,
+    prlimit_override: str | None = None,
+) -> SandboxProbe:
+    """Verify actual operating-system Bubblewrap and prlimit support (fails closed if missing, RC-17)."""
     bwrap = bwrap_override if bwrap_override is not None else (shutil.which("bwrap") or "")
-    prlimit = shutil.which("prlimit") or ""
+    prlimit = prlimit_override if prlimit_override is not None else (shutil.which("prlimit") or "")
     if not bwrap or not Path(bwrap).is_file():
         return SandboxProbe(
             available=False,
             bwrap_path=bwrap,
             prlimit_path=prlimit,
             error="Bubblewrap (bwrap) is not installed; refusing unrestricted script execution.",
+        )
+    if not prlimit or not Path(prlimit).is_file():
+        return SandboxProbe(
+            available=False,
+            bwrap_path=bwrap,
+            prlimit_path=prlimit,
+            error="OS resource limiter (prlimit) is not installed; refusing unbounded script execution.",
         )
 
     version = ""
@@ -316,8 +327,10 @@ class ScriptRunManager:
         planner: ResourcePlanner | None = None,
         python_exe: str | None = None,
         bwrap_override: str | None = None,
+        prlimit_override: str | None = None,
         snapshot_override: Any = None,
         storage_check_override: Any = None,
+        comfyui_dir: Path | None = None,
     ) -> None:
         self.runs_dir = Path(runs_dir)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -328,10 +341,13 @@ class ScriptRunManager:
         self._planner = planner or ResourcePlanner()
         self._python_exe = resolve_script_python(python_exe)
         self._bwrap_override = bwrap_override
+        self._prlimit_override = prlimit_override
         self._snapshot_override = snapshot_override
         self._storage_check_override = storage_check_override
+        self._comfyui_dir = Path(comfyui_dir) if comfyui_dir is not None else None
 
         self._lock = threading.RLock()
+        self._start_lock = threading.Lock()
         self._selected_report: ScriptInspectionReport | None = None
         self._selected_bytes: bytes | None = None
         self._selected_configs: list[str] = []
@@ -391,9 +407,34 @@ class ScriptRunManager:
     ) -> dict[str, Any]:
         """Explicitly authorize and launch a Python script inside Bubblewrap isolation.
 
-        Enforces content-hash integrity so the exact validated bytes are snapshotted read-only
-        into the sandbox and post-validation script mutations are refused cleanly.
+        Serialized via ``_start_lock`` so concurrent starts cannot race past active-run admission.
         """
+        with self._start_lock:
+            return self._start_sandboxed_run_serialized(
+                script_path=script_path,
+                max_items=max_items,
+                extended_authorized=extended_authorized,
+                max_concurrent=max_concurrent,
+                references=references,
+                config_files=config_files,
+                limits=limits,
+                allow_review_classification=allow_review_classification,
+                expected_sha256=expected_sha256,
+            )
+
+    def _start_sandboxed_run_serialized(
+        self,
+        *,
+        script_path: str | Path | None = None,
+        max_items: int = DEFAULT_MAX_ITEMS,
+        extended_authorized: bool = False,
+        max_concurrent: int = DEFAULT_MAX_CONCURRENT,
+        references: list[str] | None = None,
+        config_files: list[str] | None = None,
+        limits: SandboxLimits = SandboxLimits(),
+        allow_review_classification: bool = False,
+        expected_sha256: str | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
             if self._active_record is not None and self._active_record.status in {"running", "paused"}:
                 return {"ok": False, "error": "A script run is already active. Stop it before starting another."}
@@ -451,8 +492,11 @@ class ScriptRunManager:
                 "report": report.public(),
             }
 
-        # Fail CLOSED if Bubblewrap is unavailable or broken on this host!
-        probe = probe_sandbox_support(bwrap_override=self._bwrap_override)
+        # Fail CLOSED if Bubblewrap or prlimit is unavailable or broken on this host (RC-17)!
+        probe = probe_sandbox_support(
+            bwrap_override=self._bwrap_override,
+            prlimit_override=self._prlimit_override,
+        )
         if not probe.available:
             raise SandboxUnavailableError(probe.error or "Bubblewrap sandbox is unavailable; refusing execution.")
 
@@ -512,6 +556,8 @@ class ScriptRunManager:
             planner=self._planner,
             snapshot_override=self._snapshot_override,
             storage_check_override=self._storage_check_override,
+            budget_path=self.runs_dir / f"{run_id}.budget.json",
+            comfyui_dir=self._comfyui_dir,
         )
         sock_name = "broker.sock"
         broker.start_socket_server(broker_dir / sock_name)
@@ -567,7 +613,7 @@ class ScriptRunManager:
 
         watcher = threading.Thread(
             target=self._watch_process,
-            args=(proc, broker, record, temp_root, limits.wall_timeout_s),
+            args=(proc, broker, record, temp_root, limits.wall_timeout_s, limits.max_processes),
             name=f"avatar-script-watch-{run_id[:8]}",
             daemon=True,
         )
@@ -617,6 +663,8 @@ class ScriptRunManager:
             planner=self._planner,
             snapshot_override=self._snapshot_override,
             storage_check_override=self._storage_check_override,
+            budget_path=self.runs_dir / f"{run_id}.budget.json",
+            comfyui_dir=self._comfyui_dir,
         )
         specs = build_specs_from_extraction(
             extraction,
@@ -684,6 +732,57 @@ class ScriptRunManager:
             with self._lock:
                 self._persist_record_locked(record, broker.snapshot_status())
 
+    @staticmethod
+    def _count_pgid_processes(pgid: int) -> int:
+        """Count live processes belonging to process group ``pgid`` via Linux /proc (RC-17)."""
+        count = 0
+        try:
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                try:
+                    stat_txt = Path(f"/proc/{entry}/stat").read_text(encoding="utf-8")
+                    rparen = stat_txt.rfind(")")
+                    if rparen < 0:
+                        continue
+                    parts = stat_txt[rparen + 1 :].strip().split()
+                    if len(parts) >= 3 and parts[0] != "Z" and int(parts[2]) == pgid:
+                        count += 1
+                except (OSError, ValueError, IndexError):
+                    continue
+        except OSError:
+            return 0
+        return count
+
+    @staticmethod
+    def _start_bounded_pipe_reader(pipe: Any, *, max_chars: int = 8192) -> tuple[threading.Thread, list[str]]:
+        """Incrementally drain a subprocess pipe into a fixed-size rolling tail (prevents host OOM, RC-17)."""
+        buf: list[str] = [""]
+
+        def _drain() -> None:
+            if pipe is None:
+                return
+            try:
+                while True:
+                    chunk = pipe.read(4096)
+                    if not chunk:
+                        break
+                    combined = buf[0] + chunk
+                    if len(combined) > max_chars:
+                        combined = combined[-max_chars:]
+                    buf[0] = combined
+            except Exception:
+                pass
+            finally:
+                try:
+                    pipe.close()
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_drain, daemon=True)
+        t.start()
+        return t, buf
+
     def _watch_process(
         self,
         proc: subprocess.Popen[str],
@@ -691,29 +790,57 @@ class ScriptRunManager:
         record: ScriptRunRecord,
         temp_root: Path,
         wall_timeout_s: float,
+        max_processes: int = 24,
     ) -> None:
+        t_out, buf_out = self._start_bounded_pipe_reader(proc.stdout, max_chars=8192)
+        t_err, buf_err = self._start_bounded_pipe_reader(proc.stderr, max_chars=8192)
+        deadline = time.monotonic() + max(1.0, float(wall_timeout_s))
+        timed_out = False
+        proc_limit_hit = False
         try:
-            stdout, stderr = proc.communicate(timeout=max(1.0, float(wall_timeout_s)))
+            pgid = os.getpgid(proc.pid)
+        except OSError:
+            pgid = proc.pid
+        try:
+            while proc.poll() is None:
+                if time.monotonic() > deadline:
+                    timed_out = True
+                    self._terminate_process_group(proc)
+                    break
+                if max_processes > 0 and self._count_pgid_processes(pgid) > max_processes + 2:
+                    proc_limit_hit = True
+                    self._terminate_process_group(proc)
+                    break
+                time.sleep(0.05)
+
+            try:
+                proc.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                self._terminate_process_group(proc)
+            t_out.join(timeout=2.0)
+            t_err.join(timeout=2.0)
+
+            stdout_tail = buf_out[0][-4000:]
+            stderr_tail = buf_err[0][-4000:]
             record.exit_code = proc.returncode
-            record.stdout_tail = (stdout or "")[-4000:]
-            record.stderr_tail = (stderr or "")[-4000:]
-            if broker.state == "stopped":
+            record.stdout_tail = stdout_tail
+            record.stderr_tail = stderr_tail
+            if timed_out:
+                record.status = "error"
+                record.error = f"Script exceeded wall-clock timeout ({wall_timeout_s:g}s) and was terminated."
+                broker.stop(cancel_pending=True)
+            elif proc_limit_hit:
+                record.status = "error"
+                record.error = f"Script exceeded max process group limit ({max_processes}) and was terminated."
+                broker.stop(cancel_pending=True)
+            elif broker.state == "stopped":
                 record.status = "stopped"
             elif proc.returncode == 0:
                 broker.mark_completed()
                 record.status = "completed"
             else:
                 record.status = "error"
-                record.error = (stderr or stdout or f"Script exited with code {proc.returncode}").strip()[-500:]
-        except subprocess.TimeoutExpired:
-            self._terminate_process_group(proc)
-            stdout, stderr = proc.communicate()
-            record.exit_code = proc.returncode
-            record.stdout_tail = (stdout or "")[-4000:]
-            record.stderr_tail = (stderr or "")[-4000:]
-            record.status = "error"
-            record.error = f"Script exceeded wall-clock timeout ({wall_timeout_s:g}s) and was terminated."
-            broker.stop(cancel_pending=True)
+                record.error = (stderr_tail or stdout_tail or f"Script exited with code {proc.returncode}").strip()[-500:]
         finally:
             broker.close_socket_server()
             record.finished_at = datetime.now(timezone.utc).isoformat()

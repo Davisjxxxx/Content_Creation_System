@@ -364,8 +364,10 @@ class CorrectionBudget(BaseModel):
     extended_session_authorized: bool = False
 
     def limit_for_media(self, media_kind: Literal["image", "video"]) -> int:
-        base = self.max_video_retries if media_kind == "video" else min(self.max_retries, self.max_image_retries)
-        return max(0, base)
+        """Tightest authorized remaining retry limit across global, per-media, and retries_used (RC-11)."""
+        media_cap = self.max_video_retries if media_kind == "video" else self.max_image_retries
+        effective_cap = min(max(0, self.max_retries), max(0, media_cap))
+        return max(0, effective_cap - max(0, self.retries_used))
 
     @property
     def remaining(self) -> int:

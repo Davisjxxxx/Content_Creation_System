@@ -559,6 +559,8 @@ class StudioMixin:
 
     def _script_manager(self) -> ScriptRunManager:
         mgr: ScriptRunManager | None = getattr(self, "_script_run_manager", None)
+        comfy_raw = str(self._settings().get("comfyui_dir") or "").strip()
+        comfy_path = Path(comfy_raw).expanduser() if comfy_raw else None
         if mgr is None:
             mgr = ScriptRunManager(
                 runs_dir=_desktop().APP_HOME / "script_runs",
@@ -567,16 +569,34 @@ class StudioMixin:
                 cancel_fn=self._script_cancel_job,
                 reference_manager=self._reference_manager(),
                 planner=getattr(self.queue, "resource_planner", None),
+                comfyui_dir=comfy_path if (comfy_path and comfy_path.is_dir()) else None,
             )
             self._script_run_manager = mgr
         return mgr
 
     def _script_submit_job(self, ctx: BrokerSubmitContext) -> str:
-        """Route a validated SDK BrokerSubmitContext through existing RenderQueue builders."""
+        """Route a validated SDK BrokerSubmitContext through existing RenderQueue builders (RC-15)."""
         engine = self.engine_status()
         if engine["state"] != "ready":
             raise RuntimeError(engine["message"] + " Start the GPU engine before running scripts.")
-        if ctx.model_id.startswith("flux2_"):
+        ver_record = None
+        try:
+            routed = plan_intelligent_generation(
+                ctx.spec.original_prompt or ctx.compiled_positive,
+                requested_action="scene" if ctx.model_id.startswith("wan22_") else "photo",
+                starter_image=ctx.staged_references[0] if ctx.staged_references else None,
+                guided_spec=ctx.spec,
+                input_mode="script",
+                model_preference=ctx.model_id,
+                use_llm=False,
+            )
+            if routed.ok and routed.verification_record is not None:
+                ver_record = routed.verification_record.public()
+                ver_record["compiled_prompt"] = ctx.compiled_positive
+        except Exception:
+            ver_record = None
+
+        if ctx.model_id in {"flux2_4b", "flux2_9b"}:
             photo_model = "9b" if ctx.model_id == "flux2_9b" else "4b"
             item = self._forge_photo_item(
                 prompt=ctx.compiled_positive,
@@ -584,7 +604,11 @@ class StudioMixin:
                 photo_model=photo_model,
                 action="script_photo",
                 label=ctx.label,
-                extra_runtime={"script_run_id": ctx.run_id, "script_item": ctx.item_index},
+                extra_runtime={
+                    "script_run_id": ctx.run_id,
+                    "script_item": ctx.item_index,
+                    "verification_record": ver_record,
+                },
                 reference_images=ctx.staged_references,
             )
             if ctx.compiled_negative:
@@ -592,9 +616,12 @@ class StudioMixin:
             if ctx.spec.constraints.width and ctx.spec.constraints.height:
                 item.job.asset_map["WIDTH"] = int(ctx.spec.constraints.width)
                 item.job.asset_map["HEIGHT"] = int(ctx.spec.constraints.height)
+                item.runtime["width"] = int(ctx.spec.constraints.width)
+                item.runtime["height"] = int(ctx.spec.constraints.height)
             if ctx.spec.constraints.seed is not None:
                 item.job.asset_map["SEED"] = int(ctx.spec.constraints.seed)
-        else:
+                item.runtime["seed"] = int(ctx.spec.constraints.seed)
+        elif ctx.model_id in {"wan22_a14b", "wan22_5b"}:
             video_model = "5b" if ctx.model_id == "wan22_5b" else "a14b"
             start_img = ctx.staged_references[0] if ctx.staged_references else ""
             item = self._local_wan_item(
@@ -607,9 +634,26 @@ class StudioMixin:
                 vram_mode="cpu_offload" if ctx.execution_plan.wan_clip_device == "cpu" else "balanced",
                 verbatim=True,
             )
-            item.runtime.update({"script_run_id": ctx.run_id, "script_item": ctx.item_index})
+            item.runtime.update(
+                {
+                    "script_run_id": ctx.run_id,
+                    "script_item": ctx.item_index,
+                    "verification_record": ver_record,
+                }
+            )
+            if ctx.spec.constraints.width and ctx.spec.constraints.height:
+                item.job.asset_map["WAN_WIDTH"] = int(ctx.spec.constraints.width)
+                item.job.asset_map["WAN_HEIGHT"] = int(ctx.spec.constraints.height)
+                item.runtime["width"] = int(ctx.spec.constraints.width)
+                item.runtime["height"] = int(ctx.spec.constraints.height)
+            if ctx.spec.constraints.frames:
+                item.job.asset_map["WAN_LENGTH"] = int(ctx.spec.constraints.frames)
+                item.runtime["frames"] = int(ctx.spec.constraints.frames)
             if ctx.spec.constraints.seed is not None:
                 item.job.asset_map["WAN_SEED"] = int(ctx.spec.constraints.seed)
+                item.runtime["seed"] = int(ctx.spec.constraints.seed)
+        else:
+            raise ValueError(f"Unsupported or deferred Script model '{ctx.model_id}'; refusing silent model substitution.")
         return self.queue.add(item)
 
     def _script_job_status(self, job_id: str) -> dict[str, Any]:

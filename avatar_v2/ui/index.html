@@ -1273,8 +1273,11 @@ async function engLoad(){let e;try{e=await window.pywebview.api.engine_status()}
   const local=document.querySelector('.chips[data-chips="moveEngine"] button[data-v="local"]');
   if(local){local.disabled=e.state!=='ready';$('localEngineHint').textContent=e.state==='ready'?`free · about ${e.minutes} min · ${e.seconds} s clips`:short}
   if(e.state==='ready'&&!st.engineChosen&&st.opts.moveEngine!=='local')stChipSet('moveEngine','local');
-  if(e.state!=='ready'&&st.opts.moveEngine==='local')stChipSet('moveEngine','best');
-  if(st.recipe==='scene')stPriceSoon();
+  /* RC-04: NEVER silently switch an explicit local selection to paid Runway when local engine becomes unavailable. */
+  if(st.recipe==='move'&&st.opts.moveEngine==='local'&&e.state!=='ready'){
+    const go=$('moveGo');if(go){go.disabled=true;go.textContent='Local GPU unavailable — start engine or pick cloud'}
+  }
+  if(st.recipe==='scene'||st.recipe==='move')stPriceSoon();
 }
 async function engStart(){const r=await window.pywebview.api.comfyui_start();log(r.ok?'GPU engine starting':'GPU engine: '+r.error);engLoad()}
 async function engStop(){$('setEngine').textContent='Stopping… (it can take a minute to release the models)';const r=await window.pywebview.api.comfyui_stop();log(r.ok?(r.message||'GPU engine stopped'):'GPU engine: '+r.error);engLoad()}
@@ -1392,7 +1395,7 @@ function stInit(){
   ['stExtra','stTalkScript','stMotion'].forEach(id=>$(id).addEventListener('input',stPriceSoon));
   $('stVoScript').addEventListener('input',()=>{$('stVoCount').textContent=`${$('stVoScript').value.length} / 2500`;stPriceSoon()});
   ['stVoice','stTalkNarration','stActNarration','stMoveNarration','stSceneNarration','stTalkerVoice'].forEach(id=>$(id).addEventListener('change',stPriceSoon));
-  stLoad().then(()=>{renderTiles();stRefreshBalance()});engLoad();forgeLoad();
+  stLoad().then(()=>{renderTiles();/* RC-22: no automatic external Runway account lookup on offline startup */const d=st.data;if(d&&d.key&&d.key.configured){$('sideRunwayDot').className='dot live';$('sideRunway').textContent='Runway: key saved (click Settings to check balance)';$('setKeyDot').className='dot live';$('setKey').textContent='Key saved · click Refresh to check balance.'}else{$('sideRunwayDot').className='dot bad';$('sideRunway').textContent='Runway: add your key in Settings';$('setKeyDot').className='dot bad';$('setKey').textContent='No key saved yet.'}});engLoad();forgeLoad();
   setInterval(()=>{if($('view-make').classList.contains('active')||$('view-forge').classList.contains('active'))stLoad()},4000);
   setInterval(()=>{const e=st.engine;if(!e||e.state!=='ready'||$('view-settings').classList.contains('active'))engLoad()},5000);
 }

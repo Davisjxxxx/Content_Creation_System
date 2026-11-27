@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from .model_registry import DEFAULT_REGISTRY, ModelRegistry
+from .ownership import write_json_atomic
 from .policy import depicts_minor
 from .prompt_compilers import compile_prompt_for_model
 from .prompt_schema import StructuredPromptSpec
@@ -39,6 +40,49 @@ RunState = Literal["idle", "running", "paused", "stopping", "stopped", "complete
 DEFAULT_MAX_ITEMS = 10
 HARD_MAX_AUTHORIZED_ITEMS = 200
 DEFAULT_MAX_CONCURRENT = 1
+MAX_BROKER_CONNECTIONS = 16
+
+# Only models with real executable builders in StudioMixin._script_submit_job (Astra RC-15).
+# Deferred specialists (such as wan22_funcontrol) are excluded until installed & wired end-to-end.
+EXECUTABLE_SCRIPT_MODELS: frozenset[str] = frozenset({"flux2_4b", "flux2_9b", "wan22_a14b", "wan22_5b"})
+
+_BUDGET_FILE_LOCK = threading.RLock()
+
+
+def charge_durable_script_budget(
+    runs_dir: Path,
+    run_id: str,
+    parent_job_id: str,
+    *,
+    note: str = "",
+) -> tuple[bool, str]:
+    """Fail-closed durable run-budget charge surviving broker detach or app restart (Astra RC-11)."""
+    budget_path = Path(runs_dir) / f"{run_id}.budget.json"
+    with _BUDGET_FILE_LOCK:
+        if not budget_path.is_file():
+            return False, (
+                f"Durable script run budget ledger missing for run '{run_id}'; "
+                f"refusing detached corrective generation for {parent_job_id} (fail-closed)."
+            )
+        try:
+            data = json.loads(budget_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return False, f"Unreadable script budget ledger for '{run_id}': {exc}"
+        if str(data.get("state") or "") in {"stopping", "stopped"}:
+            return False, f"Script run '{run_id}' was stopped; refusing corrective generation."
+        used = int(data.get("submitted", 0))
+        limit = int(data.get("max_items", 0))
+        if limit <= 0 or used >= limit:
+            return False, (
+                f"Durable script run budget exhausted ({used}/{limit}); "
+                f"refusing corrective attempt for {parent_job_id}."
+            )
+        data["submitted"] = used + 1
+        charges = list(data.get("corrective_charges") or [])
+        charges.append({"parent_job_id": parent_job_id, "note": note, "at": time.time()})
+        data["corrective_charges"] = charges[-50:]
+        write_json_atomic(budget_path, data)
+        return True, f"Charged durable script budget ({used + 1}/{limit}) {note}".strip()
 
 
 @dataclass
@@ -104,6 +148,8 @@ class GenerationBroker:
         token: str | None = None,
         snapshot_override: Any = None,
         storage_check_override: Any = None,
+        budget_path: Path | None = None,
+        comfyui_dir: Path | None = None,
     ) -> None:
         self.run_id = run_id
         self.token = token or secrets.token_urlsafe(32)
@@ -115,6 +161,9 @@ class GenerationBroker:
         self.reference_manager = reference_manager
         self._snapshot_override = snapshot_override
         self._storage_check_override = storage_check_override
+        self._budget_path = Path(budget_path) if budget_path is not None else None
+        self._comfyui_dir = Path(comfyui_dir) if comfyui_dir is not None else None
+        self._conn_sem = threading.BoundedSemaphore(MAX_BROKER_CONNECTIONS)
 
         cap_ceiling = HARD_MAX_AUTHORIZED_ITEMS if extended_authorized else DEFAULT_MAX_ITEMS
         self.max_items = max(1, min(int(max_items), cap_ceiling))
@@ -136,6 +185,28 @@ class GenerationBroker:
         self._server_sock: socket.socket | None = None
         self._server_thread: threading.Thread | None = None
         self._serving = False
+        self._sync_budget_file_locked()
+
+    def _sync_budget_file_locked(self) -> None:
+        if self._budget_path is None:
+            return
+        with _BUDGET_FILE_LOCK:
+            try:
+                existing = json.loads(self._budget_path.read_text(encoding="utf-8")) if self._budget_path.is_file() else {}
+            except (OSError, json.JSONDecodeError):
+                existing = {}
+            payload = {
+                "run_id": self.run_id,
+                "state": self._state,
+                "submitted": max(self._submitted_count, int(existing.get("submitted") or 0)),
+                "max_items": self.max_items,
+                "corrective_charges": list(existing.get("corrective_charges") or []),
+            }
+            self._submitted_count = payload["submitted"]
+            try:
+                write_json_atomic(self._budget_path, payload)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------------ lifecycle & control
 
@@ -163,6 +234,7 @@ class GenerationBroker:
         with self._cond:
             if self._state not in {"stopped", "completed"}:
                 self._state = "stopped"
+            self._sync_budget_file_locked()
             if cancel_pending and self._cancel_fn is not None:
                 for jid in self._job_order:
                     rec = self._jobs[jid]
@@ -185,6 +257,7 @@ class GenerationBroker:
     def charge_corrective_attempt(self, parent_job_id: str, *, note: str = "") -> tuple[bool, str]:
         """Charge a corrective generation attempt against the SAME host-enforced run budget."""
         with self._lock:
+            self._sync_budget_file_locked()
             if self._state in {"stopping", "stopped"}:
                 return False, "Script run was stopped; refusing additional corrective generation."
             if self._submitted_count >= self.max_items:
@@ -193,6 +266,8 @@ class GenerationBroker:
                     f"cannot start corrective attempt for {parent_job_id}."
                 )
             self._submitted_count += 1
+            self._sync_budget_file_locked()
+            self._sync_budget_file_locked()
             return True, f"Charged corrective attempt ({self._submitted_count}/{self.max_items}) {note}".strip()
 
     def snapshot_status(self) -> dict[str, Any]:
@@ -273,11 +348,29 @@ class GenerationBroker:
                 continue
             except OSError:
                 break
+            if not self._conn_sem.acquire(blocking=False):
+                try:
+                    conn.sendall(
+                        b'{"ok":false,"code":"broker_busy","error":"Too many concurrent script broker connections."}\n'
+                    )
+                except OSError:
+                    pass
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                continue
             threading.Thread(
-                target=self._serve_connection,
+                target=self._serve_connection_bounded,
                 args=(conn,),
                 daemon=True,
             ).start()
+
+    def _serve_connection_bounded(self, conn: socket.socket) -> None:
+        try:
+            self._serve_connection(conn)
+        finally:
+            self._conn_sem.release()
 
     def _serve_connection(self, conn: socket.socket) -> None:
         with conn:
@@ -344,23 +437,36 @@ class GenerationBroker:
             return self._op_cancel_job(payload)
         return {"ok": False, "code": "unknown_op", "error": f"Unsupported broker operation '{op}'."}
 
+    def _is_model_installed(self, model_spec: Any) -> tuple[bool, list[str]]:
+        if model_spec.model_id not in EXECUTABLE_SCRIPT_MODELS:
+            return False, [f"Model '{model_spec.model_id}' is deferred/not executable in Script mode."]
+        if self._comfyui_dir is None:
+            return True, []
+        missing = [c.filename for c in model_spec.components if not c.exists_in(self._comfyui_dir)]
+        return (not missing), missing
+
     def _op_capabilities(self) -> dict[str, Any]:
-        models = [
-            {
-                "model_id": m.model_id,
-                "family": m.family,
-                "label": m.label,
-                "tasks": list(m.tasks),
-                "default_width": m.default_width,
-                "default_height": m.default_height,
-                "default_frames": m.default_frames,
-                "requires_start_image": m.requires_start_image,
-                "supports_edit": m.supports_edit,
-                "supports_motion": m.supports_motion,
-                "supports_camera_movement": m.supports_camera_movement,
-            }
-            for m in self.registry.list_models()
-        ]
+        models = []
+        for m in self.registry.list_models():
+            installed, _missing = self._is_model_installed(m)
+            if not installed:
+                continue
+            models.append(
+                {
+                    "model_id": m.model_id,
+                    "family": m.family,
+                    "label": m.label,
+                    "tasks": list(m.tasks),
+                    "default_width": m.default_width,
+                    "default_height": m.default_height,
+                    "default_frames": m.default_frames,
+                    "requires_start_image": m.requires_start_image,
+                    "supports_edit": m.supports_edit,
+                    "supports_motion": m.supports_motion,
+                    "supports_camera_movement": m.supports_camera_movement,
+                    "installed": True,
+                }
+            )
         return {
             "ok": True,
             "contract_version": SDK_CONTRACT_VERSION,
@@ -473,6 +579,16 @@ class GenerationBroker:
                 "code": "unknown_model",
                 "error": f"Model '{requested_model}' is not an approved local model in Avatar V2's ModelRegistry.",
             }
+        installed_ok, missing_files = self._is_model_installed(model_spec)
+        if not installed_ok:
+            return {
+                "ok": False,
+                "code": "unsupported_model",
+                "error": (
+                    f"Model '{requested_model}' is unavailable in Script mode: "
+                    + (", ".join(missing_files) if missing_files else "not installed")
+                ),
+            }
 
         # 5. Reference asset authorization & staging.
         staged_refs: list[str] = []
@@ -538,6 +654,7 @@ class GenerationBroker:
 
         # 8. Atomic reservation under lock (prevents concurrent-request race bypassing max_items / max_concurrent).
         with self._cond:
+            self._sync_budget_file_locked()
             if self._state in {"stopped", "stopping", "error"}:
                 return {"ok": False, "code": "run_stopped", "error": "Script run has been stopped."}
             self._refresh_jobs_locked()
@@ -574,6 +691,7 @@ class GenerationBroker:
                 return {"ok": False, "code": "submit_failed", "error": str(exc)}
 
             self._submitted_count += 1
+            self._sync_budget_file_locked()
             rec = BrokerJobRecord(
                 job_id=job_id,
                 model_id=model_spec.model_id,
