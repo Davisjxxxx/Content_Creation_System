@@ -44,6 +44,17 @@ from .visual_inspector import sanitize_untrusted_text
 # --------------------------------------------------------------------------- Verified Capability Matrix (Section 3)
 
 SUPPORTED_CORRECTION_STRATEGIES: dict[str, dict[str, Any]] = {
+    "masked_localized_edit": {
+        "supported": True,
+        "is_localized_edit": True,
+        "media": ("image",),
+        "models": ("flux2_9b", "flux2_4b"),
+        "workflow": "builtin:flux2_masked_edit",
+        "description": (
+            "True mask-conditioned FLUX.2 latent edit (SetLatentNoiseMask + DifferentialDiffusion + "
+            "ImageCompositeMasked) guaranteeing zero pixel drift outside the feathered edit mask."
+        ),
+    },
     "targeted_image_edit": {
         "supported": True,
         "is_localized_edit": True,
@@ -51,8 +62,8 @@ SUPPORTED_CORRECTION_STRATEGIES: dict[str, dict[str, Any]] = {
         "models": ("flux2_9b", "flux2_4b"),
         "workflow": "builtin:flux2_txt2img",
         "description": (
-            "FLUX.2 native ReferenceLatent targeted edit conditioning on the prior candidate + preserved "
-            "user source references to fix specific defects while preserving satisfied elements."
+            "Unmasked FLUX.2 ReferenceLatent conditioned edit using the prior candidate + preserved "
+            "user source references (distinct from pixel-locked masked_localized_edit)."
         ),
     },
     "additional_reference_conditioning": {

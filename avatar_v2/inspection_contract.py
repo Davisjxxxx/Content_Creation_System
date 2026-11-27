@@ -117,6 +117,7 @@ CorrectionStrategyType = Literal[
     "prompt_refinement",
     "seed_variation",
     "targeted_image_edit",
+    "masked_localized_edit",
     "inpainting",
     "reference_adjustment",
     "additional_reference_conditioning",

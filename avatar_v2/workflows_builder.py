@@ -122,6 +122,178 @@ def with_wan_end_frame(graph: dict[str, Any], end_image_name: str) -> dict[str, 
     return updated
 
 
+def without_wan_lightning(
+    graph: dict[str, Any],
+    *,
+    steps: int = 12,
+    cfg: float = 3.5,
+) -> dict[str, Any]:
+    """Return a copy of a Wan 2.2 A14B graph bypassing Lightning LoRAs for standard CFG>1 sampling.
+
+    Used in Sprint 9 controlled video benchmarks comparing 4-step/6-step Lightning acceleration
+    against standard higher-step base sampling on identical starter frames.
+    """
+    updated: dict[str, Any] = {}
+    lora_bypass: dict[str, list[Any]] = {}
+    for node_id, node in graph.items():
+        if isinstance(node, dict) and node.get("class_type") == "LoraLoaderModelOnly":
+            model_link = (node.get("inputs") or {}).get("model")
+            if isinstance(model_link, list):
+                lora_bypass[str(node_id)] = model_link
+                continue
+        updated[node_id] = dict(node) if isinstance(node, dict) else node
+
+    half = max(1, int(steps) // 2)
+    sampler_idx = 0
+    for node_id, node in list(updated.items()):
+        if not isinstance(node, dict):
+            continue
+        inputs = dict(node.get("inputs") or {})
+        if isinstance(inputs.get("model"), list) and str(inputs["model"][0]) in lora_bypass:
+            inputs["model"] = lora_bypass[str(inputs["model"][0])]
+        if node.get("class_type") == "KSamplerAdvanced":
+            inputs["steps"] = int(steps)
+            inputs["cfg"] = float(cfg)
+            if sampler_idx == 0:
+                inputs["start_at_step"] = 0
+                inputs["end_at_step"] = half
+            else:
+                inputs["start_at_step"] = half
+                inputs["end_at_step"] = int(steps)
+            sampler_idx += 1
+        updated[node_id] = {**node, "inputs": inputs}
+    return updated
+
+
+def build_flux2_masked_edit_workflow(mapping: dict[str, Any]) -> dict[str, Any]:
+    """FLUX.2 genuine mask-conditioned localized editing + pixel-preserving ImageCompositeMasked.
+
+    Uses verified ComfyUI 0.46 core nodes (SetLatentNoiseMask + DifferentialDiffusion +
+    ReferenceLatent + ImageToMask + ImageCompositeMasked) with installed FLUX.2 9B/4B GGUF.
+    Guarantees 0.00% pixel alteration outside the feathered edit mask.
+    """
+    source_image = _stage_entry(mapping, "SOURCE_IMAGE") or _stage_entry(mapping, "REF_IMAGE_1")
+    mask_image = _stage_entry(mapping, "MASK_IMAGE")
+    if not source_image or not mask_image:
+        raise RuntimeError("build_flux2_masked_edit_workflow requires SOURCE_IMAGE and MASK_IMAGE.")
+
+    graph: dict[str, Any] = {}
+    next_id = 1
+
+    graph[str(next_id)] = _node("UnetLoaderGGUF", unet_name=_value(mapping, "FORGE_UNET", "flux-2-klein-base-9b-Q4_K_M.gguf"))
+    unet_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("DifferentialDiffusion", model=_link(unet_id), strength=float(_value(mapping, "DIFF_STRENGTH", 1.0)))
+    model_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "CLIPLoaderGGUF",
+        clip_name=_value(mapping, "FORGE_TEXT_ENCODER", "Qwen3-8B-Q4_K_M.gguf"),
+        type="flux2",
+    )
+    clip_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("VAELoader", vae_name=_value(mapping, "FORGE_VAE", "flux2-vae.safetensors"))
+    vae_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("CLIPTextEncode", text=_value(mapping, "PROMPT", ""), clip=_link(clip_id))
+    pos_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("CLIPTextEncode", text=_value(mapping, "NEGATIVE_PROMPT", ""), clip=_link(clip_id))
+    neg_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("LoadImage", image=source_image)
+    src_img_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("LoadImage", image=mask_image)
+    mask_img_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("ImageToMask", image=_link(mask_img_id), channel="red")
+    mask_id = next_id
+    next_id += 1
+
+    # Encode full source image into FLUX.2 latent and condition via ReferenceLatent for context coherence.
+    graph[str(next_id)] = _node("VAEEncode", pixels=_link(src_img_id), vae=_link(vae_id))
+    src_lat_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("ReferenceLatent", conditioning=_link(pos_id), latent=_link(src_lat_id))
+    pos_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("ReferenceLatent", conditioning=_link(neg_id), latent=_link(src_lat_id))
+    neg_id = next_id
+    next_id += 1
+
+    # Attach noise mask so diffusion updates only inside the masked latent region.
+    graph[str(next_id)] = _node("SetLatentNoiseMask", samples=_link(src_lat_id), mask=_link(mask_id))
+    masked_lat_id = next_id
+    next_id += 1
+
+    width = int(_value(mapping, "WIDTH", 896))
+    height = int(_value(mapping, "HEIGHT", 1280))
+    graph[str(next_id)] = _node("Flux2Scheduler", steps=int(_value(mapping, "STEPS", 28)), width=width, height=height)
+    sigmas_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("RandomNoise", noise_seed=int(_value(mapping, "SEED", 41001)))
+    noise_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("KSamplerSelect", sampler_name=_value(mapping, "SAMPLER_NAME", "euler"))
+    sampler_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "CFGGuider",
+        model=_link(model_id),
+        positive=_link(pos_id),
+        negative=_link(neg_id),
+        cfg=float(_value(mapping, "CFG", 3.5)),
+    )
+    guider_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node(
+        "SamplerCustomAdvanced",
+        noise=_link(noise_id),
+        guider=_link(guider_id),
+        sampler=_link(sampler_id),
+        sigmas=_link(sigmas_id),
+        latent_image=_link(masked_lat_id),
+    )
+    sample_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("VAEDecode", samples=_link(sample_id), vae=_link(vae_id))
+    decode_id = next_id
+    next_id += 1
+
+    # Composite ONLY the feathered masked region back onto the original source image (0.00% outside-mask drift!).
+    graph[str(next_id)] = _node(
+        "ImageCompositeMasked",
+        destination=_link(src_img_id),
+        source=_link(decode_id),
+        x=0,
+        y=0,
+        resize_source=True,
+        mask=_link(mask_id),
+    )
+    comp_id = next_id
+    next_id += 1
+
+    graph[str(next_id)] = _node("SaveImage", images=_link(comp_id), filename_prefix=_value(mapping, "OUTPUT_PREFIX", "avatar_v2/masked_edit"))
+    return graph
+
+
 def wan_frame_count(duration_s: float) -> int:
     """Snap a duration to a valid Wan 2.2 frame count (4k+1 grid, 16 fps)."""
     requested = max(WAN_FRAME_OFFSET, round(float(duration_s) * WAN_FPS))

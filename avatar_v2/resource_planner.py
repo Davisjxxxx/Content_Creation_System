@@ -469,3 +469,73 @@ class ResourcePlanner:
             "evict_comfy_models": False,
             "reason": "Default zero-contention CPU-only local VLM inspection (num_gpu=0).",
         }
+
+    def plan_specialist_execution(
+        self,
+        specialist_id: str,
+        *,
+        target_family: str = "flux2",
+        active_generation_running: bool = False,
+        comfy_models_warm: bool = False,
+        snapshot: ResourceSnapshot | None = None,
+        storage_path: str | Path = "/",
+        explicit_acquisition_approval: bool = False,
+    ) -> dict[str, Any]:
+        """Integrate Sprint 9 specialist models with ResourcePlanner & protected storage reserve."""
+        from .specialist_registry import DEFAULT_SPECIALIST_REGISTRY
+
+        spec = DEFAULT_SPECIALIST_REGISTRY.get(specialist_id)
+        if spec is None:
+            return {"allowed": False, "execution_mode": "blocked", "reason": f"Unknown specialist '{specialist_id}'."}
+
+        ok_compat, compat_err = DEFAULT_SPECIALIST_REGISTRY.check_compatibility(specialist_id, target_family)
+        if not ok_compat:
+            return {"allowed": False, "execution_mode": "blocked", "reason": compat_err}
+
+        acq = DEFAULT_SPECIALIST_REGISTRY.evaluate_acquisition(
+            specialist_id, storage_path=storage_path, explicit_approval=explicit_acquisition_approval
+        )
+        if not acq.get("allowed"):
+            return {"allowed": False, "execution_mode": "deferred_acquisition", "reason": acq["reason"], "acquisition": acq}
+
+        snap = snapshot if snapshot is not None else self.guard.evaluate()
+        if snap.ram_severity == "emergency":
+            return {"allowed": False, "execution_mode": "blocked", "reason": "Emergency physical RAM pressure; deferring specialist."}
+
+        if spec.min_vram_mb == 0:
+            return {
+                "allowed": True,
+                "execution_mode": "cpu_only",
+                "verify_vram_release": False,
+                "evict_comfy_models": False,
+                "reason": f"Specialist '{spec.name}' runs strictly on CPU with 0 MB VRAM.",
+            }
+
+        if active_generation_running or comfy_models_warm:
+            return {
+                "allowed": True,
+                "execution_mode": "deferred_batch_sequential_gpu",
+                "verify_vram_release": True,
+                "evict_comfy_models": False,
+                "reason": (
+                    f"Warm/active ComfyUI models present: deferring GPU specialist '{spec.name}' "
+                    "to batch inspection window so FLUX/Wan weights are not evicted mid-batch."
+                ),
+            }
+
+        gpu_free_mb = min((g.free_mb for g in snap.gpus), default=6500)
+        if gpu_free_mb >= spec.min_vram_mb:
+            return {
+                "allowed": True,
+                "execution_mode": "sequential_gpu",
+                "verify_vram_release": True,
+                "evict_comfy_models": False,
+                "reason": f"GPU idle ({gpu_free_mb} MB free >= {spec.min_vram_mb} MB): running '{spec.name}' sequentially with verified VRAM release.",
+            }
+        return {
+            "allowed": True,
+            "execution_mode": "cpu_fallback",
+            "verify_vram_release": False,
+            "evict_comfy_models": False,
+            "reason": f"Insufficient free VRAM ({gpu_free_mb} MB < {spec.min_vram_mb} MB); falling back to CPU.",
+        }
