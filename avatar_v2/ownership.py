@@ -65,6 +65,82 @@ def write_json_atomic(path: Path, data: Any) -> None:
         raise
 
 
+def read_json_safe(
+    path: Path,
+    default: Any,
+    *,
+    quarantine: bool = True,
+    expected_type: type | tuple[type, ...] | None = None,
+) -> Any:
+    """Read JSON safely; quarantine corrupt files instead of silently overwriting them later."""
+    target = Path(path)
+    if not target.is_file():
+        return default
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+        if expected_type is not None and not isinstance(data, expected_type):
+            raise ValueError(f"Unexpected JSON root type {type(data).__name__}")
+        return data
+    except (json.JSONDecodeError, ValueError):
+        if quarantine:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            quarantined = target.with_name(f"{target.name}.corrupt.{stamp}")
+            try:
+                os.replace(target, quarantined)
+            except OSError:
+                pass
+        return default
+    except OSError:
+        return default
+
+
+class DirectoryWriterLock:
+    """Non-blocking POSIX flock guarding single-writer ownership of a state directory."""
+
+    def __init__(self, lock_path: Path) -> None:
+        self.lock_path = Path(lock_path)
+        self._fd: int | None = None
+
+    def acquire(self) -> None:
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+            os.fsync(fd)
+        except BlockingIOError:
+            os.close(fd)
+            raise RuntimeError(
+                f"Another Avatar V2 instance already holds the writer lock at {self.lock_path}."
+            )
+        except Exception:
+            os.close(fd)
+            raise
+        self._fd = fd
+
+    def release(self) -> None:
+        fd = self._fd
+        self._fd = None
+        if fd is None:
+            return
+        try:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    def __del__(self) -> None:
+        self.release()
+
+
 # --------------------------------------------------------------------------- P0-A: Process Ownership
 
 

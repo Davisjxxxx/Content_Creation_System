@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import os
 import shutil
@@ -17,11 +18,28 @@ from .errors import classify_exception
 from .gpu_memory import GPUMemoryManager
 from .integrity import hash_files
 from .models import ProviderConfig, RenderJob
+from .ownership import DirectoryWriterLock, read_json_safe
 from .providers import ComfyUIProvider, RunwayProvider
+from .providers.comfyui import ComfyUICancelledError, ComfyUIExecutionError
 from .resource_monitor import check_storage_for_job, estimate_job_storage_bytes
 from .resource_planner import ResourcePlanner, WorkloadRequest
 
 JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
+JobPhase = Literal[
+    "queued",
+    "preparing",
+    "submitted",
+    "rendering",
+    "output_received",
+    "inspecting",
+    "correcting",
+    "persisting",
+    "complete",
+    "cancelled",
+    "failed",
+    "recovery_required",
+]
+POST_SUBMIT_PHASES = {"submitted", "rendering", "output_received", "inspecting", "correcting", "persisting"}
 MEMORY_SENSITIVE_PROFILES = {"int8_12gb", "low_memory", "low_memory_quality"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".webm", ".mkv"}
 
@@ -41,22 +59,29 @@ def _keeps_image_models_loaded(item: "QueuedRender") -> bool:
 
 
 def write_durable(path: Path, text: str) -> None:
-    """Atomically replace ``path`` and fsync it, so a crash leaves either the old or the new record."""
+    """Atomically replace ``path`` via unique temp file + fsync, so crashes/concurrent writes never corrupt state."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    with open(temporary, "w", encoding="utf-8") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
-        directory = os.open(path.parent, os.O_RDONLY)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except OSError:
-        pass  # directory fsync is unsupported on some platforms
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            pass  # directory fsync is unsupported on some platforms
+    except BaseException:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _cloud_memory_event(reason: str) -> dict[str, Any]:
@@ -81,11 +106,13 @@ class QueuedRender:
     label: str = ""
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
     status: JobStatus = "queued"
+    phase: JobPhase = "queued"
     error: str = ""
     error_category: str = ""
     error_message: str = ""
     prompt_id: str | None = None
     outputs: list[str] = field(default_factory=list)
+    partial_outputs: list[str] = field(default_factory=list)
     memory_events: list[dict[str, Any]] = field(default_factory=list)
     gpu_trace: dict[str, Any] = field(default_factory=dict)
     candidate_qa: dict[str, Any] = field(default_factory=dict)
@@ -111,11 +138,13 @@ class QueuedRender:
             "profile": self.profile,
             "seed": shot.seed,
             "status": self.status,
+            "phase": self.phase,
             "error": self.error,
             "error_category": self.error_category,
             "error_message": self.error_message,
             "prompt_id": self.prompt_id,
             "outputs": self.outputs,
+            "partial_outputs": self.partial_outputs,
             "memory_events": self.memory_events,
             "gpu_trace": self.gpu_trace,
             "candidate_qa": self.candidate_qa,
@@ -150,9 +179,15 @@ class RenderQueue:
         candidate_qa_runner: Callable[[QueuedRender], dict[str, Any]] | None = None,
         ledger_path: Path | None = None,
         engine_restart: Callable[[], Any] | None = None,
+        *,
+        acquire_lock: bool = True,
     ):
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        self._dir_lock: DirectoryWriterLock | None = None
+        if acquire_lock:
+            self._dir_lock = DirectoryWriterLock(self.work_dir / ".queue.lock")
+            self._dir_lock.acquire()
         self._ledger_path = Path(ledger_path) if ledger_path else self.work_dir.parent / "cloud_ledger.jsonl"
         self.history_dir = Path(history_dir) if history_dir else self.work_dir / "history"
         self.history_dir.mkdir(parents=True, exist_ok=True)
@@ -166,6 +201,7 @@ class RenderQueue:
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._stop = threading.Event()
+        self._cancel_events: dict[str, threading.Event] = {}
         self._active_provider: ComfyUIProvider | None = None
         self._active_id: str | None = None
         self._last_local_workflow: str | None = None
@@ -175,6 +211,18 @@ class RenderQueue:
         self._restore()
         self._thread = threading.Thread(target=self._worker, daemon=True, name="avatar-v2-render-queue")
         self._thread.start()
+
+    def get_cancel_event(self, item_id: str) -> threading.Event:
+        with self._lock:
+            events = getattr(self, "_cancel_events", None)
+            if events is None:
+                events = {}
+                self._cancel_events = events
+            ev = events.get(item_id)
+            if ev is None:
+                ev = threading.Event()
+                events[item_id] = ev
+            return ev
 
     def add(self, item: QueuedRender) -> str:
         with self._lock:
@@ -205,26 +253,55 @@ class RenderQueue:
             self._persist()
             return removed
 
+    @staticmethod
+    def _interrupt_provider(provider: Any, prompt_id: str | None) -> None:
+        interrupt = getattr(provider, "interrupt", None)
+        if not callable(interrupt):
+            return
+        try:
+            sig = inspect.signature(interrupt)
+            params = sig.parameters
+            if "prompt_id" in params:
+                kwargs: dict[str, Any] = {"prompt_id": prompt_id}
+                if "allow_global" in params:
+                    kwargs["allow_global"] = False
+                interrupt(**kwargs)
+                return
+        except (TypeError, ValueError):
+            pass
+        interrupt()
+
     def cancel(self, item_id: str) -> bool:
         with self._lock:
             for item in self._items:
                 if item.id != item_id:
                     continue
                 if item.status == "queued":
+                    self.get_cancel_event(item.id).set()
                     item.status = "cancelled"
+                    item.phase = "cancelled"
                     item.finished_at = time.time()
                     self._persist()
                     self._persist_history(item)
                     return True
-                if item.status == "running" and self._active_id == item.id and self._active_provider:
-                    try:
-                        self._active_provider.interrupt()
-                    except Exception:
-                        pass
+                if item.status == "running":
+                    ev = self.get_cancel_event(item.id)
+                    ev.set()
+                    prev_phase = item.phase
+                    item.runtime["cancelled_during_phase"] = prev_phase
+                    if self._active_id == item.id and self._active_provider is not None:
+                        try:
+                            self._interrupt_provider(self._active_provider, item.prompt_id)
+                        except Exception:
+                            pass
                     item.status = "cancelled"
+                    item.phase = "cancelled"
                     item.finished_at = time.time()
-                    self._persist()
-                    self._persist_history(item)
+                    try:
+                        self._persist()
+                        self._persist_history(item)
+                    except OSError:
+                        pass
                     return True
                 return False
         return False
@@ -233,16 +310,23 @@ class RenderQueue:
         self._stop.set()
         self._wake.set()
         self.memory_manager.stop_trace()
+        thread = getattr(self, "_thread", None)
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        lock = getattr(self, "_dir_lock", None)
+        if lock is not None:
+            lock.release()
 
     def _persist(self) -> None:
         path = self.work_dir / "queue_state.json"
-        path.write_text(json.dumps([item.public() for item in self._items], indent=2), encoding="utf-8")
+        write_durable(path, json.dumps([item.public() for item in self._items], indent=2))
         items_dir = self.work_dir / "items"
         items_dir.mkdir(parents=True, exist_ok=True)
         for item in self._items:
             if item.status in {"queued", "running"}:
-                (items_dir / f"{item.id}.json").write_text(
-                    json.dumps(self._item_to_dict(item), indent=2), encoding="utf-8"
+                write_durable(
+                    items_dir / f"{item.id}.json",
+                    json.dumps(self._item_to_dict(item), indent=2),
                 )
 
     def _item_to_dict(self, item: QueuedRender) -> dict[str, Any]:
@@ -258,11 +342,13 @@ class RenderQueue:
             "chain_from_previous": item.chain_from_previous,
             "label": item.label,
             "status": item.status,
+            "phase": item.phase,
             "error": item.error,
             "error_category": item.error_category,
             "error_message": item.error_message,
             "prompt_id": item.prompt_id,
             "outputs": item.outputs,
+            "partial_outputs": item.partial_outputs,
             "memory_events": item.memory_events,
             "gpu_trace": item.gpu_trace,
             "candidate_qa": item.candidate_qa,
@@ -275,12 +361,15 @@ class RenderQueue:
 
     def _item_from_dict(self, data: dict[str, Any]) -> QueuedRender:
         status = data.get("status", "queued")
+        raw_phase = str(data.get("phase") or "")
+        phase: str = raw_phase or ("queued" if status == "queued" else "preparing" if status == "running" else "complete" if status == "done" else "cancelled" if status == "cancelled" else "failed")
         provider = (data.get("provider_config") or {}).get("provider", "comfyui")
         submission = str(((data.get("cloud_receipt") or {}).get("submission") or {}).get("state") or "")
         if status == "running" and provider != "comfyui" and data.get("prompt_id"):
             # The cloud task was already created (and may be billing). Reconcile it by polling
             # the existing task on the next run instead of failing it or creating a duplicate.
             status = "queued"
+            phase = "queued"
             receipt = dict(data.get("cloud_receipt") or {})
             receipt["reconcile_after_restart"] = True
             data["cloud_receipt"] = receipt
@@ -288,6 +377,7 @@ class RenderQueue:
             # The app stopped while (or possibly after) sending the create request. Runway may have
             # accepted and billed it, so never call it unbilled and never resubmit automatically.
             status = "error"
+            phase = "recovery_required"
             receipt = dict(data.get("cloud_receipt") or {})
             receipt.update({"status": "UNCERTAIN", "charge_status": "unknown", "credits_charged": None})
             receipt.setdefault("submission", {})["state"] = "uncertain"
@@ -301,14 +391,24 @@ class RenderQueue:
             data["finished_at"] = data.get("finished_at") or time.time()
         elif status == "running":
             status = "error"
-            interrupted = "Render was interrupted by an application restart."
-            if provider != "comfyui":
-                interrupted += (
-                    " No request had reached Runway's task API, so no generation was billed; queue it again to retry."
+            if provider == "comfyui" and (data.get("prompt_id") or raw_phase in POST_SUBMIT_PHASES):
+                # RC-10: Local job already crossed submission to ComfyUI. Never blindly resubmit!
+                phase = "recovery_required"
+                data["error"] = data.get("error") or (
+                    "Local render was interrupted after submission to ComfyUI; inspect the previous output or retry explicitly."
                 )
-            data["error"] = data.get("error") or interrupted
-            data["error_category"] = data.get("error_category") or "render_failed"
-            data["error_message"] = data.get("error_message") or data["error"]
+                data["error_category"] = "recovery_required"
+                data["error_message"] = data["error"]
+            else:
+                phase = "failed"
+                interrupted = "Render was interrupted by an application restart."
+                if provider != "comfyui":
+                    interrupted += (
+                        " No request had reached Runway's task API, so no generation was billed; queue it again to retry."
+                    )
+                data["error"] = data.get("error") or interrupted
+                data["error_category"] = data.get("error_category") or "render_failed"
+                data["error_message"] = data.get("error_message") or data["error"]
             data["finished_at"] = data.get("finished_at") or time.time()
         return QueuedRender(
             id=data["id"],
@@ -322,11 +422,13 @@ class RenderQueue:
             chain_from_previous=bool(data.get("chain_from_previous")),
             label=data.get("label") or "",
             status=status,  # type: ignore[arg-type]
+            phase=phase,  # type: ignore[arg-type]
             error=data.get("error") or "",
             error_category=data.get("error_category") or "",
             error_message=data.get("error_message") or "",
             prompt_id=data.get("prompt_id"),
             outputs=list(data.get("outputs") or []),
+            partial_outputs=list(data.get("partial_outputs") or []),
             memory_events=list(data.get("memory_events") or []),
             gpu_trace=dict(data.get("gpu_trace") or {}),
             candidate_qa=dict(data.get("candidate_qa") or {}),
@@ -342,19 +444,20 @@ class RenderQueue:
         if not items_dir.is_dir():
             return
         for path in sorted(items_dir.glob("*.json")):
+            data = read_json_safe(path, None, quarantine=True, expected_type=dict)
+            if data is None:
+                continue
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
                 was_running = data.get("status") == "running"
                 item = self._item_from_dict(data)
-            except (json.JSONDecodeError, KeyError, OSError, ValueError):
+            except (KeyError, OSError, ValueError):
                 continue
             self._items.append(item)
             if was_running and item.status == "error":
-                if item.provider_config.provider == "comfyui":
-                    # A local render interrupted by a restart is not a failure: give it one fresh
-                    # attempt once the engine has had time to start. (A real failure on that
-                    # attempt still gets the normal recovery, and a broken chain stops visibly.)
+                if item.provider_config.provider == "comfyui" and item.phase != "recovery_required":
+                    # Only pre-submission local renders (no prompt_id yet) safely requeue for one fresh attempt.
                     item.status = "queued"
+                    item.phase = "queued"
                     item.error = ""
                     item.error_category = ""
                     item.error_message = ""
@@ -362,14 +465,17 @@ class RenderQueue:
                     item.runtime["retry_after"] = time.time() + 120  # ComfyUI needs about a minute to boot
                     item.memory_events.append({"reason": "interrupted-by-restart-retry", "retry_after_s": 120})
                 else:
-                    # Interrupted by a restart: record it once (an uncertain cloud submission keeps its
-                    # estimate reserved in the ledger) and retire the stale file so it cannot reappear.
+                    # Post-submission local recovery_required OR interrupted cloud submission:
+                    # record durably once and retire the active item file so it cannot blindly resubmit.
                     try:
                         self._record_cloud_final(item)
                         self._persist_history(item)
                     except OSError:
                         pass
-        self._persist()  # keep queue_state.json in step with the restored items (scenes wait on them)
+        try:
+            self._persist()  # keep queue_state.json in step with the restored items (scenes wait on them)
+        except OSError:
+            pass
 
     def _drop_item_file(self, item: QueuedRender) -> None:
         path = self.work_dir / "items" / f"{item.id}.json"
@@ -380,7 +486,7 @@ class RenderQueue:
 
     def _persist_history(self, item: QueuedRender) -> None:
         path = self.history_dir / f"{item.id}.json"
-        path.write_text(json.dumps(item.public(), indent=2), encoding="utf-8")
+        write_durable(path, json.dumps(item.public(), indent=2))
         self._drop_item_file(item)
 
     def _next(self) -> QueuedRender | None:
@@ -475,11 +581,17 @@ class RenderQueue:
 
     def _resolve_outputs(self, item: QueuedRender, outputs: list[str]) -> list[str]:
         root = item.output_dir or item.provider_config.output_dir
+        root_resolved = Path(root).expanduser().resolve() if root else None
         resolved: list[str] = []
         for output in outputs:
             path = Path(output)
-            if not path.is_absolute() and root:
-                path = Path(root) / path
+            if ".." in path.parts:
+                raise ValueError(f"Refusing renderer output path with parent traversal: {output!r}")
+            if not path.is_absolute() and root_resolved is not None:
+                candidate = (root_resolved / path).resolve()
+                if not candidate.is_relative_to(root_resolved):
+                    raise ValueError(f"Renderer output path escapes configured output_dir: {output!r}")
+                path = candidate
             resolved.append(str(path))
         return resolved
 
@@ -593,15 +705,67 @@ class RenderQueue:
              "credits_charged": receipt.get("credits_charged") if charge == "actual" else (0 if charge == "none" else None)},
         )
 
+    def _record_local_submitted(self, item: QueuedRender, prompt_id: str) -> None:
+        """Persist local ComfyUI prompt_id durably BEFORE waiting so crashes can reconcile safely."""
+        with self._lock:
+            item.prompt_id = str(prompt_id)
+            item.phase = "rendering"
+            try:
+                self._persist_item_durable(item)
+            except OSError as exc:
+                item.memory_events.append(
+                    {"reason": "local-submit-persist-failed", "error": f"{type(exc).__name__}: {exc}"}
+                )
+
+    @staticmethod
+    def _call_provider_render(
+        provider: Any,
+        workflow: str,
+        job: RenderJob,
+        *,
+        on_submitted: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
+        render_fn = provider.render
+        kwargs: dict[str, Any] = {}
+        try:
+            params = inspect.signature(render_fn).parameters
+            if "on_submitted" in params and on_submitted is not None:
+                kwargs["on_submitted"] = on_submitted
+            if "cancel_event" in params and cancel_event is not None:
+                kwargs["cancel_event"] = cancel_event
+        except (TypeError, ValueError):
+            pass
+        return render_fn(workflow, job, **kwargs)
+
     def _handle_failure(self, item: QueuedRender, exc: BaseException) -> None:
         """Record a render failure, then either recover once (local engine crash) or stop the chain."""
+        if isinstance(exc, ComfyUICancelledError):
+            partial_raw = list(getattr(exc, "partial_outputs", None) or [])
+            with self._lock:
+                if partial_raw:
+                    try:
+                        item.partial_outputs = self._resolve_outputs(item, partial_raw)
+                    except Exception:
+                        item.partial_outputs = partial_raw
+                item.status = "cancelled"
+                item.phase = "cancelled"
+            return
+
         classified = classify_exception(exc)
+        partial_raw = list(getattr(exc, "partial_outputs", None) or [])
         with self._lock:
             receipt = getattr(exc, "receipt", None)
             if isinstance(receipt, dict) and receipt:
                 item.cloud_receipt = {**item.cloud_receipt, **dict(receipt)}
+            if partial_raw:
+                try:
+                    item.partial_outputs = self._resolve_outputs(item, partial_raw)
+                except Exception:
+                    item.partial_outputs = partial_raw
             if item.status != "cancelled":
                 item.status = "error"
+                item.phase = "failed"
                 item.error = f"{type(exc).__name__}: {exc}"
                 item.error_category = classified.category
                 item.error_message = classified.message
@@ -648,11 +812,16 @@ class RenderQueue:
             item.memory_events.append(cleanup)
             with self._lock:
                 item.status = "queued"
+                item.phase = "queued"
+                item.prompt_id = None
                 item.error = None
                 item.error_category = None
                 item.error_message = None
                 item.started_at = None
-            self._persist()
+            try:
+                self._persist()
+            except OSError:
+                pass
             self._wake.set()
         elif item.provider_config.provider == "comfyui" and item.status == "error":
             self._cancel_downstream(item.id)  # a scene stops at its first broken shot
@@ -785,8 +954,17 @@ class RenderQueue:
             self._last_local_failed = False
 
             self.memory_manager.start_trace(item.id)
+            cancel_event = self.get_cancel_event(item.id)
             try:
-                result = provider.render(item.workflow, job)
+                with self._lock:
+                    item.phase = "submitted"
+                result = self._call_provider_render(
+                    provider,
+                    item.workflow,
+                    job,
+                    on_submitted=lambda pid: self._record_local_submitted(item, pid),
+                    cancel_event=cancel_event,
+                )
             finally:
                 item.gpu_trace = self.memory_manager.stop_trace()
         else:
@@ -804,7 +982,9 @@ class RenderQueue:
                 provider.on_task_created = lambda task_id, receipt: self._record_cloud_task(item, task_id, receipt)
             result = provider.render(item.workflow, job)
 
-        item.prompt_id = result["prompt_id"]
+        with self._lock:
+            item.prompt_id = result["prompt_id"]
+            item.phase = "output_received"
         if result.get("cloud_receipt"):
             item.cloud_receipt = {**item.cloud_receipt, **dict(result["cloud_receipt"])}
         item.outputs = self._resolve_outputs(item, result["outputs"])
@@ -814,10 +994,14 @@ class RenderQueue:
             self._extract_candidate_frame(item)
         item.output_hashes = hash_files(item.outputs)
 
-    def _run_candidate_qa(self, item: QueuedRender) -> None:
+    def _run_candidate_qa(self, item: QueuedRender, *, render_succeeded: bool = True) -> None:
         has_hook = bool(item.runtime.get("candidate_qa") or item.runtime.get("verification_record"))
-        if item.status != "done" or not has_hook or self.candidate_qa_runner is None:
+        if not render_succeeded or item.status in {"error", "cancelled"} or not has_hook or self.candidate_qa_runner is None:
             return
+        if self.get_cancel_event(item.id).is_set():
+            return
+        with self._lock:
+            item.phase = "inspecting"
         try:
             item.candidate_qa = self.candidate_qa_runner(item)
         except Exception as exc:
@@ -843,20 +1027,25 @@ class RenderQueue:
                 )
         return None
 
-    def _post_cleanup(self, item: QueuedRender, provider: Any) -> dict[str, Any]:
+    def _post_cleanup(self, item: QueuedRender, provider: Any, *, render_succeeded: bool | None = None) -> dict[str, Any]:
         """One post-render memory event coordinated with ResourcePlanner."""
+        effective_status = (
+            "done"
+            if (render_succeeded is True and item.status == "running")
+            else item.status
+        )
         is_cloud = (
             not _uses_local_gpu(provider)
             if provider is not None
             else item.provider_config.provider != "comfyui"
         )
         if is_cloud:
-            return _cloud_memory_event(f"post-render:{item.status}")
-        force_postclean = item.status in {"error", "cancelled"} or item.profile in {
+            return _cloud_memory_event(f"post-render:{effective_status}")
+        force_postclean = effective_status in {"error", "cancelled"} or item.profile in {
             "low_memory",
             "low_memory_quality",
         }
-        failed = item.status in {"error", "cancelled"}
+        failed = effective_status in {"error", "cancelled"}
         self._last_local_failed = failed
 
         planner: ResourcePlanner | None = getattr(self, "resource_planner", None)
@@ -867,19 +1056,19 @@ class RenderQueue:
             post_plan = planner.plan_post_render(
                 completed_model_id=completed_model,
                 next_queued_model_id=next_model,
-                job_status=item.status,
-                requires_vlm_qa=bool(item.runtime.get("candidate_qa")),
+                job_status=effective_status,
+                requires_vlm_qa=bool(item.runtime.get("candidate_qa") or item.runtime.get("visual_inspection_vlm")),
             )
             keep_loaded = not post_plan["unload_models"]
             respect_retention = bool(post_plan["respect_retention"])
             reason = (
-                f"post-render:{item.status} · keep image models"
+                f"post-render:{effective_status} · keep image models"
                 if _keeps_image_models_loaded(item) and keep_loaded
                 else post_plan["reason"]
             )
         else:
             keep_loaded = _keeps_image_models_loaded(item) and not failed
-            reason = f"post-render:{item.status}" + (" · keep image models" if keep_loaded else "")
+            reason = f"post-render:{effective_status}" + (" · keep image models" if keep_loaded else "")
 
         if not keep_loaded:
             self._last_local_workflow = None
@@ -902,22 +1091,32 @@ class RenderQueue:
                 self._wake.clear()
                 continue
 
+            cancel_event = self.get_cancel_event(item.id)
             with self._lock:
+                if item.status == "cancelled" or cancel_event.is_set():
+                    continue
                 item.status = "running"
+                item.phase = "preparing"
                 item.started_at = time.time()
-                self._persist()
+                try:
+                    self._persist()
+                except OSError as exc:
+                    item.memory_events.append(
+                        {"reason": "queue-start-persist-failed", "error": f"{type(exc).__name__}: {exc}"}
+                    )
 
+            render_succeeded = False
             try:
                 self._execute(item)
-                with self._lock:
-                    if item.status != "cancelled":
-                        item.status = "done"
+                render_succeeded = True
             except Exception as exc:  # surface exact renderer failures for tuning
                 self._handle_failure(item, exc)
             finally:
                 provider = self._active_provider
                 try:
-                    item.memory_events.append(self._post_cleanup(item, provider))
+                    item.memory_events.append(
+                        self._post_cleanup(item, provider, render_succeeded=render_succeeded)
+                    )
                 except Exception as exc:
                     item.memory_events.append(
                         {
@@ -926,7 +1125,26 @@ class RenderQueue:
                         }
                     )
 
-                self._run_candidate_qa(item)
+                # RC-10: Keep item.status == "running" across QA & correction so cancellation still works
+                # and UI never declares completion before inspection/correction & history persistence finish!
+                self._run_candidate_qa(item, render_succeeded=render_succeeded)
+                if item.outputs:
+                    try:
+                        item.output_hashes = hash_files(item.outputs)
+                    except OSError:
+                        pass
+
+                with self._lock:
+                    cancelled = item.status == "cancelled" or cancel_event.is_set()
+                    if cancelled:
+                        item.status = "cancelled"
+                        item.phase = "cancelled"
+                    elif render_succeeded and item.status == "running":
+                        item.phase = "persisting"
+                        item.status = "done"
+                    elif item.status == "error" and item.phase not in {"failed", "recovery_required"}:
+                        item.phase = "failed"
+
                 try:
                     self._record_cloud_final(item)
                 except OSError as exc:
@@ -936,5 +1154,24 @@ class RenderQueue:
                     item.finished_at = time.time()
                     self._active_provider = None
                     self._active_id = None
-                    self._persist()
-                    self._persist_history(item)
+                    if item.status == "done":
+                        item.phase = "complete"
+                    persist_err: str | None = None
+                    try:
+                        self._persist_history(item)
+                    except OSError as exc:
+                        persist_err = f"{type(exc).__name__}: {exc}"
+                        item.memory_events.append({"reason": "history-persist-failed", "error": persist_err})
+                        if item.status == "done":
+                            item.status = "error"
+                            item.phase = "failed"
+                            item.error = f"Failed to persist finished render record: {persist_err}"
+                            item.error_category = "persistence_failed"
+                            item.error_message = item.error
+                    try:
+                        self._persist()
+                    except OSError as exc:
+                        item.memory_events.append(
+                            {"reason": "queue-persist-failed", "error": f"{type(exc).__name__}: {exc}"}
+                        )
+                    self._cancel_events.pop(item.id, None)

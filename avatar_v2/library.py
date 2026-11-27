@@ -259,14 +259,15 @@ class LibraryStore:
         return self.root / name
 
     def _read(self, name: str) -> dict[str, dict[str, Any]]:
-        try:
-            data = json.loads(self._path(name).read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
+        from .ownership import read_json_safe
+
+        data = read_json_safe(self._path(name), {}, quarantine=True, expected_type=dict)
+        return data if isinstance(data, dict) else {}
 
     def _write(self, name: str, data: dict[str, dict[str, Any]]) -> None:
-        self._path(name).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        from .ownership import write_json_atomic
+
+        write_json_atomic(self._path(name), data)
 
     def manifest_path(self, avatar_id: str) -> Path:
         return self.root / "manifests" / f"{_validate_id(avatar_id)}.avatar_manifest.json"
@@ -303,7 +304,9 @@ class LibraryStore:
             "profile_coverage": profile.nude_mode,
             "manifest": profile.build_manifest.model_dump(),
         }
-        path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+        from .ownership import write_json_atomic
+
+        write_json_atomic(path, document)
         return path
 
     def _crud(self, name: str, model: type[BaseModel], entry_id: str) -> None:

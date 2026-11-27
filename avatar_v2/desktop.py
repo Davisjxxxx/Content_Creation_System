@@ -32,6 +32,7 @@ from .ownership import (
     classify_media_ownership,
     inspect_process_identity,
     load_ownership_record,
+    read_json_safe,
     save_ownership_record,
     send_signal_if_owned,
     verify_process_ownership,
@@ -183,10 +184,7 @@ MAX_DESIGNER_BODY_REFS = 8  # H3 accepts nine pictures; reserve one for primary 
 
 
 def _read_json(path: Path, default: Any) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return default
+    return read_json_safe(path, default, quarantine=True)
 
 
 def _write_json(path: Path, data: Any) -> None:
@@ -943,8 +941,9 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                 asset_map[f"REF_IMAGE_{idx}"] = str(Path(rpath).expanduser().resolve())
 
         cor_job = item.job.model_copy(update={"asset_map": asset_map})
+        cancel_ev = self.queue.get_cancel_event(item.id) if hasattr(self, "queue") and self.queue is not None else None
         t0 = time.monotonic()
-        res = provider.render(step.workflow, cor_job)
+        res = RenderQueue._call_provider_render(provider, step.workflow, cor_job, cancel_event=cancel_ev)
         elapsed_ms = round((time.monotonic() - t0) * 1000.0, 1)
         resolved = self.queue._resolve_outputs(item, res.get("outputs") or [])
         if not resolved or not Path(resolved[0]).is_file():
@@ -1021,18 +1020,24 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         correction_summary: dict[str, Any] | None = None
 
         # Optional host-bounded Sprint 8 automated correction when explicitly requested on local jobs.
+        cancel_ev = (
+            self.queue.get_cancel_event(item.id)
+            if hasattr(self, "queue") and self.queue is not None
+            else threading.Event()
+        )
+        if item.status == "cancelled":
+            cancel_ev.set()
+
         if (
             item.runtime.get("auto_correct")
             and result.overall_decision == "needs_correction"
             and item.provider_config.provider == "comfyui"
             and item.status != "cancelled"
+            and not cancel_ev.is_set()
         ):
             from .correction_engine import CorrectionCoordinator
-            import threading
 
-            cancel_ev = threading.Event()
-            if item.status == "cancelled":
-                cancel_ev.set()
+            item.phase = "correcting"
 
             def _status_cb(label: str) -> None:
                 item.runtime["phase_label"] = label

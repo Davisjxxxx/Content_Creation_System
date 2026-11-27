@@ -341,7 +341,8 @@ def test_journey_c_local_images_profiles_unicode_and_ephemeral_staging_cleanup(
         for f in staged_dir.glob("*"):
             f.unlink()
 
-        # 5. Simulate restart: saved profile STILL points to original files and reloads cleanly!
+        # 5. Simulate restart: shut down first instance cleanly, then start second instance.
+        api.queue.shutdown()
         api2 = desktop.DesktopAPI()
         try:
             listed = api2.character_profiles({"action": "list"})

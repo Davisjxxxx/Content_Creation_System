@@ -4,9 +4,10 @@ import json
 import mimetypes
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -16,6 +17,25 @@ from ..workflows_builder import BUILTIN_BUILDERS, with_tiled_vae, with_wan_end_f
 
 class ComfyUIExecutionError(RuntimeError):
     """A ComfyUI workflow executed but one of its nodes failed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_outputs: list[str] | None = None,
+        history_item: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.partial_outputs: list[str] = list(partial_outputs or [])
+        self.history_item: dict[str, Any] | None = history_item
+
+
+class ComfyUICancelledError(RuntimeError):
+    """A ComfyUI job was cancelled or interrupted before completion."""
+
+    def __init__(self, message: str = "ComfyUI job cancelled", *, partial_outputs: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.partial_outputs: list[str] = list(partial_outputs or [])
 
 
 class ComfyUINotReadyError(RuntimeError):
@@ -259,47 +279,128 @@ class ComfyUIProvider:
             )
             response.raise_for_status()
 
-    def wait(self, prompt_id: str) -> dict[str, Any]:
+    def get_history_item(self, prompt_id: str) -> dict[str, Any] | None:
+        """Fetch a single ComfyUI history record if present, or None if not yet recorded."""
+        with httpx.Client(timeout=15) as client:
+            response = client.get(f"{self.base_url}/history/{prompt_id}")
+            response.raise_for_status()
+            data = response.json()
+        item = data.get(prompt_id) if isinstance(data, dict) else None
+        return item if isinstance(item, dict) else None
+
+    @staticmethod
+    def _extract_execution_error(item: dict[str, Any]) -> str | None:
+        status = item.get("status") or {}
+        if not isinstance(status, dict):
+            return None
+        messages = status.get("messages") or []
+        for message in reversed(messages):
+            if isinstance(message, list) and len(message) >= 2 and message[0] == "execution_error":
+                detail = message[1] if isinstance(message[1], dict) else {}
+                return (
+                    f"ComfyUI node {detail.get('node_id')} "
+                    f"({detail.get('node_type')}) failed: "
+                    f"{str(detail.get('exception_message', 'unknown error')).strip()}"
+                )
+        if status.get("status_str") == "error":
+            return "ComfyUI execution failed without a node-level message"
+        return None
+
+    @staticmethod
+    def _is_interrupted(item: dict[str, Any]) -> bool:
+        status = item.get("status") or {}
+        if not isinstance(status, dict):
+            return False
+        if status.get("status_str") == "interrupted":
+            return True
+        for message in status.get("messages") or []:
+            if isinstance(message, list) and message and message[0] == "execution_interrupted":
+                return True
+        return False
+
+    def wait(self, prompt_id: str, *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         deadline = time.monotonic() + self.config.timeout_s
         with httpx.Client(timeout=30) as client:
             while time.monotonic() < deadline:
+                if cancel_event is not None and cancel_event.is_set():
+                    try:
+                        self.interrupt(prompt_id, allow_global=False)
+                    except Exception:
+                        pass
+                    raise ComfyUICancelledError(f"ComfyUI job {prompt_id} was cancelled")
                 response = client.get(f"{self.base_url}/history/{prompt_id}")
                 response.raise_for_status()
                 data = response.json()
                 if prompt_id in data:
                     item = data[prompt_id]
+                    # RC-16: Always evaluate execution_error / interrupted BEFORE outputs, so partial
+                    # artifacts from earlier nodes are NEVER promoted as a completed render!
+                    err_msg = self._extract_execution_error(item)
+                    if err_msg is not None:
+                        raise ComfyUIExecutionError(
+                            err_msg,
+                            partial_outputs=self.output_files(item),
+                            history_item=item,
+                        )
+                    if self._is_interrupted(item):
+                        raise ComfyUICancelledError(
+                            f"ComfyUI job {prompt_id} was interrupted",
+                            partial_outputs=self.output_files(item),
+                        )
                     status = item.get("status", {})
-                    if status.get("completed") is True or item.get("outputs"):
+                    if status.get("completed") is True or (
+                        status.get("completed") is not False and item.get("outputs")
+                    ):
                         return item
-                    if status.get("status_str") == "error":
-                        messages = status.get("messages") or []
-                        for message in reversed(messages):
-                            if message[0] == "execution_error":
-                                detail = message[1]
-                                raise ComfyUIExecutionError(
-                                    f"ComfyUI node {detail.get('node_id')} "
-                                    f"({detail.get('node_type')}) failed: "
-                                    f"{detail.get('exception_message', 'unknown error').strip()}"
-                                )
-                        raise ComfyUIExecutionError("ComfyUI execution failed without a node-level message")
-                time.sleep(1.5)
+                if cancel_event is not None:
+                    if cancel_event.wait(timeout=1.5):
+                        try:
+                            self.interrupt(prompt_id, allow_global=False)
+                        except Exception:
+                            pass
+                        raise ComfyUICancelledError(f"ComfyUI job {prompt_id} was cancelled")
+                else:
+                    time.sleep(1.5)
         raise TimeoutError(f"ComfyUI job {prompt_id} exceeded {self.config.timeout_s}s")
 
     @staticmethod
     def output_files(history_item: dict[str, Any]) -> list[str]:
         found: list[str] = []
-        for node_output in history_item.get("outputs", {}).values():
+        for node_output in (history_item.get("outputs") or {}).values():
+            if not isinstance(node_output, dict):
+                continue
             for key in ("images", "gifs", "videos", "audio"):
                 for item in node_output.get(key, []) or []:
                     filename = item.get("filename") if isinstance(item, dict) else None
                     subfolder = item.get("subfolder", "") if isinstance(item, dict) else ""
-                    if filename:
-                        found.append(str(Path(subfolder) / filename))
+                    if not filename:
+                        continue
+                    rel = Path(str(subfolder)) / str(filename)
+                    # RC-16: Refuse absolute paths or parent-directory traversal from renderer output metadata.
+                    if rel.is_absolute() or ".." in rel.parts or str(filename).startswith(("/", "\\")):
+                        raise ValueError(f"Refusing unsafe ComfyUI output path: {rel!s}")
+                    found.append(str(rel))
         return found
 
-    def render(self, workflow_path: str | Path, job: RenderJob) -> dict[str, Any]:
+    def render(
+        self,
+        workflow_path: str | Path,
+        job: RenderJob,
+        *,
+        on_submitted: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ComfyUICancelledError("ComfyUI job was cancelled before submission")
         workflow = self.resolve_workflow(workflow_path, job, stage_assets=True)
+        if cancel_event is not None and cancel_event.is_set():
+            raise ComfyUICancelledError("ComfyUI job was cancelled before submission")
         prompt_id = self.queue(workflow)
-        history = self.wait(prompt_id)
+        if on_submitted is not None:
+            on_submitted(prompt_id)
+        if cancel_event is not None:
+            history = self.wait(prompt_id, cancel_event=cancel_event)
+        else:
+            history = self.wait(prompt_id)
         outputs = self.output_files(history)
         return {"prompt_id": prompt_id, "outputs": outputs, "history": history}

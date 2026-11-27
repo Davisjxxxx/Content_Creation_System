@@ -417,19 +417,15 @@ class CharacterProfileStore:
         self.store_path = Path(store_path)
 
     def _load_raw(self) -> dict[str, dict[str, Any]]:
-        if not self.store_path.is_file():
-            return {}
-        try:
-            data = json.loads(self.store_path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            return {}
+        from .ownership import read_json_safe
+
+        data = read_json_safe(self.store_path, {}, quarantine=True, expected_type=dict)
+        return data if isinstance(data, dict) else {}
 
     def _save_raw(self, data: dict[str, dict[str, Any]]) -> None:
-        self.store_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.store_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(self.store_path)
+        from .ownership import write_json_atomic
+
+        write_json_atomic(self.store_path, data)
 
     def list_profiles(self) -> list[dict[str, Any]]:
         raw = self._load_raw()
