@@ -139,7 +139,30 @@ def test_rc06_cardinality_multisubject_missing_starter_and_end_image_ui(
         assert "multiple subjects" in res_ms["error"].lower()
 
         # 4. Scene with end_image records end_keyframe in verification_record!
-        monkeypatch.setattr(api.queue, "add_many", lambda items: [it.id for it in items])
+        import avatar_v2.local_engine as le
+
+        monkeypatch.setattr(
+            le,
+            "inspect",
+            lambda settings: {
+                "installed": True,
+                "missing_models": [],
+                "comfyui_dir": "/tmp/fake_comfy",
+                "workflow_present": True,
+                "video_models": {
+                    "a14b": {"id": "a14b", "label": "Wan 2.2 A14B", "minutes": 6, "missing_models": [], "installed": True},
+                    "5b": {"id": "5b", "label": "Wan 2.2 5B", "minutes": 5, "missing_models": [], "installed": True},
+                },
+            },
+        )
+        monkeypatch.setattr(
+            le,
+            "video_model_info",
+            lambda settings: {
+                "a14b": {"id": "a14b", "label": "Wan 2.2 A14B", "minutes": 6, "missing_models": [], "installed": True},
+                "5b": {"id": "5b", "label": "Wan 2.2 5B", "minutes": 5, "missing_models": [], "installed": True},
+            },
+        )
         captured: list[QueuedRender] = []
         monkeypatch.setattr(api.queue, "add_many", lambda items: (captured.extend(items), [it.id for it in items])[1])
         res_flf = api.forge_go(

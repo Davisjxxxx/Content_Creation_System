@@ -52,9 +52,37 @@ def _isolated_api(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[desk
 # ---------------------------------------------------------------------------
 
 
+def _stub_local_engine_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    import avatar_v2.local_engine as le
+
+    monkeypatch.setattr(
+        le,
+        "inspect",
+        lambda settings: {
+            "installed": True,
+            "missing_models": [],
+            "comfyui_dir": "/tmp/fake_comfy",
+            "workflow_present": True,
+            "video_models": {
+                "a14b": {"id": "a14b", "label": "Wan 2.2 A14B", "minutes": 6, "missing_models": [], "installed": True},
+                "5b": {"id": "5b", "label": "Wan 2.2 5B", "minutes": 5, "missing_models": [], "installed": True},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        le,
+        "video_model_info",
+        lambda settings: {
+            "a14b": {"id": "a14b", "label": "Wan 2.2 A14B", "minutes": 6, "missing_models": [], "installed": True},
+            "5b": {"id": "5b", "label": "Wan 2.2 5B", "minutes": 5, "missing_models": [], "installed": True},
+        },
+    )
+
+
 def test_rc04_move_without_explicit_engine_refuses_paid_runway_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    _stub_local_engine_installed(monkeypatch)
     api, _ = _isolated_api(monkeypatch, tmp_path)
     try:
         starter = _make_png(tmp_path / "starter.png")
@@ -92,6 +120,7 @@ def test_rc06_wan_video_refuses_locked_back_body_and_never_claims_unconditioned_
     Starter image + locked back_body on Wan scene MUST fail closed instead of queueing
     a single-ref Wan job while claiming back_body in verification_record.
     """
+    _stub_local_engine_installed(monkeypatch)
     api, _ = _isolated_api(monkeypatch, tmp_path)
     try:
         starter = _make_png(tmp_path / "starter.png", (100, 110, 120))
