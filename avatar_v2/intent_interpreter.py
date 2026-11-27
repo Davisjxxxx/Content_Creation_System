@@ -93,8 +93,23 @@ _SPELLED_COUNTS: dict[str, int] = {
 }
 
 _QUOTED_TEXT_RE = re.compile(r'(?:reading|says?|text|sign|label|title|printed)\s+["\']([^"\']{1,60})["\']|["\']([A-Z0-9][A-Za-z0-9 &!?:.-]{1,40})["\']')
+# RC-07: Stop count noun-phrases BEFORE conjunctions, prepositions, or another number so
+# "Exactly two cups and three bowls." yields BOTH "2 cups" AND "3 bowls" without bleeding across clauses!
+_COUNT_STOP_WORD = (
+    r"(?:and|or|but|with|while|without|on|in|at|of|to|by|from|for|beside|behind|near|under|over|next|between|"
+    r"keep|kept|stay|stays|remain|remains|leaving|leave|"
+    r"one|single|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
+    r"sixteen|seventeen|eighteen|nineteen|twenty|dozen|pair|\d)"
+)
 _COUNT_RE = re.compile(
-    r"\b(?:exactly\s+)?(one|single|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|dozen|pair\s+of|[1-9]\d{0,2})\s+([a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,2})\b",
+    rf"\b(?:exactly\s+)?(one|single|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|dozen|pair\s+of|[1-9]\d{{0,2}})\s+"
+    rf"((?!{_COUNT_STOP_WORD}\b)[a-z][a-z-]*(?:\s+(?!{_COUNT_STOP_WORD}\b)[a-z][a-z-]*){{0,2}})\b",
+    re.IGNORECASE,
+)
+_OBJECT_STATE_RE = re.compile(
+    r"\b(?:keep|kept|leave|leaving|make|ensure|must\s+be|stays?|remains?|with)\s+"
+    r"((?:the|a|an|both|all|her|his|their)\s+[a-z0-9][a-z0-9\s-]{1,35}?)\s+"
+    r"(closed|open|opened|shut|sealed|empty|full|lit|unlit|turned\s+on|turned\s+off|folded|unfolded|intact|broken|locked|unlocked|clean|dry|wet)\b",
     re.IGNORECASE,
 )
 _SPATIAL_REL_RE = re.compile(
@@ -373,12 +388,15 @@ def interpret_natural_language(
                 )
             )
 
+    matched_spans: list[tuple[int, int]] = []
+
     typography_targets: list[str] = []
     for m in _QUOTED_TEXT_RE.finditer(clean_prompt):
         quoted = (m.group(1) or m.group(2) or "").strip()
         if quoted and quoted not in typography_targets:
             typography_targets.append(quoted)
             _add_req("typography", f'Exact visible text: "{quoted}"')
+            matched_spans.append((m.start(), m.end()))
 
     for m in _COUNT_RE.finditer(clean_prompt):
         raw_qty, obj = m.group(1).strip().lower(), m.group(2).strip()
@@ -388,7 +406,6 @@ def interpret_natural_language(
             qty_num = int(raw_qty)
         else:
             qty_num = _SPELLED_COUNTS.get(raw_qty, 0)
-        # Trim trailing stop-words from greedy 3-word object span (e.g. "mugs on the" -> "mugs")
         obj_tokens = obj.split()
         while obj_tokens and obj_tokens[-1].lower() in {"on", "in", "at", "of", "to", "with", "and", "or", "the", "a", "an", "by", "from", "for"}:
             obj_tokens.pop()
@@ -396,6 +413,13 @@ def interpret_natural_language(
         first_word = obj_tokens[0].lower() if obj_tokens else ""
         if qty_num > 0 and first_word and first_word not in _NON_OBJECT_UNITS and first_word not in {"of", "more", "less", "other", "another"}:
             _add_req("object_quantities", f"Exact count: {qty_num} {obj_clean}")
+            matched_spans.append((m.start(), m.end()))
+
+    for m in _OBJECT_STATE_RE.finditer(clean_prompt):
+        target_obj = " ".join(m.group(1).split())
+        state_word = " ".join(m.group(2).split()).lower()
+        _add_req("object_states", f"Object state: {target_obj} {state_word}")
+        matched_spans.append((m.start(), m.end()))
 
     spatial_added = False
     for m in _SPATIAL_REL_RE.finditer(clean_prompt):
@@ -403,11 +427,13 @@ def interpret_natural_language(
         rel = " ".join(m.group(2).split())
         subj_b = " ".join(m.group(3).split())
         _add_req("spatial_relationships", f"Spatial placement: {subj_a} {rel} {subj_b}")
+        matched_spans.append((m.start(), m.end()))
         spatial_added = True
     for m in _SPATIAL_SIDE_RE.finditer(clean_prompt):
         subj_a = " ".join(m.group(1).split())
         side = " ".join(m.group(2).split())
         _add_req("spatial_relationships", f"Spatial placement: {subj_a} {side}")
+        matched_spans.append((m.start(), m.end()))
         spatial_added = True
     if not spatial_added:
         for m in _SPATIAL_RE.finditer(clean_prompt):
@@ -416,6 +442,7 @@ def interpret_natural_language(
             end = min(len(clean_prompt), m.end() + 32)
             snippet = clean_prompt[start:end].strip(" ,.;")
             _add_req("spatial_relationships", f"Spatial placement: {snippet}")
+            matched_spans.append((m.start(), m.end()))
 
     exclusions = list(base_spec.excluded_attributes)
     for m in _EXCLUSION_RE.finditer(clean_prompt):
@@ -423,9 +450,20 @@ def interpret_natural_language(
         if term and len(term) >= 2 and term.lower() not in {e.lower() for e in exclusions}:
             exclusions.append(term)
             _add_req("exclusion", f"No {term}")
+            matched_spans.append((m.start(), m.end()))
     base_spec.excluded_attributes = exclusions
 
-    # RC-07: Preserve explicit user prompt requirements even when no narrow regex matched (never leave 0 semantic requirements!).
+    # RC-07: Check per-sentence coverage so multi-sentence prompts NEVER drop an uncovered sentence
+    # (e.g. "Two ceramic cups. Keep the wooden box closed." preserves BOTH sentences!).
+    if clean_prompt:
+        for sm in re.finditer(r"[^.!?;]+[.!?;]?", clean_prompt):
+            sent = sm.group(0).strip(" .!?;")
+            if len(sent.split()) < 2:
+                continue
+            s_start, s_end = sm.start(), sm.end()
+            covered = any(not (end <= s_start or start >= s_end) for start, end in matched_spans)
+            if not covered:
+                _add_req("complex_nl", f"Explicit prompt fidelity: {sent[:220]}")
     if clean_prompt and not reqs:
         _add_req("complex_nl", f"Explicit prompt fidelity: {clean_prompt[:220]}")
 

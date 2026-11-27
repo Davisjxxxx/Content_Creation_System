@@ -329,6 +329,35 @@ class LocalReferenceManager:
         self._max_staged_files = max(8, int(max_staged_files))
         self._lock = threading.RLock()
         self._approved: dict[str, ValidatedReference] = {}
+        self._pins_path = self.staging_dir / ".pins.json"
+        self._pinned: dict[str, set[str]] = self._load_pins_locked()
+
+    def _load_pins_locked(self) -> dict[str, set[str]]:
+        if not self._pins_path.is_file():
+            return {}
+        try:
+            raw = json.loads(self._pins_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        loaded: dict[str, set[str]] = {}
+        for k, v in raw.items():
+            if isinstance(k, str) and isinstance(v, list):
+                jids = {str(j) for j in v if str(j).strip()}
+                if jids:
+                    loaded[k] = jids
+        return loaded
+
+    def _save_pins_locked(self) -> None:
+        try:
+            self.staging_dir.mkdir(parents=True, exist_ok=True)
+            serialized = {k: sorted(v) for k, v in self._pinned.items() if v}
+            tmp = self._pins_path.with_name(f".pins.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(serialized, indent=2), encoding="utf-8")
+            os.replace(tmp, self._pins_path)
+        except OSError:
+            pass
 
     def add_trusted_root(self, root: Path) -> None:
         with self._lock:
@@ -476,7 +505,7 @@ class LocalReferenceManager:
         }
 
     def pin_staged(self, staged_path: str | Path, job_id: str) -> None:
-        """Pin a staged reference file so LRU pruning cannot evict it while ``job_id`` is queued/running (RC-19)."""
+        """Pin a staged reference file durably so LRU pruning cannot evict it while ``job_id`` is queued/running (RC-19)."""
         resolved = str(Path(staged_path).expanduser().resolve(strict=False))
         jid = str(job_id or "").strip()
         if not jid:
@@ -487,6 +516,7 @@ class LocalReferenceManager:
                 pins = {}
                 self._pinned = pins
             pins.setdefault(resolved, set()).add(jid)
+            self._save_pins_locked()
 
     def unpin_job(self, job_id: str) -> None:
         """Release all staged reference pins held by a finished/cancelled job."""
@@ -497,10 +527,15 @@ class LocalReferenceManager:
             pins = getattr(self, "_pinned", None)
             if not pins:
                 return
+            changed = False
             for path_key in list(pins.keys()):
-                pins[path_key].discard(jid)
+                if jid in pins[path_key]:
+                    pins[path_key].discard(jid)
+                    changed = True
                 if not pins[path_key]:
                     del pins[path_key]
+            if changed:
+                self._save_pins_locked()
 
     def _prune_staging_locked(self) -> None:
         """Keep the ephemeral staging cache bounded by LRU mtime, never evicting pinned active-job refs."""

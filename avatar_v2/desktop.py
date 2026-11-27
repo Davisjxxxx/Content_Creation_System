@@ -1090,8 +1090,21 @@ class DesktopAPI(StudioMixin, PresenterMixin):
 
         item.runtime["verification_record"]["inspection_result"] = result.model_dump()
         summary = result.compact_ui_summary()
+        import hashlib as _hashlib
+
+        req_set_hash = _hashlib.sha256(
+            json.dumps(record.prompt_requirements, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:16]
         output_inspections: dict[str, dict[str, Any]] = {
-            str(target): {**summary, "candidate_role": "original", "is_best": True}
+            str(target): {
+                **summary,
+                "output_path": str(target),
+                "output_sha256": sha256_file(target) or "",
+                "requirement_set_hash": req_set_hash,
+                "inspected": True,
+                "candidate_role": "original",
+                "is_best": True,
+            }
         }
         correction_summary: dict[str, Any] | None = None
 
@@ -1178,6 +1191,10 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                     cand_sum = att.actual_inspection_result.compact_ui_summary()
                     output_inspections[att.candidate_output_path] = {
                         **cand_sum,
+                        "output_path": att.candidate_output_path,
+                        "output_sha256": sha256_file(att.candidate_output_path) or "",
+                        "requirement_set_hash": req_set_hash,
+                        "inspected": True,
                         "candidate_role": f"correction_attempt_{att.attempt_number}",
                         "disposition": att.final_disposition,
                         "is_best": bool(session.best_candidate_path == att.candidate_output_path),
@@ -1193,6 +1210,22 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             else:
                 summary["ui_status"] = session.ui_status
                 summary["ui_status_label"] = session.ui_status_label
+
+        # RC-09: Explicitly mark EVERY uninspected alternate output on this job as "Not inspected"
+        # so neither backend nor UI can ever smear another output's verified verdict onto it!
+        for out_raw in list(item.outputs or []):
+            out_key = str(out_raw)
+            if out_key not in output_inspections:
+                output_inspections[out_key] = {
+                    "output_path": out_key,
+                    "output_sha256": sha256_file(out_key) or "",
+                    "requirement_set_hash": req_set_hash,
+                    "inspected": False,
+                    "ui_status": "generated",
+                    "ui_status_label": "Not inspected",
+                    "decision": "uninspected",
+                    "is_best": False,
+                }
 
         return {
             "ok": True,

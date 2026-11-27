@@ -785,12 +785,35 @@ async function stDelete(path,tile,detachOnly){let r;try{r=await window.pywebview
   ['moveImage','sceneImage','actImage','anglesImage'].forEach(k=>{if(st[k]===path)st[k]=''});
   if($('view-library').classList.contains('active'))libLoad();else stLoad();
   const cur=viewer.items[viewer.index];if(cur&&cur.path===path)viewerClose()}
+function _resolveOutputInspection(r,path){
+  const map=(r&&r.output_inspections&&typeof r.output_inspections==='object')?r.output_inspections:null;
+  const hasMap=!!(map&&Object.keys(map).length>0);
+  const multiOut=!!(r&&Array.isArray(r.outputs)&&r.outputs.length>1);
+  const perOut=(hasMap&&Object.prototype.hasOwnProperty.call(map,path))?map[path]:null;
+  if(perOut){
+    const uninspected=perOut.inspected===false||perOut.decision==='uninspected';
+    return {
+      perOut,
+      ins:perOut,
+      cor:uninspected?null:(r&&r.correction?r.correction:null),
+      statusLbl:perOut.ui_status_label||(uninspected?'Not inspected':'')
+    };
+  }
+  // RC-09: NEVER fall back from a missing per-output entry to job-level verified status!
+  if(hasMap||multiOut){
+    const un={ui_status:'generated',ui_status_label:'Not inspected',decision:'uninspected',inspected:false};
+    return {perOut:null,ins:un,cor:null,statusLbl:'Not inspected'};
+  }
+  const ins=(r&&r.inspection)?r.inspection:null;
+  const cor=(r&&r.correction)?r.correction:null;
+  return {perOut:null,ins,cor,statusLbl:(cor&&cor.ui_status_label)||(ins&&ins.ui_status_label)||''};
+}
 function mediaViewerItems(list){return list.filter(x=>x.kind==='image'||x.kind==='video').map(x=>{
   const r=x.result||x;
-  const perOut=(r&&r.output_inspections&&r.output_inspections[x.path])?r.output_inspections[x.path]:null;
-  const ins=perOut||(r&&r.inspection?r.inspection:null),cor=r&&r.correction?r.correction:null;
+  const resolved=_resolveOutputInspection(r,x.path);
+  const perOut=resolved.perOut,ins=resolved.ins,cor=resolved.cor;
   const baseMeta=stWhen(r?r.finished_at:x.finished_at);
-  const statusLbl=(perOut&&perOut.ui_status_label)||(cor&&cor.ui_status_label)||(ins&&ins.ui_status_label)||'';
+  const statusLbl=resolved.statusLbl;
   const roleTag=perOut&&perOut.is_best?'best':(perOut&&perOut.candidate_role==='original'?'original':'');
   const fullMeta=[baseMeta,statusLbl,roleTag].filter(Boolean).join(' · ');
   return {
@@ -816,9 +839,8 @@ function renderResultTiles(root,list,limit){
   const viewable=mediaViewerItems(items);
   items.forEach(x=>{const r=x.result||x;const isImg=x.kind==='image',isVid=x.kind==='video';
     const src=r.source||x.source,origin=src==='old'?' · made with the old app':src==='gpu'?' · free (your GPU)':(r.credits!==null&&r.credits!==undefined?' · '+stCredits(r.credits):'');
-    const perOut=(r.output_inspections&&r.output_inspections[x.path])?r.output_inspections[x.path]:null;
-    const effIns=perOut||r.inspection;
-    const qaTag=effIns&&effIns.ui_status_label?` · ${effIns.ui_status_label}`:'';
+    const resolved=_resolveOutputInspection(r,x.path);
+    const qaTag=resolved.statusLbl?` · ${resolved.statusLbl}`:'';
     let tile;
     const remove=()=>stDelete(x.path,tile);
     const openInViewer=()=>viewerOpen(viewable,Math.max(0,viewable.findIndex(v=>v.path===x.path)));
@@ -916,7 +938,7 @@ function stRender(first){
 }
 async function stLoad(){let d;try{d=await window.pywebview.api.studio_state()}catch(e){return}if(!d||!d.ok)return;
   const first=!st.data;st.data=d;if(first){st.look=d.look||'natural';$('stExtra').value=d.extra||''}
-  stRender(first);const active=(d.jobs||[]).length;if(st.lastJobs>0&&active===0)stRefreshBalance();st.lastJobs=active}
+  stRender(first);st.lastJobs=(d.jobs||[]).length}
 
 /* ---------- the Free builder (offline, prompt-first) ---------- */
 const FORGE_IDEAS=[
@@ -992,7 +1014,13 @@ function forgeSubjectRefsPayload(){
   const refs=(st.forge.subjectRefs||[]).filter(r=>r&&r.path);
   if(!refs.length)return null;
   return {
-    references:refs.map(r=>({role:r.role||'front_body',path:r.path,subject_id:r.subject_id||'primary',locked:!!r.locked})),
+    references:refs.map(r=>({
+      role:r.role||'front_body',
+      path:r.path,
+      subject_id:r.subject_id||'primary',
+      locked:!!r.locked,
+      asset_fingerprint:r.asset_fingerprint||''
+    })),
     preserve_identity:!!($('subjKeepId')?$('subjKeepId').checked:true),
     preserve_appearance:!!($('subjKeepApp')?$('subjKeepApp').checked:true),
     preserve_wardrobe:!!($('subjKeepWard')?$('subjKeepWard').checked:true)
@@ -1037,7 +1065,7 @@ async function subjRefAddLocal(){
   if(!r||r.cancelled)return;
   if(!r.ok){say(r.error||'Could not add local reference.','err');return}
   const role=($('subjAddRole')&&$('subjAddRole').value)||'front_body';
-  (r.items||[]).forEach(it=>{st.localMeta.set(it.path,it);st.forge.subjectRefs.push({role,path:it.path,subject_id:'primary'})});
+  (r.items||[]).forEach(it=>{st.localMeta.set(it.path,it);st.forge.subjectRefs.push({role,path:it.path,subject_id:'primary',asset_fingerprint:it.sha256||''})});
   subjRender();forgePriceSoon();
 }
 async function subjRefReplaceLocal(idx){
@@ -1045,6 +1073,7 @@ async function subjRefReplaceLocal(idx){
   if(!r||r.cancelled||!r.ok||!(r.items&&r.items.length))return;
   st.localMeta.set(r.items[0].path,r.items[0]);
   st.forge.subjectRefs[idx].path=r.items[0].path;
+  st.forge.subjectRefs[idx].asset_fingerprint=r.items[0].sha256||'';
   subjRender();forgePriceSoon();
 }
 async function subjRefToggleMyStuff(){
@@ -1067,7 +1096,7 @@ function charProfileLoad(pid){
   if(!prof)return;
   const rset=prof.reference_set||{};
   if(rset.starter_image&&rset.starter_image.path){st.forge.image=rset.starter_image.path;stPickImages('forgeImages',()=>st.forge.image,v=>st.forge.image=v,{workflow:'image_to_video',onChange:forgePriceSoon})}
-  st.forge.subjectRefs=(rset.references||[]).map(x=>({role:x.role,path:x.path,subject_id:x.subject_id||'primary',locked:!!x.locked}));
+  st.forge.subjectRefs=(rset.references||[]).map(x=>({role:x.role,path:x.path,subject_id:x.subject_id||'primary',locked:!!x.locked,asset_fingerprint:x.asset_fingerprint||''}));
   if($('charProfileName'))$('charProfileName').value=prof.name||'';
   if($('subjKeepId'))$('subjKeepId').checked=rset.preserve_identity!==false;
   if($('subjKeepApp'))$('subjKeepApp').checked=rset.preserve_appearance!==false;

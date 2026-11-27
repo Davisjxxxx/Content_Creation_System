@@ -583,8 +583,14 @@ class StudioMixin:
         conflicts = [c for c in ref_set.detect_conflicts(check_disk=True) if c.severity == "error"]
         if conflicts:
             raise ValueError(conflicts[0].message)
-        # RC-06: Explicitly refuse unsupported locked reference cardinality (e.g. starter + 4 locked on 4-slot FLUX.2)
-        # and ambiguous multi-subject mixing rather than silently dropping or flattening references!
+        # RC-06: Explicitly refuse unsupported locked references on single-frame video workflows (Wan I2V)
+        # and enforce multi-subject / 4-slot cardinality limits instead of silently dropping references!
+        distinct_subjects = sorted({r.subject_id for r in items})
+        if len(distinct_subjects) > 1 and not raw_subject_refs.get("allow_multi_subject"):
+            raise ValueError(
+                f"Multiple subjects ({', '.join(distinct_subjects)}) were supplied for a single-subject render. "
+                "Select one subject profile or explicitly confirm multi-subject mode."
+            )
         if workflow_supports_multiref:
             max_slots = 4
             locked_count = sum(1 for r in items if r.locked)
@@ -594,11 +600,13 @@ class StudioMixin:
                     f"Too many locked references ({starter_slots + locked_count}) for the {max_slots}-slot FLUX.2 workflow. "
                     "Unlock or remove a reference instead of silently dropping one."
                 )
-            distinct_subjects = sorted({r.subject_id for r in items})
-            if len(distinct_subjects) > 1 and not raw_subject_refs.get("allow_multi_subject"):
+        else:
+            locked_unsupported = [r.role for r in items if r.locked]
+            if locked_unsupported:
                 raise ValueError(
-                    f"Multiple subjects ({', '.join(distinct_subjects)}) were supplied for a single-subject render. "
-                    "Select one subject profile or explicitly confirm multi-subject mode."
+                    f"This video workflow supports only a start picture and optional end picture; "
+                    f"locked reference(s) ({', '.join(locked_unsupported)}) cannot be conditioned directly. "
+                    "Unlock them, use a photo-first scene, or generate a multi-reference still first."
                 )
         if stage:
             ref_set = ref_set.stage_all(mgr, require_authorization=in_js_bridge())
@@ -972,12 +980,31 @@ class StudioMixin:
             if Path(image).is_file():
                 image = self._stage_reference_if_external(image, workflow="image_to_video")
             seconds = 10 if int(options.get("seconds") or 5) >= 10 else 5
-            shot["user_prompt"] = " ".join(str(options.get("motion") or "").split())[:1000] or DEFAULT_MOTION  # Runway video models allow up to 1000
+            motion_text = " ".join(str(options.get("motion") or "").split())[:1000]
+            phrase = depicts_minor(motion_text)
+            if phrase:
+                raise ValueError(f'Your presenter has to be an adult (18+). Remove "{phrase}" from the description.')
+            shot["user_prompt"] = motion_text or DEFAULT_MOTION  # Runway video models allow up to 1000
             shot["references"] = {"init_image": image}
-            quality = options.get("engine") if options.get("engine") in MOVE_MODELS else options.get("quality")
+            # RC-04: Never silently default a missing engine/quality choice to a paid Runway model.
+            raw_engine = str(options.get("engine") or "").strip().lower()
+            raw_quality = str(options.get("quality") or "").strip().lower()
+            if not raw_engine and not raw_quality:
+                raise ValueError(
+                    "Choose a video engine explicitly ('local' for free GPU, or 'best'/'fast' for paid Runway)."
+                )
+            if raw_engine and raw_engine not in MOVE_MODELS:
+                raise ValueError(
+                    f"Unknown video engine '{raw_engine}'. Choose 'local', 'best', or 'fast'."
+                )
+            quality = raw_engine if raw_engine in MOVE_MODELS else raw_quality
+            if quality not in MOVE_MODELS:
+                raise ValueError(
+                    f"Unknown Runway quality '{quality}'. Choose 'best' or 'fast'."
+                )
             runway = {
                 "task": "image_to_video",
-                "model": MOVE_MODELS[_choice(quality, MOVE_MODELS, "best")],
+                "model": MOVE_MODELS[quality],
                 "ratio": shape,
                 "duration": seconds,
             }
@@ -2097,11 +2124,13 @@ class StudioMixin:
                         items[-1].job.asset_map["LAST_FRAME"] = staged_end
                     vid_ver = None
                     try:
+                        # RC-06: Direct Wan I2V graph conditions ONLY starter_image (and optional end_image),
+                        # NEVER supplemental multi-view references; verification_record must reflect actual graph inputs.
                         routed_vid = plan_intelligent_generation(
                             raw_scene_prompt or shots[0],
                             requested_action="scene",
                             starter_image=image,
-                            subject_refs=resolved_ref_set,
+                            subject_refs=None,
                             guided_spec=scene_guided_spec,
                             input_mode="guided" if guided else "automatic",
                             model_preference="wan22_a14b" if video_model == "a14b" else "wan22_5b",
