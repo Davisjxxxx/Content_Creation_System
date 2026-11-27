@@ -120,7 +120,8 @@ class VoiceoverStore:
 
     def _write(self, path: Path, data: dict[str, Any]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        from .ownership import write_json_atomic
+        write_json_atomic(path, data)
 
     # -- narration files
 
@@ -150,7 +151,7 @@ class VoiceoverStore:
                 return {**record, "duplicate": True}
         self.files_dir.mkdir(parents=True, exist_ok=True)
         stored = self.files_dir / f"{digest[:16]}{suffix}"
-        if not stored.exists():
+        if stored.is_symlink() or sha256_file(stored) != digest:
             from .ownership import copy_file_exclusive
 
             stored = copy_file_exclusive(path, self.files_dir, stored.name)

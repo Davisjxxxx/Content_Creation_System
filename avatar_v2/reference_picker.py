@@ -329,6 +329,7 @@ class LocalReferenceManager:
         self._max_staged_files = max(8, int(max_staged_files))
         self._lock = threading.RLock()
         self._approved: dict[str, ValidatedReference] = {}
+        self._ownership_path = self.staging_dir / ".owned.json"
         self._pins_path = self.staging_dir / ".pins.json"
         self._pinned: dict[str, set[str]] = self._load_pins_locked()
 
@@ -353,19 +354,8 @@ class LocalReferenceManager:
         # F13 / RC-19: Fail closed if durable pin replacement fails — NEVER swallow OSError!
         self.staging_dir.mkdir(parents=True, exist_ok=True)
         serialized = {k: sorted(v) for k, v in self._pinned.items() if v}
-        tmp = self._pins_path.with_name(f".pins.{os.getpid()}.{threading.get_ident()}.tmp")
-        try:
-            with tmp.open("w", encoding="utf-8") as fh:
-                fh.write(json.dumps(serialized, indent=2))
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, self._pins_path)
-        except BaseException:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
+        from .ownership import write_json_atomic
+        write_json_atomic(self._pins_path, serialized)
 
     def add_trusted_root(self, root: Path) -> None:
         with self._lock:
@@ -472,21 +462,16 @@ class LocalReferenceManager:
 
         with self._lock:
             copied = False
-            if not target.is_file() or _sha256_file(target) != checked.sha256:
-                tmp = self.staging_dir / f".tmp_{checked.sha256[:20]}_{os.getpid()}{suffix}"
-                shutil.copy2(resolved, tmp)
-                os.replace(tmp, target)
-                try:
-                    os.utime(target, None)
-                except OSError:
-                    pass
+            from .ownership import copy_file_exclusive, register_managed_asset, verify_managed_asset_ownership
+            from .safe_output import publish_output
+            owned, _ = verify_managed_asset_ownership(self._ownership_path, target)
+            if not owned or _sha256_file(target) != checked.sha256:
+                target = copy_file_exclusive(resolved, self.staging_dir, target.name)
+                if _sha256_file(target) != checked.sha256:
+                    raise ValueError("Selected reference changed while staging")
+                register_managed_asset(self._ownership_path, target, origin="ephemeral_staging", job_id=checked.sha256)
                 copied = True
-            else:
-                try:
-                    os.utime(target, None)
-                except OSError:
-                    pass
-
+            meta_path = target.with_suffix(".json")
             provenance = {
                 "original_path": str(resolved),
                 "original_name": resolved.name,
@@ -498,7 +483,9 @@ class LocalReferenceManager:
                 "size_bytes": checked.size_bytes,
                 "staged_at": datetime.now(timezone.utc).isoformat(),
             }
-            meta_path.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+            if copied:
+                meta_path = publish_output(meta_path, lambda p: p.write_text(json.dumps(provenance, indent=2), encoding="utf-8"))
+                register_managed_asset(self._ownership_path, meta_path, origin="ephemeral_staging", job_id=checked.sha256)
             self._prune_staging_locked()
 
         return {
@@ -547,6 +534,7 @@ class LocalReferenceManager:
             pins = getattr(self, "_pinned", None)
             if not pins:
                 return
+            previous = {key: set(ids) for key, ids in pins.items()}
             changed = False
             for path_key in list(pins.keys()):
                 if jid in pins[path_key]:
@@ -558,7 +546,14 @@ class LocalReferenceManager:
                 try:
                     self._save_pins_locked()
                 except OSError:
-                    pass
+                    self._pinned = previous
+                    raise
+
+    def reconcile_job_pins(self, active_ids: set[str]) -> None:
+        with self._lock:
+            pinned_ids = {job for jobs in self._pinned.values() for job in jobs}
+            for job in pinned_ids - active_ids:
+                self.unpin_job(job)
 
     def _prune_staging_locked(self) -> None:
         """Keep the ephemeral staging cache bounded by LRU mtime, never evicting pinned active-job refs."""
@@ -577,8 +572,10 @@ class LocalReferenceManager:
         need_drop = len(media_files) - self._max_staged_files
         for stale in evictable[:need_drop]:
             try:
-                stale.unlink(missing_ok=True)
-                stale.with_suffix(".json").unlink(missing_ok=True)
+                from .ownership import delete_managed_asset_if_owned
+                deleted, _ = delete_managed_asset_if_owned(self._ownership_path, stale)
+                if deleted:
+                    delete_managed_asset_if_owned(self._ownership_path, stale.with_suffix(".json"))
             except OSError:
                 pass
 

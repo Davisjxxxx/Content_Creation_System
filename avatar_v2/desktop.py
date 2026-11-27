@@ -30,6 +30,7 @@ from .ownership import (
     OwnedProcessHandle,
     ProcessOwnershipRecord,
     authorize_owned_endpoint,
+    owns_connected_peer,
     classify_media_ownership,
     copy_file_exclusive,
     delete_managed_asset_if_owned,
@@ -728,7 +729,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                 return {"ok": False, "error": decision.reason}
             job, runtime, workflow = self._resolve_runtime(payload, avatar, shot)
             run_dir = RUNS_DIR / _run_id("plan")
-            run_dir.mkdir(parents=True, exist_ok=True)
+            run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
             job_path = run_dir / "job.json"
             job_path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
             _write_json(run_dir / "runtime.json", runtime)
@@ -760,7 +761,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             provider = ComfyUIProvider(self._provider_config(payload))
             resolved = provider.resolve_workflow(workflow, job, stage_assets=False)
             run_dir = RUNS_DIR / _run_id("dryrun")
-            run_dir.mkdir(parents=True, exist_ok=True)
+            run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
             (run_dir / "job.json").write_text(job.model_dump_json(indent=2), encoding="utf-8")
             _write_json(run_dir / "runtime.json", runtime)
             resolved_path = run_dir / "resolved_workflow.json"
@@ -931,7 +932,6 @@ class DesktopAPI(StudioMixin, PresenterMixin):
 
     def _execute_local_correction_step(self, item: QueuedRender, step: Any) -> tuple[str, float]:
         """Production ComfyUI executor for a single bounded Sprint 8/9 corrective generation step."""
-        from .ollama_client import verify_ollama_vram_released
         from . import offline_builder as ob
 
         # Charge shared script run budget if this job originated from Script mode (RC-11 fail-closed)!
@@ -952,12 +952,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         # RC-14: Always verify Ollama VRAM is actually released before submitting a GPU ComfyUI job!
         settings = self._settings()
         ollama_url = str(settings.get("vision_classifier_url") or DEFAULT_SETTINGS["vision_classifier_url"])
-        rel = verify_ollama_vram_released(ollama_url, timeout_s=8.0)
-        if item.runtime.get("visual_inspection_vlm") and not rel.get("released"):
-            raise RuntimeError(
-                f"Refusing ComfyUI corrective render because Ollama VRAM release was not verified "
-                f"(status={rel.get('status', 'unknown')}, detail={rel.get('error') or rel.get('active_vram_models')})."
-            )
+        self.queue._ensure_ollama_vram_released_before_comfy(item, base_url=item.runtime.get("ollama_url") or ollama_url)
 
         provider = self._build_comfy_provider(item.provider_config)
         asset_map = dict(item.job.asset_map or {})
@@ -1009,26 +1004,45 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             for i in range(1, 5):
                 asset_map.pop(f"REF_IMAGE_{i}", None)
             for idx, rpath in enumerate((step.reference_paths or [])[:4], start=1):
-                if rpath and Path(rpath).expanduser().is_file():
-                    asset_map[f"REF_IMAGE_{idx}"] = str(Path(rpath).expanduser().resolve())
+                if not rpath or not Path(rpath).expanduser().is_file():
+                    raise ValueError("Corrective reference is missing")
+                asset_map[f"REF_IMAGE_{idx}"] = str(Path(rpath).expanduser().resolve())
 
         cor_job = item.job.model_copy(update={"asset_map": asset_map})
         cancel_ev = self.queue.get_cancel_event(item.id) if hasattr(self, "queue") and self.queue is not None else None
         t0 = time.monotonic()
-        res = RenderQueue._call_provider_render(provider, workflow_target, cor_job, cancel_event=cancel_ev)
+        import uuid
+        attempt = {"token": uuid.uuid4().hex, "workflow": str(workflow_target)}
+        self.queue.corrective_submission(item, attempt)
+        try:
+            res = RenderQueue._call_provider_render(
+                provider, workflow_target, cor_job, cancel_event=cancel_ev,
+                on_submitted=lambda pid: self.queue.corrective_submission(item, attempt, pid),
+            )
+            if attempt.get("prompt_id") and attempt["prompt_id"] != res["prompt_id"]:
+                raise ValueError("Corrective completion differs from its acknowledgement")
+            if not attempt.get("prompt_id"):
+                self.queue.corrective_submission(item, attempt, res["prompt_id"])
+        except Exception:
+            if not cancel_ev.is_set():
+                item.phase = "recovery_required"
+                cancel_ev.set()
+            raise
+
         elapsed_ms = round((time.monotonic() - t0) * 1000.0, 1)
         resolved = self.queue._resolve_outputs(item, res.get("outputs") or [])
         if not resolved or not Path(resolved[0]).is_file():
             raise RuntimeError("Corrective ComfyUI render finished with no readable output file.")
+        from .media_validation import validate_media
+        facts = validate_media(Path(resolved[0]))
+        if facts["kind"] != ("video" if "wan" in str(step.model_id).lower() else "image"):
+            raise ValueError("Corrective output has the wrong media type")
         out_path = resolved[0]
         if item.archive_dir:
-            try:
-                target_dir = Path(item.archive_dir).expanduser() / item.id
-                dest = copy_file_exclusive(Path(out_path), target_dir, Path(out_path).name)
-                out_path = str(dest)
-                register_managed_asset(MANAGED_ASSETS_PATH, out_path, origin="managed_archive_copy", job_id=item.id)
-            except OSError:
-                pass
+            target_dir = Path(item.archive_dir).expanduser() / item.id
+            dest = copy_file_exclusive(Path(out_path), target_dir, Path(out_path).name)
+            out_path = str(dest)
+            register_managed_asset(MANAGED_ASSETS_PATH, out_path, origin="managed_archive_copy", job_id=item.id)
         # F02: Do NOT register unarchived external provider output paths as app-deletable!
         return out_path, elapsed_ms
 
@@ -1063,13 +1077,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                 return False
             if ev.get("error") or ev.get("ownership_denied") or ev.get("skipped"):
                 return False
-            if ev.get("vram_released_verified") is True:
-                return True
-            if ev.get("cleanup_requested") is True and ev.get("effective") is True:
-                return True
-            if ev.get("cleanup_performed") is True and (ev.get("effective") is True or not ev.get("before")):
-                return True
-            return False
+            return ev.get("vram_released_verified") is True
 
         if use_vlm and comfy_warm and item.provider_config.provider == "comfyui":
             try:
@@ -1111,16 +1119,12 @@ class DesktopAPI(StudioMixin, PresenterMixin):
 
         item.runtime["verification_record"]["inspection_result"] = result.model_dump()
         summary = result.compact_ui_summary()
-        import hashlib as _hashlib
-
-        req_set_hash = str(getattr(result, "requirement_set_hash", "") or "") or _hashlib.sha256(
-            json.dumps(getattr(record, "mandatory_requirements", []) or [], sort_keys=True, default=str).encode("utf-8")
-        ).hexdigest()[:16]
+        req_set_hash = result.requirement_set_hash
         output_inspections: dict[str, dict[str, Any]] = {
             str(target): {
                 **summary,
                 "output_path": str(target),
-                "output_sha256": sha256_file(target) or "",
+                "output_sha256": result.output_sha256,
                 "requirement_set_hash": req_set_hash,
                 "inspected": True,
                 "candidate_role": "original",
@@ -1262,7 +1266,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                     output_inspections[att.candidate_output_path] = {
                         **cand_sum,
                         "output_path": att.candidate_output_path,
-                        "output_sha256": sha256_file(att.candidate_output_path) or "",
+                        "output_sha256": att.actual_inspection_result.output_sha256,
                         "requirement_set_hash": req_set_hash,
                         "inspected": True,
                         "candidate_role": f"correction_attempt_{att.attempt_number}",
@@ -1991,7 +1995,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             peak = self.queue.memory_manager.current_trace_peak()
         return {"ok": True, "manager": status, "active_render": active, "peak": peak}
 
-    def _authorize_comfy_global_op(self, base_url: str, operation: str = "free_memory") -> tuple[bool, str, str]:
+    def _authorize_comfy_global_op(self, base_url: str, operation: str = "free_memory", *, connection=None) -> tuple[bool, str, str]:
         """Centralized fail-closed authorization gate for ALL global ComfyUI operations (F01 / RC-01).
 
         Verifies live process ownership (PID + start_ticks + boot_id + exe/cmdline), exact address family,
@@ -2000,7 +2004,10 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         own_kind, record, own_reason = self._current_comfy_ownership()
         if own_kind != "owned_private" or record is None:
             return False, "", own_reason
-        return authorize_owned_endpoint(record, base_url, require_listening=True)
+        evidence = authorize_owned_endpoint(record, base_url, require_listening=True)
+        if evidence[0] and connection is not None and not owns_connected_peer(record, *connection):
+            return False, "", "connected_peer_not_owned"
+        return evidence
 
     def _authorize_provider_cleanup(self, provider: Any, operation: str = "free_memory") -> tuple[bool, str]:
         """GPUMemoryManager ownership hook guarding automatic pre-render, post-render, retry & pre-VLM /free (F01)."""
@@ -2467,16 +2474,8 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                         for output in outputs
                         if isinstance(output, str)
                     }
-                # F05 / RC-09: Revalidate saved inspection verdicts against live bytes on history reopen!
-                if isinstance(entry.get("candidate_qa"), dict):
-                    re_ins, re_map, re_cor = self._revalidate_item_inspections(entry)
-                    entry["candidate_qa"] = {
-                        **entry["candidate_qa"],
-                        "inspection": re_ins,
-                        "output_inspections": re_map,
-                        "correction": re_cor,
-                    }
-                entries.append(entry)
+                from .inspection_contract import present_job
+                entries.append(present_job(entry))
             except (json.JSONDecodeError, OSError):
                 continue
         entries.sort(

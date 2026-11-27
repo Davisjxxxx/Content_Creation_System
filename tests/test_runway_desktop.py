@@ -531,7 +531,7 @@ def _cloud_item(tmp_path, profile="cloud_runway"):
 
 def test_cloud_jobs_route_to_runway_and_skip_local_gpu_cleanup(tmp_path, monkeypatch):
     output = tmp_path / "out.png"
-    output.write_bytes(b"png")
+    output.write_bytes((Path(__file__).parent / "fixtures/rc5/still.png").read_bytes())
 
     class FakeRunway:
         uses_local_gpu = False
@@ -558,7 +558,7 @@ def test_cloud_jobs_route_to_runway_and_skip_local_gpu_cleanup(tmp_path, monkeyp
 
 def test_local_comfyui_jobs_keep_forced_preclean(tmp_path, monkeypatch):
     out_mp4 = tmp_path / "out.mp4"
-    out_mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    out_mp4.write_bytes((Path(__file__).parent / "fixtures/rc5/clip.mp4").read_bytes())
 
     class FakeComfy:
         def __init__(self, config):
@@ -570,6 +570,7 @@ def test_local_comfyui_jobs_keep_forced_preclean(tmp_path, monkeypatch):
     monkeypatch.setattr(render_queue, "ComfyUIProvider", FakeComfy)
     item = _cloud_item(tmp_path, profile="int8_12gb")
     item.provider_config = ProviderConfig()
+    item.workflow = "builtin:wan22_i2v"
     queue = _queue(tmp_path, [item])
     queue._execute(item)
     assert queue.memory_manager.calls[0]["force"] is True

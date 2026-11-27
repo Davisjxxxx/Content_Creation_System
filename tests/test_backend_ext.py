@@ -176,9 +176,13 @@ def test_queue_history_manifest_written(tmp_path: Path, monkeypatch):
     queue.work_dir.mkdir(parents=True)
     queue.history_dir = history_dir
     queue.history_dir.mkdir(parents=True)
-    queue._persist_history(item)  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match="terminal"):
+        queue._persist_history(item)
+    assert not (history_dir / f"{item.id}.json").exists()
+    item.status, item.phase = "cancelled", "cancelled"
+    queue._persist_history(item)
     saved = json.loads((history_dir / f"{item.id}.json").read_text(encoding="utf-8"))
-    assert saved["status"] == "queued"
+    assert saved["status"] == "cancelled"
     assert saved["seed"] == shot.seed
     assert saved["resolution"] == [shot.width, shot.height]
 

@@ -103,7 +103,7 @@ def test_render_queue_unloads_on_workflow_switch_and_error(tmp_path: Path, monke
             return {}
 
     still_png = tmp_path / "still.png"
-    still_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    still_png.write_bytes((Path(__file__).parent / "fixtures/rc5/still.png").read_bytes())
 
     class FakeProv:
         def __init__(self, _cfg):

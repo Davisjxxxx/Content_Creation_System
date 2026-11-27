@@ -380,7 +380,7 @@ def test_rc18_shutdown_holds_dir_lock_while_worker_thread_is_still_alive(
             pass
 
         def render(self, workflow: str, job: RenderJob, **kwargs) -> dict[str, Any]:
-            return {"prompt_id": "p1", "outputs": []}
+            return {"prompt_id": "p1", "outputs": [str(Path(__file__).parent / "fixtures/rc5/still.png")]}
 
     def slow_qa(item: rq.QueuedRender) -> dict[str, Any]:
         qa_entered.set()

@@ -174,6 +174,15 @@ def inspect_local_ollama_models(base_url: str = DEFAULT_OLLAMA_URL, *, timeout_s
     return out
 
 
+def _complete_residency(models: Any) -> bool:
+    return isinstance(models, list) and all(
+        isinstance(model, dict) and isinstance(model.get("name") or model.get("model"), str)
+        and bool((model.get("name") or model.get("model")).strip())
+        and type(model.get("size_vram")) is int and model["size_vram"] >= 0
+        for model in models
+    )
+
+
 def fetch_ollama_ps_state(
     base_url: str = DEFAULT_OLLAMA_URL,
     *,
@@ -189,20 +198,27 @@ def fetch_ollama_ps_state(
     try:
         with httpx.Client(timeout=timeout_s) as client:
             resp = client.get(f"{url}/api/ps")
+            age = getattr(resp, "headers", {}).get("age")
+            if age is not None and int(age) != 0:
+                return "unknown", [], "Stale cached Ollama residency sample"
             resp.raise_for_status()
             payload = resp.json()
     except (httpx.ConnectError, ConnectionRefusedError) as exc:
-        return "offline", [], f"{type(exc).__name__}: {exc}"
+        import errno
+        chain: BaseException | None = exc
+        while chain is not None:
+            if isinstance(chain, OSError) and chain.errno == errno.ECONNREFUSED:
+                return "offline", [], "Connection refused"
+            chain = chain.__cause__ or chain.__context__
+        return "unknown", [], str(exc)
     except Exception as exc:
         return "unknown", [], f"{type(exc).__name__}: {exc}"
     if not isinstance(payload, dict):
         return "unknown", [], "Malformed /api/ps payload"
     models = payload.get("models")
-    if models is None:
-        return "online", [], ""
-    if not isinstance(models, list):
-        return "unknown", [], "Malformed /api/ps models list"
-    return "online", [m for m in models if isinstance(m, dict)], ""
+    if not _complete_residency(models):
+        return "unknown", [], "Incomplete Ollama residency telemetry"
+    return "online", models, ""
 
 
 def _fetch_running_ollama_models_status(
@@ -278,12 +294,14 @@ def verify_ollama_vram_released(
                 if raw_ps is None:
                     ps_ok, running, ps_err = False, [], "ps_fetcher returned None"
                 else:
-                    ps_ok, running, ps_err = True, list(raw_ps), ""
+                    ps_ok, running, ps_err = True, raw_ps, ""
             except Exception as exc:
                 ps_ok, running, ps_err = False, [], f"{type(exc).__name__}: {exc}"
         else:
             ps_ok, running, ps_err = _fetch_running_ollama_models_status(url, timeout_s=2.0)
 
+        if ps_ok and not _complete_residency(running):
+            ps_ok, ps_err = False, "Incomplete Ollama residency telemetry"
         used_mb, free_mb = fetch_vram()
         last_used, last_free = used_mb, free_mb
 

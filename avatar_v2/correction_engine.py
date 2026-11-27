@@ -35,7 +35,7 @@ from .inspection_contract import (
     ReferenceProvenanceRecord,
     UI_INSPECTION_LABELS,
     VisualInspectionResult,
-    compute_inspection_status,
+    bound_inspection_status,
 )
 from .model_registry import DEFAULT_REGISTRY, ModelRegistry
 from .resource_monitor import ResourceSnapshot, StorageCheck
@@ -990,17 +990,14 @@ class CorrectionCoordinator:
 
         # RC-08: Route ALL final session statuses strictly through compute_inspection_status() so
         # review_recommended or human_review_required=True can NEVER be upgraded to requirements_verified!
-        _best_dec, best_ui_st, best_ui_lbl, best_human_req = compute_inspection_status(
-            best_inspection.criterion_assessments,
-            detected_defects=best_inspection.detected_defects,
-        )
+        _best_dec, best_ui_st, best_ui_lbl, best_human_req = bound_inspection_status(record, best_inspection, best_path)
         human_req = bool(
             best_human_req
             or best_inspection.human_review_required
             or best_score["mandatory_failed"] > 0
             or best_score["mandatory_uncertain"] > 0
         )
-        if best_ui_st == "correction_recommended":
+        if best_ui_st in {"correction_recommended", "generated"}:
             ui_st: Any = "review_recommended"
             ui_lbl = UI_INSPECTION_LABELS["review_recommended"]
         elif best_ui_st == "requirements_verified" and not human_req and best_path != original_output_path:

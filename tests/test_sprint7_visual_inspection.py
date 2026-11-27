@@ -299,7 +299,8 @@ def test_reference_role_selection_and_rear_guardrail(tmp_path: Path) -> None:
     assert cv_comp["color_band_similarity"] > 0.7
 
     # Case B: ONLY frontal face_identity supplied for rear-facing output -> false acceptance blocked!
-    refs_front_only = [ReferenceProvenanceRecord(asset_id="r1", role="face_identity", path=str(front))]
+    from avatar_v2.integrity import sha256_file
+    refs_front_only = [ReferenceProvenanceRecord(asset_id="r1", role="face_identity", path=str(front), asset_fingerprint=sha256_file(front))]
     sel_missing = select_inspection_references(refs_front_only, expected_orientation="rear_facing")
     assert sel_missing["missing_orientation_ref"] is True
     assert any("back_body" in lim for lim in sel_missing["limitations"])

@@ -20,6 +20,8 @@ introducing unauthorized heavy CV frameworks or external API calls:
 
 from __future__ import annotations
 
+from .safe_output import publish_output
+
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -101,8 +103,7 @@ def _draw_coordinate_grid_overlay(src_path: Path, dst_path: Path) -> Path:
             draw.line((x, 0, x, h), fill=(255, 220, 40), width=1)
             tx = max(2, min(w - 34, x - 12))
             draw.text((tx, 4), f"x={pct}%", fill=(255, 240, 120))
-        im.save(dst_path, format="PNG")
-    return dst_path
+        return publish_output(dst_path, lambda p: im.save(p, format="PNG"))
 
 
 def run_blind_object_localization(
@@ -392,7 +393,7 @@ def generate_region_mask(
     if out_path is not None:
         dest = Path(out_path).expanduser()
         dest.parent.mkdir(parents=True, exist_ok=True)
-        mask.save(dest, format="PNG")
+        publish_output(dest, lambda p: mask.save(p, format="PNG"), rename_on_collision=False)
     return mask
 
 

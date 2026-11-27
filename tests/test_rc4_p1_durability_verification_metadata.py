@@ -278,7 +278,19 @@ def test_f05_replaced_output_file_and_changed_requirement_set_invalidate_verdict
             selected_workflow="builtin:flux2_txt2img",
             expected_output=ExpectedOutputCharacteristics(task="image_generate", media_kind="image", width=256, height=256, frames=1),
         )
+        from avatar_v2.inspection_contract import AcceptanceCriterion
+        vr.mandatory_acceptance_criteria = [
+            AcceptanceCriterion(criterion_id="count", category="object_quantities", description="Two cups")
+        ]
         req_hash = compute_requirement_set_hash(vr)
+        vr.inspection_result = VisualInspectionResult(
+            output_path=str(out_img), output_sha256=orig_sha, requirement_set_hash=req_hash,
+            criterion_assessments=[CriterionAssessment(
+                criterion_id="count", category="object_quantities", mandatory=True, status="passed",
+                assessor="human", inspection_method="human", verification_eligibility="requires_human_review",
+                observed_evidence="Synthetic positive-control assessment for two cups",
+            )],
+        )
         hist_record = {
             "id": "job-f05",
             "label": "Test photo",

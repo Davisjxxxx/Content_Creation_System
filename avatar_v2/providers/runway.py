@@ -41,6 +41,8 @@ from urllib.parse import urlparse
 import httpx
 from PIL import Image
 
+from ..media_validation import validate_media
+from ..safe_output import publish_output, render_output
 from ..models import ProviderConfig, RenderJob
 from ..integrity import sha256_file
 from ..secret_store import get_secret
@@ -1272,19 +1274,16 @@ class RunwayClient:
                     content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
                     suffix = OUTPUT_EXTENSIONS.get(content_type) or mimetypes.guess_extension(content_type) or ".bin"
                 target = destination_dir / f"{stem}{suffix}"
-                written = 0
-                partial = target.with_name(target.name + ".part")
-                try:
-                    with partial.open("wb") as handle:
+                def download_into(staged: Path) -> None:
+                    written = 0
+                    with staged.open("xb") as handle:
                         for chunk in response.iter_bytes():
                             written += len(chunk)
                             if written > DOWNLOAD_LIMIT_BYTES:
                                 raise RunwayAPIError("Output download exceeded the 4 GB safety limit.")
                             handle.write(chunk)
-                    partial.replace(target)
-                except BaseException:
-                    partial.unlink(missing_ok=True)
-                    raise
+                    validate_media(staged)
+                target = publish_output(target, download_into)
         except httpx.HTTPError as exc:
             raise RunwayAPIError(f"Output download failed: network error ({type(exc).__name__})") from exc
         return target
@@ -1349,6 +1348,8 @@ def validate_voice_design(name: str, prompt: str, model: str) -> None:
         raise RunwayValidationError(f"Voice design model must be one of {', '.join(VOICE_DESIGN_MODELS)}.")
 
 
+
+
 def strip_audio_track(source: Path, staging_dir: Path) -> Path:
     """Copy a video without any audio stream (used so a driving performer's voice is never uploaded)."""
     if not shutil.which("ffmpeg"):
@@ -1359,10 +1360,8 @@ def strip_audio_track(source: Path, staging_dir: Path) -> Path:
     suffix = source.suffix.lower() if source.suffix.lower() in VIDEO_TYPES else ".mp4"
     target = staging_dir / f"{source.stem}_noaudio{suffix}"
     try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", str(source), "-map", "0:v:0", "-c:v", "copy", "-an", str(target)],
-            check=True, capture_output=True, timeout=600,
-        )
+        target = render_output(["ffmpeg", "-v", "error", "-i", str(source), "-map", "0:v:0",
+                                "-c:v", "copy", "-an"], target)
     except (subprocess.SubprocessError, OSError) as exc:
         raise RunwayValidationError(f"Could not remove the audio track from {source.name}: {type(exc).__name__}") from exc
     return target
@@ -1373,16 +1372,16 @@ def replace_audio_track(video: Path, mode: str, voiceover: Path | None = None) -
     if not shutil.which("ffmpeg"):
         raise RunwayValidationError("ffmpeg is required to mute or replace output audio.")
     target = video.with_name(f"{video.stem}_{'voiceover' if mode == 'voiceover' else 'muted'}{video.suffix}")
-    command = ["ffmpeg", "-y", "-v", "error", "-i", str(video)]
+    command = ["ffmpeg", "-v", "error", "-i", str(video)]
     if mode == "voiceover":
         if voiceover is None or not voiceover.is_file():
             raise RunwayValidationError("The approved voiceover file is missing.")
         command += ["-i", str(voiceover), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
-                    "-b:a", "192k", "-shortest", str(target)]
+                    "-b:a", "192k", "-shortest"]
     else:
-        command += ["-map", "0:v:0", "-c:v", "copy", "-an", str(target)]
+        command += ["-map", "0:v:0", "-c:v", "copy", "-an"]
     try:
-        subprocess.run(command, check=True, capture_output=True, timeout=600)
+        target = render_output(command, target)
     except (subprocess.SubprocessError, OSError) as exc:
         raise RunwayValidationError(f"Could not post-process the audio of {video.name}: {type(exc).__name__}") from exc
     return target

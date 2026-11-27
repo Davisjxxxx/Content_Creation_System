@@ -33,8 +33,8 @@ def parse_nvidia_smi_memory(text: str) -> list[GPUSnapshot]:
         if not raw.strip():
             continue
         parts = [part.strip() for part in raw.split(",")]
-        if len(parts) < 4:
-            continue
+        if len(parts) != 4:
+            return []
         try:
             snapshots.append(
                 GPUSnapshot(
@@ -44,8 +44,12 @@ def parse_nvidia_smi_memory(text: str) -> list[GPUSnapshot]:
                     total_mb=int(float(parts[3])),
                 )
             )
-        except ValueError:
-            continue
+        except (OverflowError, ValueError):
+            return []
+    if len({g.index for g in snapshots}) != len(snapshots) or any(
+        g.index < 0 or not g.name or not 0 <= g.used_mb <= g.total_mb or g.total_mb <= 0 for g in snapshots
+    ):
+        return []
     return snapshots
 
 
@@ -255,6 +259,7 @@ class GPUMemoryManager:
                 except Exception as exc:  # cleanup failure should be recorded, not mask a render result
                     error = f"{type(exc).__name__}: {exc}"
 
+        sampled_after = False
         after = before
         if requested:
             deadline = time.monotonic() + max(wait_s, 0.0)
@@ -265,7 +270,12 @@ class GPUMemoryManager:
             while time.monotonic() < deadline:
                 time.sleep(0.5)
                 current = query_gpu_memory()
+                if not current:
+                    sampled_after = False
+                    after = []
+                    continue
                 if current:
+                    sampled_after = True
                     after = current
                     current_total = sum(item.used_mb for item in current)
                     if current_total <= before_total - 64:
@@ -287,8 +297,10 @@ class GPUMemoryManager:
         # F10: Unified release-evidence contract emitted by production GPUMemoryManager:
         # - cleanup_requested: HTTP /free was sent and succeeded
         # - cleanup_performed: cleanup actually executed without error or ownership denial
-        # - effective: measured VRAM dropped >= 64 MiB (or telemetry unavailable on non-GPU test host while /free succeeded)
-        vram_drop_verified = released_mb >= 64
+        # - effective: measured VRAM dropped >= 64 MiB across matching measured devices
+        complete_samples = bool(before and sampled_after and {g.index for g in before} == {g.index for g in after}
+                                and all(0 <= g.used_mb <= g.total_mb and g.total_mb > 0 for g in before + after))
+        vram_drop_verified = complete_samples and released_mb >= 64 and all(g.usage < self.threshold for g in after)
         return {
             "reason": reason,
             "enabled": self.enabled,
@@ -304,7 +316,8 @@ class GPUMemoryManager:
             "after": [item.public() for item in after],
             "released_mb": released_mb,
             "effective": vram_drop_verified,
-            "vram_released_verified": bool(vram_drop_verified if before else (requested and not error and not ownership_denied)),
+            "telemetry_status": "verified" if vram_drop_verified else ("complete" if complete_samples else ("incomplete" if before or sampled_after else "unavailable")),
+            "vram_released_verified": bool(requested and not error and vram_drop_verified),
         }
 
     def emergency_terminate(self, approved_pids: Iterable[int]) -> dict[str, Any]:

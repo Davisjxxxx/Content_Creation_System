@@ -261,6 +261,11 @@ class VisualInspectionResult(BaseModel):
     latency_ms: float = 0.0
     vram_released_verified: bool | None = None
 
+    def bind(self, record, path) -> "VisualInspectionResult":
+        values = bound_inspection_status(record, self, path)
+        self.overall_decision, self.ui_status, self.ui_status_label, self.human_review_required = values
+        return self
+
     def compact_ui_summary(self) -> dict[str, Any]:
         """Minimal, non-intrusive status summary for the existing approved frontend."""
         passed = sum(1 for c in self.criterion_assessments if c.status == "passed")
@@ -332,6 +337,8 @@ def compute_requirement_set_hash(record: "GenerationVerificationRecord") -> str:
             for c in record.mandatory_acceptance_criteria
         ],
         "expected": record.expected_output.model_dump(),
+        "references": [r.model_dump() for r in record.reference_requirements],
+        "eligibility": [(c.criterion_id, c.verifiable_automatically, c.source) for c in record.mandatory_acceptance_criteria],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -386,6 +393,43 @@ def compute_inspection_status(
             False,
         )
     return ("warn", "some_uncertain", UI_INSPECTION_LABELS["some_uncertain"], True)
+
+
+def bound_inspection_status(record, result, path):
+    """Derive a publishable verdict from the measured candidate and its exact contract."""
+    from .integrity import sha256_file
+    missing = ("warn", "generated", "Not inspected", True)
+    if not record or not result.output_sha256 or sha256_file(path) != result.output_sha256:
+        return missing
+    if str(result.output_path) != str(path) or result.requirement_set_hash != compute_requirement_set_hash(record):
+        return missing
+    refs = {}
+    for ref in record.reference_requirements:
+        fingerprint = sha256_file(ref.path)
+        if not fingerprint or ref.asset_fingerprint != fingerprint:
+            return missing
+        refs[ref.asset_id or ref.role] = fingerprint
+    if refs != result.reference_fingerprints:
+        return missing
+    declared = {c.criterion_id for c in record.mandatory_acceptance_criteria}
+    if any(a.mandatory and a.criterion_id not in declared for a in result.criterion_assessments):
+        return missing
+    assessments = {a.criterion_id: a for a in result.criterion_assessments}
+    if len(assessments) != len(result.criterion_assessments):
+        return missing
+    for criterion in record.mandatory_acceptance_criteria:
+        if not criterion.mandatory:
+            continue
+        a = assessments.get(criterion.criterion_id)
+        if not a or not a.mandatory or a.category != criterion.category:
+            return missing
+        if a.status == "passed" and (
+            not a.observed_evidence.strip() or a.assessor == "pending" or a.inspection_method == "pending"
+            or a.verification_eligibility != get_verification_eligibility(criterion.category)
+            or (not criterion.verifiable_automatically and a.assessor != "human")
+        ):
+            return ("warn", "review_recommended", "Review recommended", True)
+    return compute_inspection_status(result.criterion_assessments, detected_defects=result.detected_defects)
 
 
 class CorrectionBudget(BaseModel):
@@ -541,3 +585,150 @@ class GenerationVerificationRecord(BaseModel):
 
     def public(self) -> dict[str, Any]:
         return self.model_dump()
+
+
+def revalidate_item_inspections(
+    item: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]] | None, dict[str, Any] | None]:
+    """Revalidate saved inspection verdicts against LIVE file bytes & requirement-set hash (F05 / RC-09).
+
+    Never certifies replaced/modified output bytes or mismatched requirement sets as 'Requirements verified'.
+    """
+    qa_data = item.get("candidate_qa") if isinstance(item.get("candidate_qa"), dict) else {}
+    inspection = dict(qa_data["inspection"]) if isinstance(qa_data.get("inspection"), dict) else None
+    raw_map = qa_data.get("output_inspections") if isinstance(qa_data.get("output_inspections"), dict) else None
+    correction = dict(qa_data["correction"]) if isinstance(qa_data.get("correction"), dict) else None
+
+    from .integrity import sha256_file
+    from pathlib import Path
+    try:
+        record = GenerationVerificationRecord.model_validate(item.get("verification_record"))
+    except ValueError:
+        record = None
+    evidence = {}
+    if record:
+        if record.inspection_result:
+            evidence[record.inspection_result.output_path] = record.inspection_result
+        if record.correction_session:
+            for attempt in record.correction_session.attempts:
+                if attempt.actual_inspection_result:
+                    result = attempt.actual_inspection_result
+                    evidence[result.output_path] = result
+
+    def _stale_entry(path_str: str, reason: str, live_sha: str = "") -> dict[str, Any]:
+        return {
+            "output_path": path_str,
+            "output_sha256": live_sha,
+            "inspected": False,
+            "stale": True,
+            "stale_reason": reason,
+            "ui_status": "generated",
+            "ui_status_label": "Not inspected",
+            "decision": "stale",
+            "is_best": False,
+        }
+
+    def _check_entry(path_str: str, entry: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        result = evidence.get(path_str)
+        if not result or entry.get("inspected") is False:
+            return _stale_entry(path_str, "unbound_evidence"), True
+        if entry.get("requirement_set_hash") != result.requirement_set_hash:
+            return _stale_entry(path_str, "requirement_set_changed"), True
+        if entry.get("output_sha256") != result.output_sha256:
+            return _stale_entry(path_str, "binding_changed"), True
+        decision, status, label, _ = bound_inspection_status(record, result, path_str)
+        if label == "Not inspected":
+            return _stale_entry(path_str, "binding_changed"), True
+        return {**entry, "decision": decision, "ui_status": status, "ui_status_label": label}, False
+
+    revalidated_map: dict[str, dict[str, Any]] | None = None
+    any_stale = False
+    if raw_map is not None:
+        revalidated_map = {}
+        for out_path, raw_entry in raw_map.items():
+            if not isinstance(raw_entry, dict):
+                continue
+            checked, is_stale = _check_entry(str(out_path), raw_entry)
+            revalidated_map[str(out_path)] = checked
+            if is_stale:
+                any_stale = True
+        # Ensure EVERY present output on the item has an explicit per-output status.
+        for raw_out in item.get("outputs") or []:
+            op = str(raw_out)
+            if op not in revalidated_map:
+                revalidated_map[op] = {
+                    "output_path": op,
+                    "output_sha256": sha256_file(op) or "" if Path(op).is_file() else "",
+                    "inspected": False,
+                    "ui_status": "generated",
+                    "ui_status_label": "Not inspected",
+                    "decision": "uninspected",
+                    "is_best": False,
+                }
+        if any_stale:
+            # If the primary/best output became stale, invalidate job-level inspection & correction labels too!
+            best_still_valid = any(
+                v.get("is_best") and v.get("inspected") is True and not v.get("stale")
+                for v in revalidated_map.values()
+            )
+            if not best_still_valid:
+                inspection = _stale_entry(
+                    str((item.get("outputs") or [""])[-1]),
+                    "output_bytes_changed",
+                )
+                correction = None
+    elif inspection is not None:
+        # Legacy single-output record without output_inspections map: validate against output_hashes / file!
+        outs = [str(o) for o in (item.get("outputs") or []) if isinstance(o, str)]
+        if not outs:
+            return None, None, None
+        if outs:
+            checked, is_stale = _check_entry(outs[-1], inspection)
+            inspection = checked
+            if is_stale:
+                correction = None
+    # A job-level display label must come from the same validated candidate.
+    if revalidated_map:
+        best = next((e for e in revalidated_map.values() if e.get("is_best")), None)
+        inspection = best or next(iter(revalidated_map.values()))
+    if correction:
+        correction = {**correction, "ui_status": (inspection or {}).get("ui_status", "generated"),
+                      "ui_status_label": (inspection or {}).get("ui_status_label", "Not inspected")}
+    if not inspection or inspection.get("ui_status") != "requirements_verified":
+        if correction and correction.get("ui_status") in {"requirements_verified", "correction_complete"}:
+            correction = None
+    return inspection, revalidated_map, correction
+
+
+
+def present_job(entry: dict[str, Any]) -> dict[str, Any]:
+    """Build a public view without mutating the preserved evidence or accepting saved labels."""
+    from copy import deepcopy
+    view = dict(entry)
+    qa = entry.get("candidate_qa") or {}
+    if isinstance(qa, dict) and (qa.get("recovery_required") or entry.get("phase") == "recovery_required"):
+        view.update(status="error", phase="recovery_required")
+    inspection, outputs, correction = revalidate_item_inspections(view)
+    if qa:
+        view["candidate_qa"] = {**qa, "inspection": inspection, "output_inspections": outputs, "correction": correction}
+    if isinstance(view.get("verification_record"), dict):
+        record = deepcopy(view["verification_record"])
+        def display(evidence):
+            if isinstance(evidence, dict):
+                path = evidence.get("output_path")
+                checked = (outputs or {}).get(path) or {}
+                if not checked and inspection and inspection.get("output_path") == path:
+                    checked = inspection
+                evidence.update(ui_status=checked.get("ui_status", "generated"),
+                                ui_status_label=checked.get("ui_status_label", "Not inspected"),
+                                overall_decision=checked.get("decision") if checked.get("inspected") else "unavailable")
+        display(record.get("inspection_result"))
+        session = record.get("correction_session")
+        if isinstance(session, dict):
+            session.update(ui_status=(correction or {}).get("ui_status", "generated"),
+                           ui_status_label=(correction or {}).get("ui_status_label", "Not inspected"))
+            for attempt in session.get("attempts") or []:
+                if isinstance(attempt, dict):
+                    display(attempt.get("actual_inspection_result"))
+        view["verification_record"] = record
+    return view

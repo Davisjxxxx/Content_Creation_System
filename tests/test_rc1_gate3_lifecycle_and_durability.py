@@ -112,6 +112,7 @@ def test_rc16_error_with_partial_outputs_raises_and_never_marks_done(monkeypatch
         def get(self, url: str) -> _FakeResp:
             return _FakeResp()
 
+    monkeypatch.setattr("avatar_v2.ollama_client.fetch_ollama_ps_state", lambda *a, **kw: ("online", [], ""))
     monkeypatch.setattr(httpx, "Client", _FakeClient)
     provider = ComfyUIProvider(ProviderConfig(base_url="http://127.0.0.1:18199", timeout_s=30))
     with pytest.raises(ComfyUIExecutionError) as exc_info:
@@ -177,7 +178,7 @@ def test_rc10_job_stays_running_during_qa_and_cancel_preserves_original_output(
     """Job stays status=running during QA/correction; cancelling during QA stops it and preserves valid outputs."""
     out_file = tmp_path / "outputs" / "orig.png"
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    out_file.write_bytes(b"PNGDATA")
+    out_file.write_bytes((Path(__file__).parent / "fixtures/rc5/still.png").read_bytes())
 
     qa_entered = threading.Event()
     qa_saw_cancel = threading.Event()
@@ -314,15 +315,17 @@ def test_rc18_worker_survives_disk_full_and_single_writer_lock_enforced(
     """Persistence OSError must not kill the worker thread; concurrent writer lock must fail closed."""
     out_file = tmp_path / "outputs" / "ok.png"
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    out_file.write_bytes(b"PNG")
+    out_file.write_bytes((Path(__file__).parent / "fixtures/rc5/still.png").read_bytes())
 
     class _OkProvider:
         uses_local_gpu = True
 
         def render(self, workflow: str, job: RenderJob, on_submitted=None, cancel_event=None) -> dict[str, Any]:
+            from uuid import uuid4
+            prompt_id = uuid4().hex
             if on_submitted:
-                on_submitted("pid-ok")
-            return {"prompt_id": "pid-ok", "outputs": ["ok.png"]}
+                on_submitted(prompt_id)
+            return {"prompt_id": prompt_id, "outputs": ["ok.png"]}
 
         def free_memory(self, **kw: Any) -> None:
             pass

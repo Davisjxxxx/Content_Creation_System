@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import mimetypes
 import re
@@ -106,13 +107,45 @@ class ComfyUIProvider:
     def _authorize_global_target(self, operation: str) -> str:
         """Authorize a global renderer operation and return the concrete pinned base URL (F01 / RC-01)."""
         if self._ownership_authorizer is None:
-            return self.base_url
+            raise RendererOwnershipError(f"Missing renderer ownership authorization for {operation}")
         ok, pinned_url, reason = self._ownership_authorizer(self.base_url, operation)
         if not ok or not str(pinned_url or "").strip():
             raise RendererOwnershipError(
                 f"Refusing {operation} on unverified/unowned renderer {self.base_url} ({reason})."
             )
-        return str(pinned_url).rstrip("/")
+        from ..ownership import parse_endpoint_identity
+        origin = parse_endpoint_identity(self.base_url)
+        pinned = parse_endpoint_identity(pinned_url)
+        if (not origin or not pinned or pinned[1] not in {"127.0.0.1", "::1"}
+                or (origin[0], origin[2]) != (pinned[0], pinned[2])
+                or origin[1] not in {"localhost", pinned[1]}):
+            raise RendererOwnershipError("Renderer authorization did not pin the requested loopback endpoint")
+        host = "[::1]" if pinned[1] == "::1" else pinned[1]
+        return f"{pinned[0]}://{host}:{pinned[2]}"
+
+    def _post_global(self, operation: str, route: str, payload: dict) -> None:
+        target = self._authorize_global_target(operation)
+        authorizer = self._ownership_authorizer
+        connection = None
+
+        def check_connection(event: str, info: dict) -> None:
+            nonlocal connection
+            if event == "connection.connect_tcp.complete":
+                stream = info["return_value"]
+                connection = (stream.get_extra_info("client_addr"), stream.get_extra_info("server_addr"))
+            if event == "http11.send_request_headers.started":
+                if connection is None or self._authorize_global_target(operation) != target:
+                    raise RendererOwnershipError("Renderer connection ownership changed")
+                if "connection" in inspect.signature(authorizer).parameters:
+                    ok, pinned, reason = authorizer(self.base_url, operation, connection=connection)
+                    if not ok or pinned != target:
+                        raise RendererOwnershipError(f"Refusing connected renderer operation: {reason}")
+
+        with httpx.Client(timeout=10, follow_redirects=False, trust_env=False) as client:
+            response = client.post(f"{target}/{route}", json=payload, extensions={"trace": check_connection})
+            if 300 <= getattr(response, "status_code", 200) < 400:
+                raise RendererOwnershipError(f"Refusing HTTP redirect ({response.status_code}) on /{route}")
+            response.raise_for_status()
 
     def health(self) -> dict[str, Any]:
         with httpx.Client(timeout=10) as client:
@@ -173,7 +206,7 @@ class ComfyUIProvider:
         with src.open("rb") as handle, httpx.Client(timeout=max(60, self.config.timeout_s)) as client:
             response = client.post(
                 f"{self.base_url}/upload/image",
-                data={"type": "input", "subfolder": subfolder, "overwrite": "true"},
+                data={"type": "input", "subfolder": subfolder, "overwrite": "false"},
                 files={"image": (src.name, handle, mime)},
             )
             response.raise_for_status()
@@ -205,6 +238,10 @@ class ComfyUIProvider:
             src = Path(str(raw)).expanduser().resolve()
             if not src.exists():
                 raise FileNotFoundError(f"{key} asset does not exist: {src}")
+            if key == "LAST_FRAME" and mapping.get("LAST_FRAME_SHA256"):
+                from ..integrity import sha256_file
+                if sha256_file(src) != mapping["LAST_FRAME_SHA256"]:
+                    raise ValueError("Selected ending picture changed since admission")
             path_key = str(src)
             if path_key in staged_by_path:
                 mapping[key] = staged_by_path[path_key]
@@ -294,11 +331,7 @@ class ComfyUIProvider:
                     return False
             if not allow_global:
                 return False
-            target_url = self._authorize_global_target("global_interrupt")
-            response = client.post(f"{target_url}/interrupt", json={})
-            if 300 <= getattr(response, "status_code", 200) < 400:
-                raise RendererOwnershipError(f"Refusing HTTP redirect ({response.status_code}) on global /interrupt")
-            response.raise_for_status()
+            self._post_global("global_interrupt", "interrupt", {})
             return True
 
     def queue_status(self) -> dict[str, Any]:
@@ -319,15 +352,7 @@ class ComfyUIProvider:
         Enforces centralized ownership authorization, pins the concrete verified IP-literal endpoint,
         and disables HTTP redirects so transport behavior cannot redirect cleanup to an unrelated service.
         """
-        target_url = self._authorize_global_target("free_memory")
-        with httpx.Client(timeout=10, follow_redirects=False) as client:
-            response = client.post(
-                f"{target_url}/free",
-                json={"unload_models": bool(unload_models), "free_memory": bool(free_memory)},
-            )
-            if 300 <= getattr(response, "status_code", 200) < 400:
-                raise RendererOwnershipError(f"Refusing HTTP redirect ({response.status_code}) on global /free")
-            response.raise_for_status()
+        self._post_global("free_memory", "free", {"unload_models": bool(unload_models), "free_memory": bool(free_memory)})
 
     def get_history_item(self, prompt_id: str) -> dict[str, Any] | None:
         """Fetch a single ComfyUI history record if present, or None if not yet recorded."""

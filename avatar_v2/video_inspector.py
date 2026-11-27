@@ -89,7 +89,8 @@ def sample_representative_video_frames(
     if not ffmpeg:
         raise RuntimeError("ffmpeg is required for video inspection.")
     src = Path(video_path).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from .safe_output import private_output_directory
+    out_dir = private_output_directory(out_dir)
 
     # Extract evenly spaced samples across the full duration, capping at max_frames.
     dur = max(0.2, float(duration_s or 1.0))
@@ -421,6 +422,10 @@ class VideoInspector:
         """Inspect a generated video efficiently (CPU temporal sweep + targeted keyframe VLM escalation)."""
         t0 = time.monotonic()
         p = Path(video_path).expanduser()
+        inspected_sha = sha256_file(p) or ""
+        inspected_contract = compute_requirement_set_hash(record)
+        inspected_refs = {r.asset_id or r.role: sha256_file(r.path) or "" for r in record.reference_requirements}
+
         methods_used: list[str] = ["deterministic", "video_temporal"]
         limitations: list[str] = list(record.known_unverifiable_requirements)
         injection_warnings: list[str] = []
@@ -745,17 +750,12 @@ class VideoInspector:
             decision, ui_status, ui_label, human_req = compute_inspection_status(
                 final_assessments, detected_defects=detected_defects
             )
-            ref_fps = {
-                r.asset_id or r.role: (r.asset_fingerprint or (sha256_file(r.path) or ""))
-                for r in record.reference_requirements
-                if r.path
-            }
             return VisualInspectionResult(
                 candidate_id=p.stem,
                 output_path=str(p),
-                output_sha256=sha256_file(p) or "",
-                requirement_set_hash=compute_requirement_set_hash(record),
-                reference_fingerprints=ref_fps,
+                output_sha256=inspected_sha,
+                requirement_set_hash=inspected_contract,
+                reference_fingerprints=inspected_refs,
                 inspector_model=inspector_model,
                 execution_mode=execution_mode,
                 overall_decision=decision,
@@ -772,4 +772,4 @@ class VideoInspector:
                 human_review_required=human_req,
                 latency_ms=round((time.monotonic() - t0) * 1000.0, 1),
                 vram_released_verified=vram_released_verified,
-            )
+            ).bind(record, p)

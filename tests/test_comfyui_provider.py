@@ -60,8 +60,8 @@ def test_health_object_info_queue_interrupt_status_and_free(monkeypatch):
     ]
     calls = []
     monkeypatch.setattr(comfyui.httpx, "Client", lambda **_kwargs: FakeClient(responses, calls))
-    provider = _provider()
-
+    provider = ComfyUIProvider(ProviderConfig(base_url="http://127.0.0.1:8188"),
+                               ownership_authorizer=lambda url, op: (True, url, "fixture"))
     assert provider.health() == {"system": "ok"}
     assert provider.object_info("Node") == {"Node": {}}
     assert provider.queue({"1": {}}) == "prompt-1"

@@ -99,7 +99,7 @@ def _succeeding_task(cost=8):
         body["cost"] = {"credits": cost}
     return {
         ("GET", f"/v1/tasks/{TASK_ID}"): httpx.Response(200, json=body),
-        ("GET", "cdn.example"): httpx.Response(200, content=b"img", headers={"content-type": "image/png"}),
+        ("GET", "cdn.example"): httpx.Response(200, content=(Path(__file__).parent / "fixtures/rc5/still.png").read_bytes(), headers={"content-type": "image/png"}),
     }
 
 

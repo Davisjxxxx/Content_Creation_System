@@ -833,8 +833,11 @@ class GenerationBroker:
             try:
                 job_id = str(self._submit_fn(ctx))
             except Exception as exc:
-                # Roll back durable reservation if queue submission itself failed.
-                if self._budget_path is not None:
+                from .render_queue import AdmissionRejected
+                if not isinstance(exc, AdmissionRejected):
+                    self._submitted_count = item_index
+                # An unknown outcome keeps its durable charge.
+                if self._budget_path is not None and isinstance(exc, AdmissionRejected):
                     try:
                         with _budget_exclusive_lock(self._budget_path):
                             existing = self._read_budget_locked()

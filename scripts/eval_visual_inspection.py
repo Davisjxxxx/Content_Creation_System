@@ -19,7 +19,6 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -190,14 +189,9 @@ def _make_synthetic_fixtures(tmp_dir: Path) -> dict[str, Path]:
                     draw.ellipse((x, 80, x + 76, 156), fill=(45, 110, 195), outline=(20, 40, 80), width=3)
                 frame.save(fdir / f"f_{idx:04d}.png")
             out_mp4 = tmp_dir / f"{name}.mp4"
-            subprocess.run(
-                [ffmpeg, "-v", "error", "-y", "-framerate", "12", "-i", str(fdir / "f_%04d.png"),
-                 "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out_mp4)],
-                check=True,
-                capture_output=True,
-                timeout=30,
-            )
-            return out_mp4
+            from avatar_v2.safe_output import render_output
+            return render_output([ffmpeg, "-v", "error", "-framerate", "12", "-i", str(fdir / "f_%04d.png"),
+                                  "-c:v", "libx264", "-pix_fmt", "yuv420p"], out_mp4, timeout=30)
 
         fixtures["syn_video_smooth"] = _build_mp4("syn_video_smooth", "smooth")
         fixtures["syn_video_flicker"] = _build_mp4("syn_video_flicker", "flicker")

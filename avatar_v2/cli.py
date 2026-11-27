@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from pathlib import Path
 
 import typer
@@ -12,6 +13,7 @@ from .models import AvatarManifest, ProviderConfig, RenderJob, ShotSpec
 from .policy import evaluate_policy
 from .providers import ComfyUIProvider
 from .qa import ffprobe_video
+from .safe_output import publish_text
 
 app = typer.Typer(no_args_is_help=True, help="Avatar V2 reference-driven video orchestration CLI")
 
@@ -55,7 +57,7 @@ def plan(
     """Compose one renderer-neutral job from identity, scene and motion references."""
     job = build_job(_load_avatar(avatar), _load_shot(shot))
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(job.model_dump_json(indent=2), encoding="utf-8")
+    out = publish_text(out, job.model_dump_json(indent=2))
     typer.echo(f"planned {job.job_id} -> {out}")
     typer.echo(f"selected engine: {job.selected_engine}; seed: {job.shot.seed}")
 
@@ -75,10 +77,10 @@ def plan_batch(
     for index in range(count):
         candidate_shot = base.model_copy(update={"seed": base.seed + index})
         job = build_job(avatar_obj, candidate_shot)
-        path = out_dir / f"{base.shot_id}_seed_{candidate_shot.seed}.json"
-        path.write_text(job.model_dump_json(indent=2), encoding="utf-8")
+        path = out_dir / f"{Path(base.shot_id).name}_seed_{candidate_shot.seed}.json"
+        path = publish_text(path, job.model_dump_json(indent=2))
         manifest.append({"seed": candidate_shot.seed, "job": str(path), "engine": job.selected_engine})
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    publish_text(out_dir / "manifest.json", json.dumps(manifest, indent=2))
     typer.echo(json.dumps(manifest, indent=2))
 
 
@@ -121,12 +123,34 @@ def render(
     if dry_run:
         resolved = engine.resolve_workflow(workflow, render_job, stage_assets=False)
         resolved_out.parent.mkdir(parents=True, exist_ok=True)
-        resolved_out.write_text(json.dumps(resolved, indent=2), encoding="utf-8")
+        resolved_out = publish_text(resolved_out, json.dumps(resolved, indent=2))
         typer.echo(f"resolved workflow -> {resolved_out}")
         return
 
-    result = engine.render(workflow, render_job)
-    typer.echo(json.dumps({"prompt_id": result["prompt_id"], "outputs": result["outputs"]}, indent=2))
+    if config.provider != "comfyui":
+        raise typer.BadParameter("The CLI render command requires a local ComfyUI provider")
+    from .desktop import DesktopAPI
+    from .render_queue import QueuedRender
+
+    api = DesktopAPI()
+    item = QueuedRender(job=render_job, workflow=str(workflow.resolve()), provider_config=config,
+                        profile="auto", runtime={}, output_dir=config.output_dir)
+    try:
+        api.queue.add(item)
+        receipt = api.queue.history_dir / f"{item.id}.json"
+        while not receipt.is_file():
+            if item.status == "error":
+                raise typer.BadParameter(item.error or "Render failed")
+            time.sleep(0.2)
+        result = json.loads(receipt.read_text(encoding="utf-8"))
+        if result["status"] != "done":
+            raise typer.BadParameter(result.get("error") or f"Render {result['status']}")
+        typer.echo(json.dumps({"prompt_id": result["prompt_id"], "outputs": result["outputs"]}, indent=2))
+    except KeyboardInterrupt:
+        api.queue.cancel(item.id)
+        raise
+    finally:
+        api.queue.shutdown()
 
 
 @app.command("qa")

@@ -406,7 +406,7 @@ def test_api_calls_carry_auth_and_version_but_upload_and_download_hosts_never_se
                 200, json={"uploadUrl": "https://storage.example/bucket", "fields": {"policy": "p1"}, "runwayUri": "runway://up-1"}
             ),
             ("POST", "storage.example", "/bucket"): httpx.Response(204),
-            ("GET", "cdn.example", "/out/clip"): httpx.Response(200, content=b"mp4", headers={"content-type": "video/mp4"}),
+            ("GET", "cdn.example", "/out/clip"): httpx.Response(200, content=(Path(__file__).parent / "fixtures/rc5/clip.mp4").read_bytes(), headers={"content-type": "video/mp4"}),
         }
     )
     with _client(recorder) as client:
@@ -420,7 +420,7 @@ def test_api_calls_carry_auth_and_version_but_upload_and_download_hosts_never_se
     assert "authorization" not in {key.lower() for key in storage.headers}
     assert b'name="policy"' in storage.content and b'name="file"; filename="front.png"' in storage.content
     assert "authorization" not in {key.lower() for key in download.headers}
-    assert target.name == "runway_out.mp4" and target.read_bytes() == b"mp4"
+    assert target.name == "runway_out.mp4" and target.read_bytes() == (Path(__file__).parent / "fixtures/rc5/clip.mp4").read_bytes()
 
 
 def test_create_task_retries_rate_limits_but_surfaces_validation_detail():
@@ -555,7 +555,7 @@ def test_provider_uploads_creates_polls_downloads_and_keeps_a_redacted_receipt(t
                     json={"id": TASK_ID, "status": "SUCCEEDED", "cost": {"credits": 8}, "output": ["https://cdn.example/a/out.png"]},
                 ),
             ],
-            ("GET", "cdn.example", "/a/out.png"): httpx.Response(200, content=b"png-bytes", headers={"content-type": "image/png"}),
+            ("GET", "cdn.example", "/a/out.png"): httpx.Response(200, content=(Path(__file__).parent / "fixtures/rc5/still.png").read_bytes(), headers={"content-type": "image/png"}),
         }
     )
     result = _provider(tmp_path, recorder).render("runway:still:gen4_image", _still_job(tmp_path))
@@ -566,7 +566,7 @@ def test_provider_uploads_creates_polls_downloads_and_keeps_a_redacted_receipt(t
     assert body["referenceImages"][0]["uri"].startswith("data:image/png;base64,")
     assert result["prompt_id"] == TASK_ID
     output = Path(result["outputs"][0])
-    assert output.read_bytes() == b"png-bytes" and output.parent == (tmp_path / "runway" / TASK_ID).resolve()
+    assert output.read_bytes() == (Path(__file__).parent / "fixtures/rc5/still.png").read_bytes() and output.parent == (tmp_path / "runway" / TASK_ID).resolve()
     receipt = result["cloud_receipt"]
     assert receipt["credits_charged"] == 8 and receipt["status"] == "SUCCEEDED"
     assert receipt["uploads"][0]["file"] == "front.png" and receipt["uploads"][0]["transfer"] == "inline_data_uri"

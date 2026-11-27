@@ -138,7 +138,7 @@ def test_rc12_wan5b_correction_selects_5b_workflow_and_placeholders(
 
     captured: dict[str, Any] = {}
     out_mp4 = tmp_path / "cor_5b.mp4"
-    out_mp4.write_bytes(b"fake-mp4")
+    out_mp4.write_bytes((Path(__file__).parent / "fixtures/rc5/clip.mp4").read_bytes())
 
     class CaptureComfy:
         def __init__(self, cfg: ProviderConfig) -> None:
@@ -209,7 +209,7 @@ def test_rc13_resolved_graph_seed_still_frames_and_real_mp4_ffprobe(
     out_png = tmp_path / "still.png"
     Image.new("RGB", (512, 768), color=(80, 120, 160)).save(out_png, format="PNG")
     out_mp4 = tmp_path / "wan_out.mp4"
-    out_mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    out_mp4.write_bytes((Path(__file__).parent / "fixtures/rc5/clip.mp4").read_bytes())
 
     class ResolvedGraphProvider:
         uses_local_gpu = True

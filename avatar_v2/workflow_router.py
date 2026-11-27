@@ -16,6 +16,8 @@ Security & Reliability:
 
 from __future__ import annotations
 
+from .integrity import sha256_file
+
 import hashlib
 from pathlib import Path
 from typing import Any, Literal
@@ -553,7 +555,7 @@ class WorkflowRouter:
                 path=r.path,
                 subject_id=r.subject_id,
                 origin="character_profile" if r.source_provenance == "character_profile" else "user_source",
-                asset_fingerprint=r.asset_fingerprint,
+                asset_fingerprint=r.asset_fingerprint or sha256_file(r.path) or "",
                 preserve_identity=r.preserve_identity,
                 preserve_appearance=r.preserve_appearance,
                 preserve_wardrobe=r.preserve_wardrobe,

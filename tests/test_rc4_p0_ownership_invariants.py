@@ -255,7 +255,8 @@ def test_f01_http_redirect_on_global_free_is_refused_and_never_reaches_destinati
         redirect_to=f"http://127.0.0.1:{dest_port}/free"
     )
     try:
-        provider = ComfyUIProvider(ProviderConfig(provider="comfyui", base_url=f"http://127.0.0.1:{redir_port}"))
+        provider = ComfyUIProvider(ProviderConfig(provider="comfyui", base_url=f"http://127.0.0.1:{redir_port}"),
+                                   ownership_authorizer=lambda url, op: (True, url, "authorized fixture origin"))
         with pytest.raises(RendererOwnershipError, match="redirect"):
             provider.free_memory(unload_models=True, free_memory=True)
         assert ("POST", "/free") in redir_hits

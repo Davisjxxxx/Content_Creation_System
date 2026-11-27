@@ -7,6 +7,8 @@ successful render or its recorded output file no longer verifies.
 
 from __future__ import annotations
 
+from .ownership import write_json_atomic
+
 import hashlib
 import json
 import re
@@ -49,7 +51,7 @@ class LessonStore:
 
     def _write(self, data: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        write_json_atomic(self.path, data)
 
     def list(self) -> list[dict[str, Any]]:
         return sorted(self._read().values(), key=lambda item: item.get("updated_at", ""), reverse=True)

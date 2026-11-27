@@ -153,7 +153,8 @@ def test_queue_cancel_queued_running_and_finished(tmp_path: Path):
     class Provider:
         calls = 0
 
-        def interrupt(self):
+        def interrupt(self, prompt_id=None, allow_global=False):
+            assert not allow_global
             self.calls += 1
 
     provider = Provider()
@@ -264,7 +265,7 @@ def test_previous_output_resolution_archive_and_candidate_failures(tmp_path: Pat
 def test_execute_forces_cleanup_renders_archives_and_extracts_candidate(tmp_path: Path, monkeypatch):
     output = tmp_path / "provider" / "clip.mp4"
     output.parent.mkdir()
-    output.write_bytes(b"video")
+    output.write_bytes((Path(__file__).parent / "fixtures/rc5/clip.mp4").read_bytes())
     item = _item(
         tmp_path,
         output_dir=str(output.parent),
@@ -302,10 +303,11 @@ def test_execute_forces_cleanup_renders_archives_and_extracts_candidate(tmp_path
 
     queue.memory_manager = Memory()
     monkeypatch.setattr(render_queue, "ComfyUIProvider", Provider)
+    (tmp_path / "candidate.png").write_bytes((Path(__file__).parent / "fixtures/rc5/still.png").read_bytes())
     queue._extract_candidate_frame = lambda rendered: rendered.outputs.append(str(tmp_path / "candidate.png"))
     queue._execute(item)
     assert item.prompt_id == "p1"
-    assert Path(item.outputs[0]).read_bytes() == b"video"
+    assert Path(item.outputs[0]).read_bytes() == output.read_bytes()
     assert item.outputs[-1].endswith("candidate.png")
     assert item.gpu_trace["peak"][0]["used_mb"] == 7000
     assert queue.memory_manager.events[0]["force"] is True
@@ -334,9 +336,9 @@ def test_image_jobs_keep_models_loaded_for_fast_replay(tmp_path: Path, monkeypat
             return {}
 
     stub_png = tmp_path / "stub_out.png"
-    stub_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    stub_png.write_bytes((Path(__file__).parent / "fixtures/rc5/still.png").read_bytes())
     stub_mp4 = tmp_path / "stub_clip.mp4"
-    stub_mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    stub_mp4.write_bytes((Path(__file__).parent / "fixtures/rc5/clip.mp4").read_bytes())
 
     class Provider:
         def __init__(self, config):
@@ -389,7 +391,7 @@ def test_execute_chaining_rebinds_primary_h3_picture(tmp_path: Path, monkeypatch
             return {}
 
     chained_mp4 = tmp_path / "chained.mp4"
-    chained_mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    chained_mp4.write_bytes((Path(__file__).parent / "fixtures/rc5/clip.mp4").read_bytes())
 
     class Provider:
         def __init__(self, _config):

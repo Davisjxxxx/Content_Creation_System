@@ -101,6 +101,9 @@ def import_images(
         stored = target_dir / f"{digest[:16]}{FORMATS[facts['format']]}"
         sidecar = stored.with_suffix(stored.suffix + ".json")
         duplicate = stored.exists()
+        if duplicate and (stored.is_symlink() or sha256_file(stored) != digest):
+            rejected.append({"file": path.name, "reason": "Existing import has conflicting content."})
+            continue
         if not duplicate:
             from .ownership import copy_file_exclusive
 
@@ -119,7 +122,13 @@ def import_images(
             **{key: facts[key] for key in ("format", "width", "height", "bytes")},
         }
         if not duplicate or not sidecar.exists():
-            sidecar.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+            from .safe_output import publish_output
+            try:
+                publish_output(sidecar, lambda path: path.write_text(json.dumps(provenance, indent=2),
+                                                                     encoding="utf-8"), rename_on_collision=False)
+            except FileExistsError:
+                rejected.append({"file": path.name, "reason": "Provenance destination is already occupied."})
+                continue
         imported.append(
             {
                 **provenance,

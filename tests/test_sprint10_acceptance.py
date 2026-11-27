@@ -400,7 +400,7 @@ def test_journey_d_video_starter_never_replaced_and_flf2v_wired(
         def render(self, workflow: str, job: RenderJob) -> dict[str, Any]:
             captured_jobs.append(job)
             vid = out_dir / "wan_out.mp4"
-            vid.write_bytes(b"fake-mp4-bytes")
+            vid.write_bytes((Path(__file__).parent / "fixtures/rc5/clip.mp4").read_bytes())
             return {"prompt_id": "p-vid-1", "outputs": [str(vid)]}
 
     monkeypatch.setattr(desktop, "ComfyUIProvider", StubComfy)

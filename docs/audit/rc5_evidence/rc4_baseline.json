@@ -1,0 +1,69 @@
+{
+  "audit_commit": "de6df8a590de5cb432f9087b8870c770cec3912d",
+  "executable_sha256": "a63423b57203ea547d9fcde49e4bafec6e92030b47d69e0077f50a1169a6ed0b",
+  "original_fixture_sha256": {
+    "bin_audio": "e3dc145013739452b36663abf487705f7d93cc9e053c99ca0b5f4392323a44ab",
+    "bin_render": "89cedce7c41da5774c6e0f5897ec8cf815f1e4a8bb2120baa07801b117fe692c",
+    "bin_repeated": "5c305eb33752cd6aeeffa42a7b5d9e3a74b21d27f254bdbd4bd34d7a4d466b57",
+    "bin_wan": "5fd2dc2e6b5b586b222965916ceadb1fd76742d72a2a44230225d79bac3ed289",
+    "rc4controls": "a58a616b85c5bd51f292738723f2d7639fb7e3e1becac1a15fef3385d594332d",
+    "candidatefault": "43c85db249d1a6d7130876157bce977d2b1d7fc6d94a04aa5e257eb90a69e39c",
+    "correceipt": "8e95b59e8d15498ac4c922af4a554aeb92d5bb5c8dfdd8d1b7295f7145c78bd0",
+    "missing_binding": "5ff52f2eeed9d62c78c7382f2018029c04dbea8cdf3015f6cdb546a770e7e6cd",
+    "legacy": "4037a2a37c926758bb31927b83209bab31ff8aa7c64210ee305435de0ed76263",
+    "extra": "5159c39759102ed47193d0527abef5f00d4f7b7389e245ef21dbdb4d640ea075"
+  },
+  "rc4_replays": {
+    "bin_audio": [
+      "history fixture-0.json {'status': 'done', 'phase': 'complete', 'prompt_id': '1', 'outputs': ['/home/test/outputs/clip.mp4'], 'observed_media': [{'path': '/home/test/outputs/clip.mp4', 'exists': True, 'size_bytes': 1798, 'sha256': 'b5e6e97d556226cb2cbc960a7dbf6e50895d08a5c38ff0b090faf1ebdac7f300', 'kind': 'video', 'width': 160, 'height': 96, 'frames': 8, 'duration_s': 1.0, 'fps': 8.0}], 'error': ''}",
+      "HTTP POSTs ['/prompt'] protected log protected destination /home/test/outputs/clip_voiceover.mp4 existing; ffmpeg flags -y",
+      " original intact True QA {'ok': False, 'voiceover': 'not added: Could not post-process the audio of clip.mp4: CalledProcessError'}"
+    ],
+    "bin_render": [
+      "history fixture-0.json {'status': 'done', 'phase': 'complete', 'prompt_id': '1', 'outputs': ['/home/test/outputs/good.png'], 'observed_media': [{'path': '/home/test/outputs/good.png', 'exists': True, 'size_bytes': 290, 'sha256': 'e734d8bb73191efb8f9becc1bbac2d8368890ee999fdbd6d8b3502bab28b7d3e', 'kind': 'image', 'width': 128, 'height': 96, 'frames': 1, 'format': 'PNG'}], 'error': ''}",
+      "history fixture-1.json {'status': 'done', 'phase': 'complete', 'prompt_id': '2', 'outputs': ['/home/test/outputs/short.png'], 'observed_media': [{'path': '/home/test/outputs/short.png', 'exists': True, 'size_bytes': 1, 'sha256': '2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881', 'kind': 'image'}], 'error': ''}",
+      "HTTP POSTs ['/prompt', '/prompt']"
+    ],
+    "rc4controls": [
+      "v4 (True, 'http://127.0.0.1:53643', 'verified_owned_localhost_pinned_ipv4')",
+      "v6 (False, '', 'ipv6_listener_not_owned_on_port:53643')",
+      "wrong port (False, '', 'endpoint_port_mismatch:owned_53643_vs_target_28189')",
+      "missing listening census (False, '', 'unreadable_listener_telemetry:census unavailable')",
+      "start (False, '', 'pid_reused')",
+      "boot (False, '', 'missing_record_boot_id')",
+      "exited (False, '', 'process_exited')",
+      "desktop global authorization denied RendererOwnershipError",
+      "standalone queue global authorization result http://127.0.0.1:8188",
+      "import source types {'midjourney': 'Midjourney (manual export from your own account)', 'other_ai': 'Another image generator (manual export)', 'photo': 'Photograph you are authorized to use'}",
+      "import issued write on preexisting sidecar",
+      "sidecar preserved by probe existing independent note"
+    ],
+    "extra": [
+      "empty gpu samples {'before': [], 'after': [], 'cleanup_requested': True, 'effective': False, 'vram_released_verified': True}",
+      "residency None RuntimeError",
+      "residency {} admit",
+      "residency {'models': [{'name': 'fixture'}]} admit",
+      "residency {'models': []} admit",
+      "residency {'models': 'bad'} RuntimeError",
+      "criteria Exactly two cups and the wooden box must remain closed. ['Exact count: 2 cups', 'Object state: the wooden box closed']",
+      "criteria Exactly two cups and three bowls, with the lid open and the box closed. ['Exact count: 2 cups', 'Exact count: 3 bowls', 'Object state: the lid open', 'Explicit requirement: the box closed']",
+      "criteria The wooden box must remain closed and the gate must stay open. ['Object state: The wooden box closed', 'Object state: the gate open']",
+      "unpin I/O failure reopened {'/home/test/more/cache/ref_564ef8f904ca49ea7df2.png': {'ended'}}",
+      "same filename archive b'pre-existing' ref_08e221ac.png True",
+      "link sibling link_63305031.png preexisting preserved True",
+      "hard sibling hard_4ee2c9ee.png preexisting preserved True",
+      "registry commits 8 entries 11",
+      "partial copy exists False",
+      "rejected item ran after reopen True",
+      "one missing RSS record (True, {300, 301}, 24, 'ok')",
+      "initial QA fault done complete True Failed to persist initial inspection checkpoint: QA checkpoint full"
+    ],
+    "binding": [
+      "** (missing_binding.py:4): WARNING **: 16:42:30.235: Disabled hardware acceleration because GTK failed to initialize GL: The current backend does not support OpenGL.",
+      "current file matches inspection False shipped UI verdict just now \u00b7 Not inspected",
+      "missing requirement binding just now \u00b7 Requirements verified",
+      "startup configured True account calls 0",
+      "positive pending count to zero, account calls 0"
+    ]
+  }
+}

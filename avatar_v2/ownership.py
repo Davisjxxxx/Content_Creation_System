@@ -72,7 +72,8 @@ def write_json_atomic(path: Path, data: Any) -> None:
             finally:
                 os.close(dir_fd)
         except OSError:
-            pass
+            if os.name == "posix":
+                raise
     except BaseException:
         try:
             tmp.unlink(missing_ok=True)
@@ -567,6 +568,36 @@ def authorize_owned_endpoint(
     return True, f"{scheme}://{concrete}:{port}", "verified_owned_starting_endpoint"
 
 
+def owns_connected_peer(record: ProcessOwnershipRecord, client: tuple, server: tuple) -> bool:
+    """Confirm that the server end of this established loopback connection belongs to the owned PID."""
+    v6 = ":" in server[0]
+    table = Path("/proc/net/tcp6" if v6 else "/proc/net/tcp")
+    # connect() may return just before the renderer calls accept().
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        try:
+            for line in table.read_text().splitlines()[1:]:
+                row = line.split()
+                if len(row) < 10 or row[3] != "01":
+                    continue
+                local, remote = row[1].split(":"), row[2].split(":")
+                if (int(local[1], 16) != server[1] or int(remote[1], 16) != client[1]
+                        or _parse_proc_net_ip(local[0], is_v6=v6) != server[0]
+                        or _parse_proc_net_ip(remote[0], is_v6=v6) != client[0]):
+                    continue
+                if row[9] != "0":
+                    for fd in Path(f"/proc/{record.pid}/fd").iterdir():
+                        try:
+                            if os.readlink(fd) == f"socket:[{row[9]}]":
+                                return verify_process_ownership(record)[0]
+                        except FileNotFoundError:
+                            continue
+        except (OSError, ValueError, IndexError):
+            return False
+        time.sleep(0.01)
+    return False
+
+
 def verify_endpoint_ownership(
     record: ProcessOwnershipRecord | None,
     base_url: str,
@@ -892,44 +923,26 @@ def copy_file_exclusive(src: Path, dest_dir: Path, filename: str | None = None) 
     - NEVER overwrites an existing file at ``dest_dir / filename``.
     - On interrupted write or hash mismatch, removes ONLY the newly created destination and raises.
     """
+    from .safe_output import publish_output
+
     source = Path(src).expanduser()
-    src_hash = hashlib.sha256()
-    fd, dest = allocate_exclusive_path(dest_dir, filename or source.name)
-    created_ok = False
-    try:
-        with source.open("rb") as reader:
-            while True:
-                chunk = reader.read(1 << 20)
-                if not chunk:
-                    break
-                src_hash.update(chunk)
+    target = dest_dir / Path(filename or source.name).name
+
+    def copy_into(staged: Path) -> None:
+        digest = hashlib.sha256()
+        with source.open("rb") as reader, staged.open("xb") as writer:
+            while chunk := reader.read(1 << 20):
+                digest.update(chunk)
                 view = memoryview(chunk)
-                written = 0
-                while written < len(view):
-                    n = os.write(fd, view[written:])
-                    if n <= 0:
+                while view:
+                    written = os.write(writer.fileno(), view)
+                    if written <= 0:
                         raise OSError("Short write during exclusive archive copy")
-                    written += n
-        os.fsync(fd)
-        os.close(fd)
-        fd = -1
-        # Verify written destination bytes match source exactly.
-        dest_sha = _sha256_file_bytes(dest)
-        if dest_sha != src_hash.hexdigest():
+                    view = view[written:]
+        if _sha256_file_bytes(staged) != digest.hexdigest():
             raise OSError("Exclusive copy SHA-256 verification failed")
-        created_ok = True
-        return dest
-    finally:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        if not created_ok:
-            try:
-                dest.unlink(missing_ok=True)
-            except OSError:
-                pass
+
+    return publish_output(target, copy_into)
 
 
 @dataclass(frozen=True)

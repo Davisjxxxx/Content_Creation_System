@@ -236,7 +236,7 @@ def test_resumed_job_polls_the_existing_task_and_keeps_the_original_receipt(tmp_
 
         def render(self, workflow, job):
             seen["resume"] = job.asset_map.get("RUNWAY_RESUME_TASK_ID")
-            return {"prompt_id": TASK_ID, "outputs": [], "cloud_receipt": {"status": "SUCCEEDED", "credits_charged": 8, "resumed": True}}
+            return {"prompt_id": TASK_ID, "outputs": [str(Path(__file__).parent / "fixtures/rc5/still.png")], "cloud_receipt": {"status": "SUCCEEDED", "credits_charged": 8, "resumed": True}}
 
     monkeypatch.setattr(render_queue, "RunwayProvider", ResumingRunway)
     item = _runway_item(tmp_path, prompt_id=TASK_ID, cloud_receipt={"task_id": TASK_ID, "uploads": [{"file": "id.png"}]})
@@ -256,7 +256,7 @@ def test_provider_resume_path_never_creates_a_new_task(tmp_path, monkeypatch):
         if request.method == "GET" and request.url.path == f"/v1/tasks/{TASK_ID}":
             return httpx.Response(200, json={"id": TASK_ID, "status": "SUCCEEDED", "cost": {"credits": 8}, "output": ["https://cdn.example/o.png"]})
         if request.url.host == "cdn.example":
-            return httpx.Response(200, content=b"img", headers={"content-type": "image/png"})
+            return httpx.Response(200, content=(Path(__file__).parent / "fixtures/rc5/still.png").read_bytes(), headers={"content-type": "image/png"})
         return httpx.Response(500)
 
     item = _runway_item(tmp_path)
@@ -320,7 +320,7 @@ def test_a_daily_limit_the_owner_sets_stops_new_jobs(api, home):
 
 def test_queue_hashes_outputs_and_verify_detects_changes(tmp_path, monkeypatch):
     output = tmp_path / "out.png"
-    output.write_bytes(b"render")
+    output.write_bytes((Path(__file__).parent / "fixtures/rc5/still.png").read_bytes())
 
     class Local:
         def __init__(self, config):

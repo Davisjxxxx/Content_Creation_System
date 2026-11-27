@@ -759,9 +759,11 @@ class ScriptRunManager:
                 stat_txt = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
                 rparen = stat_txt.rfind(")")
                 if rparen < 0:
-                    continue
+                    return False, set(), 0, "malformed_proc_stat"
                 parts = stat_txt[rparen + 1 :].strip().split()
-                if len(parts) < 3 or parts[0] == "Z":
+                if len(parts) < 3:
+                    return False, set(), 0, "short_proc_stat"
+                if parts[0] == "Z":
                     continue
                 ppid = int(parts[1])
                 pgid = int(parts[2])
@@ -769,8 +771,10 @@ class ScriptRunManager:
                 children_by_ppid.setdefault(ppid, []).append(pid)
                 if pgid == root_pgid:
                     pgid_pids.add(pid)
-            except (OSError, ValueError, IndexError):
+            except FileNotFoundError:
                 continue
+            except (OSError, ValueError, IndexError) as exc:
+                return False, set(), 0, f"proc_stat_incomplete:{pid}:{exc}"
 
         if root_pid > 0 and root_pid not in live_pids and not pgid_pids:
             # Process may have just exited; caller checks proc.poll() to distinguish exit vs lost telemetry.
@@ -801,7 +805,7 @@ class ScriptRunManager:
                         break
             except (OSError, ValueError):
                 continue
-        if tree and readable_rss == 0:
+        if readable_rss != len(tree):
             return False, tree, 0, "proc_status_vmrss_unreadable"
         return True, tree, total_rss_kb, "ok"
 
@@ -1069,6 +1073,7 @@ class ScriptRunManager:
             self.runs_dir.mkdir(parents=True, exist_ok=True)
             path = self.runs_dir / f"{record.run_id}.json"
             payload = {"record": record.public(), "run": run_status}
-            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            from .ownership import write_json_atomic
+            write_json_atomic(path, payload)
         except OSError:
             pass

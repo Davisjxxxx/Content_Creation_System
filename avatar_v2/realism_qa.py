@@ -91,7 +91,9 @@ def probe(path: Path) -> dict[str, Any]:
 
 
 def _extract_frames(path: Path, folder: Path, fps: float, width: int) -> list[Path]:
-    _run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", f"fps={fps},scale={width}:-2", str(folder / "f_%05d.png")])
+    from .safe_output import private_output_directory
+    folder = private_output_directory(folder)
+    _run(["ffmpeg", "-nostdin", "-n", "-v", "error", "-i", str(path), "-vf", f"fps={fps},scale={width}:-2", str(folder / "f_%05d.png")])
     return sorted(folder.glob("f_*.png"))
 
 

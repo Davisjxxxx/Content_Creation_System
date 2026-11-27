@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "........................................................................ [ 14%]",
+    "................................................................s....... [ 28%]",
+    "........................................................................ [ 43%]",
+    "........................................................................ [ 57%]",
+    "........................................................................ [ 71%]",
+    ".....................s........................ss.....s.................. [ 86%]",
+    ".....................................................................    [100%]",
+    "496 passed, 5 skipped in 43.21s"
+  ],
+  "bubblewrap_host": [
+    ".....                                                                    [100%]",
+    "5 passed in 4.30s"
+  ],
+  "distinct_cases": 501,
+  "suite_command": "python -m pytest -q -o addopts= -p no:cacheprovider --tb=short tests",
+  "host_tests": [
+    "test_rc17_missing_prlimit_fails_closed_and_bounded_output_prevents_unbounded_ram",
+    "test_live_bubblewrap_isolation_blocks_network_secrets_gpu_and_allows_broker_ipc",
+    "test_live_bubblewrap_kills_runaway_script_cleanly",
+    "test_journey_e_live_bwrap_sandbox_isolation_and_fail_closed",
+    "test_phase_b_live_bwrap_cleans_up_spawned_child_processes"
+  ]
+}

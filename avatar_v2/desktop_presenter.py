@@ -7,6 +7,9 @@ attributes) so pywebview does not expose their internals to page JavaScript.
 
 from __future__ import annotations
 
+from .safe_output import publish_text
+from .ownership import write_json_atomic
+
 import copy
 import json
 import re
@@ -581,7 +584,7 @@ class PresenterMixin:
         folder.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         path = folder / f"{(report.get('sha256') or 'unknown')[:16]}_{stamp}.json"
-        path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        path = publish_text(path, json.dumps(report, indent=2))
         return {"ok": True, "report": report, "report_path": str(path)}
 
     def qa_review_save(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -595,7 +598,7 @@ class PresenterMixin:
             )
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             return {"ok": False, "error": str(exc)}
-        path.write_text(json.dumps(updated, indent=2), encoding="utf-8")
+        path = publish_text(path.with_stem(path.stem + "_review"), json.dumps(updated, indent=2))
         return {"ok": True, "report": updated, "report_path": str(path)}
 
     def qa_reports_list(self) -> dict[str, Any]:
@@ -779,7 +782,7 @@ class PresenterMixin:
         current[name] = clean
         path = self._profiles_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        write_json_atomic(path, current)
         return {"ok": True, "profile": clean}
 
     def provider_profile_delete(self, name: str) -> dict[str, Any]:
@@ -787,5 +790,5 @@ class PresenterMixin:
         removed = current.pop(str(name), None) is not None
         path = self._profiles_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        write_json_atomic(path, current)
         return {"ok": True, "removed": removed}

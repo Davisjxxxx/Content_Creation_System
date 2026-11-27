@@ -290,7 +290,17 @@ def test_candidate_ranking_rejects_regression_and_preserves_original(tmp_path: P
         return path, 1500.0
 
     def fake_ins(path: str, _rec: GenerationVerificationRecord) -> VisualInspectionResult:
-        return ins_reg if path == str(c1) else ins_good
+        from avatar_v2.inspection_contract import compute_requirement_set_hash
+        from avatar_v2.integrity import sha256_file
+        result = ins_reg if path == str(c1) else ins_good
+        result.output_path = path
+        result.output_sha256 = sha256_file(path)
+        result.requirement_set_hash = compute_requirement_set_hash(_rec)
+        for assessment, criterion in zip(result.criterion_assessments, _rec.mandatory_acceptance_criteria, strict=True):
+            assessment.category = criterion.category
+            assessment.verification_eligibility = get_verification_eligibility(criterion.category)
+            assessment.assessor = "local_vlm"
+        return result
 
     report = CorrectionCoordinator().run_bounded_correction(
         record=rec,

@@ -9,6 +9,8 @@ because pywebview would expose it to page JavaScript.
 
 from __future__ import annotations
 
+from .safe_output import render_output
+
 import base64
 import hashlib
 import io
@@ -32,6 +34,7 @@ from . import brand_instructor as bi
 from . import cloud_ledger, local_engine
 from . import offline_builder as ob
 from .composer import build_job
+from .inspection_contract import present_job
 from .integrity import sha256_file
 from .js_bridge import in_js_bridge
 from .library import AvatarProfile
@@ -328,6 +331,10 @@ class StudioMixin:
         app_home = d.APP_HOME
         if mgr is None:
             mgr = LocalReferenceManager(staging_dir=app_home / "staged_refs")
+            queue = getattr(self, "queue", None)
+            if queue is not None and hasattr(queue, "list"):
+                mgr.reconcile_job_pins({entry["id"] for entry in queue.list()
+                                        if entry["status"] in {"queued", "running"}})
             self._local_ref_manager = mgr
         for media_root in (app_home, d.RUNS_DIR, d.IMPORTS_DIR, d.VOICEOVER_DIR, app_home / "thumbs"):
             mgr.add_trusted_root(media_root)
@@ -1383,16 +1390,16 @@ class StudioMixin:
         if not ffmpeg:
             return {"ok": False, "scene": "not joined: ffmpeg is not installed"}
         target = reserve_fresh_output_path(videos[-1].parent, f"scene_{item.id}.mp4")
-        command = [ffmpeg, "-y", "-v", "error"]
+        command = [ffmpeg, "-v", "error"]
         for video in videos:
             command += ["-i", str(video)]
         # Every shot after the first starts on the previous shot's last frame, so drop that repeated frame.
         parts = [f"[{i}:v]{'trim=start_frame=1,' if i else ''}setpts=PTS-STARTPTS[v{i}]" for i in range(len(videos))]
         joined = "".join(f"[v{i}]" for i in range(len(videos)))
         command += ["-filter_complex", ";".join(parts) + f";{joined}concat=n={len(videos)}:v=1:a=0[out]",
-                    "-map", "[out]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(target)]
+                    "-map", "[out]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18"]
         try:
-            subprocess.run(command, capture_output=True, timeout=600, check=True)
+            target = render_output(command, target)
         except (subprocess.SubprocessError, OSError) as exc:
             return {"ok": False, "scene": f"not joined: {type(exc).__name__}"}
         final = target
@@ -1791,6 +1798,8 @@ class StudioMixin:
             staged_end = str(spec.get("staged_end_image") or "").strip()
             expected_end_sha = str(spec.get("end_image_sha256") or "").strip()
             if req_end or staged_end:
+                if not staged_end or not expected_end_sha:
+                    return {"ok": False, "scene": "Select the ending picture again to bind this saved scene."}
                 end_path = Path(staged_end or req_end).expanduser()
                 if not end_path.is_file():
                     return {
@@ -1806,6 +1815,7 @@ class StudioMixin:
                         }
                 if items:
                     items[-1].job.asset_map["LAST_FRAME"] = str(end_path)
+                    items[-1].job.asset_map["LAST_FRAME_SHA256"] = expected_end_sha
                     # Pin staged end_image to the new Wan scene item before the starter photo unpins!
                     self._reference_manager().pin_staged(str(end_path), items[-1].id)
             for it in items:
@@ -1819,7 +1829,12 @@ class StudioMixin:
             return {"ok": False, "scene": f"not started: {exc}"}
         if not items:
             return {"ok": False, "scene": "not started: no shots"}
-        queue_ids = self.queue.add_many(items)
+        try:
+            queue_ids = self.queue.add_many(items)
+        except (ValueError, OSError) as exc:
+            for it in items:
+                self._reference_manager().unpin_job(it.id)
+            return {"ok": False, "scene": f"not started: {exc}"}
         return {"ok": True, "scene": "queued", "shots": len(items), "queue_ids": queue_ids}
 
     def _compile_guided_prompt(
@@ -2155,6 +2170,7 @@ class StudioMixin:
                     )
                     if staged_end_submit:
                         items[-1].job.asset_map["LAST_FRAME"] = staged_end_submit
+                        items[-1].job.asset_map["LAST_FRAME_SHA256"] = end_image_sha
                     vid_ver = None
                     try:
                         # RC-06: Direct Wan I2V graph conditions ONLY starter_image (and optional end_image),
@@ -2252,9 +2268,11 @@ class StudioMixin:
                 deferred_end = str(((it.runtime.get("forge_scene") or {}).get("staged_end_image")) or "").strip()
                 if deferred_end:
                     mgr_pin.pin_staged(deferred_end, it.id)
+            queue_ids = self.queue.add_many(items)
         except (ValueError, OSError) as exc:
+            for it in locals().get("items", []):
+                self._reference_manager().unpin_job(it.id)
             return {"ok": False, "error": str(exc)}
-        queue_ids = self.queue.add_many(items)
         return {
             "ok": True,
             "action": action,
@@ -2288,17 +2306,13 @@ class StudioMixin:
                 if not ffmpeg:
                     return {"ok": False, "error": "ffmpeg is not installed."}
                 cached.parent.mkdir(parents=True, exist_ok=True)
-                subprocess.run(
-                    [ffmpeg, "-v", "error", "-y", "-ss", "0.5", "-i", str(source), "-frames:v", "1",
-                     "-vf", "scale=320:-2", str(cached)],
-                    capture_output=True, timeout=20, check=False,
-                )
-                if not cached.is_file():  # very short clips: take the first frame
-                    subprocess.run(
-                        [ffmpeg, "-v", "error", "-y", "-i", str(source), "-frames:v", "1", "-vf", "scale=320:-2",
-                         str(cached)],
-                        capture_output=True, timeout=20, check=False,
-                    )
+                def thumbnail(seek: list[str]) -> Path:
+                    return render_output([ffmpeg, "-v", "error", *seek, "-i", str(source),
+                                          "-frames:v", "1", "-vf", "scale=320:-2"], cached, timeout=20)
+                try:
+                    cached = thumbnail(["-ss", "0.5"])
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    cached = thumbnail([])
             with Image.open(cached) as opened:
                 preview = opened.convert("RGB")
                 buffer = io.BytesIO()
@@ -2382,107 +2396,6 @@ class StudioMixin:
                               "local": result["local"], "source": result["source"]})
         return {"ok": True, "kind": kind, "items": tiles}
 
-    @staticmethod
-    def _revalidate_item_inspections(
-        item: dict[str, Any],
-    ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]] | None, dict[str, Any] | None]:
-        """Revalidate saved inspection verdicts against LIVE file bytes & requirement-set hash (F05 / RC-09).
-
-        Never certifies replaced/modified output bytes or mismatched requirement sets as 'Requirements verified'.
-        """
-        qa_data = item.get("candidate_qa") if isinstance(item.get("candidate_qa"), dict) else {}
-        inspection = dict(qa_data["inspection"]) if isinstance(qa_data.get("inspection"), dict) else None
-        raw_map = qa_data.get("output_inspections") if isinstance(qa_data.get("output_inspections"), dict) else None
-        correction = dict(qa_data["correction"]) if isinstance(qa_data.get("correction"), dict) else None
-
-        # Compute expected requirement-set hash from verification_record if present.
-        expected_req_hash = ""
-        vr = item.get("verification_record")
-        if isinstance(vr, dict):
-            try:
-                from .inspection_contract import GenerationVerificationRecord, compute_requirement_set_hash
-
-                expected_req_hash = compute_requirement_set_hash(GenerationVerificationRecord.model_validate(vr))
-            except Exception:
-                ins_res = vr.get("inspection_result")
-                if isinstance(ins_res, dict):
-                    expected_req_hash = str(ins_res.get("requirement_set_hash") or "")
-
-        def _stale_entry(path_str: str, reason: str, live_sha: str = "") -> dict[str, Any]:
-            return {
-                "output_path": path_str,
-                "output_sha256": live_sha,
-                "inspected": False,
-                "stale": True,
-                "stale_reason": reason,
-                "ui_status": "generated",
-                "ui_status_label": "Not inspected",
-                "decision": "stale",
-                "is_best": False,
-            }
-
-        def _check_entry(path_str: str, entry: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-            if entry.get("inspected") is False or entry.get("decision") in {"uninspected", "stale"}:
-                return dict(entry), False
-            p = Path(path_str).expanduser()
-            if not p.is_file():
-                return _stale_entry(path_str, "file_missing"), True
-            live_sha = sha256_file(p) or ""
-            recorded_sha = str(entry.get("output_sha256") or (item.get("output_hashes") or {}).get(path_str) or "").strip()
-            if not recorded_sha or live_sha != recorded_sha:
-                return _stale_entry(path_str, "output_bytes_changed", live_sha=live_sha), True
-            rec_req_hash = str(entry.get("requirement_set_hash") or "").strip()
-            if expected_req_hash and rec_req_hash and expected_req_hash != rec_req_hash:
-                # Allow prefix match when historic 16-char truncated digest matches full SHA-256 prefix
-                if not expected_req_hash.startswith(rec_req_hash):
-                    return _stale_entry(path_str, "requirement_set_changed", live_sha=live_sha), True
-            return dict(entry), False
-
-        revalidated_map: dict[str, dict[str, Any]] | None = None
-        any_stale = False
-        if raw_map is not None:
-            revalidated_map = {}
-            for out_path, raw_entry in raw_map.items():
-                if not isinstance(raw_entry, dict):
-                    continue
-                checked, is_stale = _check_entry(str(out_path), raw_entry)
-                revalidated_map[str(out_path)] = checked
-                if is_stale:
-                    any_stale = True
-            # Ensure EVERY present output on the item has an explicit per-output status.
-            for raw_out in item.get("outputs") or []:
-                op = str(raw_out)
-                if op not in revalidated_map:
-                    revalidated_map[op] = {
-                        "output_path": op,
-                        "output_sha256": sha256_file(op) or "" if Path(op).is_file() else "",
-                        "inspected": False,
-                        "ui_status": "generated",
-                        "ui_status_label": "Not inspected",
-                        "decision": "uninspected",
-                        "is_best": False,
-                    }
-            if any_stale:
-                # If the primary/best output became stale, invalidate job-level inspection & correction labels too!
-                best_still_valid = any(
-                    v.get("is_best") and v.get("inspected") is True and not v.get("stale")
-                    for v in revalidated_map.values()
-                )
-                if not best_still_valid:
-                    inspection = _stale_entry(
-                        str((item.get("outputs") or [""])[-1]),
-                        "output_bytes_changed",
-                    )
-                    correction = None
-        elif inspection is not None:
-            # Legacy single-output record without output_inspections map: validate against output_hashes / file!
-            outs = [str(o) for o in (item.get("outputs") or []) if isinstance(o, str)]
-            if outs:
-                checked, is_stale = _check_entry(outs[-1], inspection)
-                if is_stale:
-                    inspection = checked
-                    correction = None
-        return inspection, revalidated_map, correction
 
     def _studio_results(self, limit: int = 24, include_failures: bool = True) -> list[dict[str, Any]]:
         history_dir = _desktop().HISTORY_DIR
@@ -2499,6 +2412,7 @@ class StudioMixin:
                 continue
             if not isinstance(item, dict):
                 continue
+            item = present_job(item)
             # Everything you've made counts: Runway jobs, recipes on your GPU, and the old app's local renders.
             source = "runway" if item.get("provider") == "runway" else ("gpu" if item.get("studio_action") else "old")
             local = source != "runway"
@@ -2517,7 +2431,8 @@ class StudioMixin:
             if not outputs and not failed:
                 continue
             receipt = item.get("cloud_receipt") or {}
-            inspection, output_inspections, correction = self._revalidate_item_inspections(item)
+            qa = item.get("candidate_qa") or {}
+            inspection, output_inspections, correction = qa.get("inspection"), qa.get("output_inspections"), qa.get("correction")
             results.append(
                 {
                     "id": item.get("id"),

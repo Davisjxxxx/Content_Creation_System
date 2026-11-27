@@ -5,6 +5,8 @@ import inspect
 import json
 import os
 import shutil
+import sqlite3
+from contextlib import closing, contextmanager
 import subprocess
 import threading
 import time
@@ -81,7 +83,8 @@ def write_durable(path: Path, text: str) -> None:
             finally:
                 os.close(directory)
         except OSError:
-            pass  # directory fsync is unsupported on some platforms
+            if os.name == "posix":
+                raise
     except BaseException:
         try:
             temporary.unlink(missing_ok=True)
@@ -243,61 +246,8 @@ def _snapshot_submitted_params(item: "QueuedRender", job: RenderJob) -> dict[str
 
 
 def _probe_output_media(outputs: list[str]) -> list[dict[str, Any]]:
-    """Probe actual saved PNG/JPG/MP4 artifacts on disk via PIL / ffprobe (RC-13)."""
-    from PIL import Image, ImageOps
-
-    probed: list[dict[str, Any]] = []
-    for raw in outputs:
-        p = Path(str(raw)).expanduser()
-        entry: dict[str, Any] = {"path": str(p), "exists": p.is_file()}
-        if not p.is_file():
-            probed.append(entry)
-            continue
-        try:
-            entry["size_bytes"] = p.stat().st_size
-            entry["sha256"] = sha256_file(p) or ""
-        except OSError:
-            pass
-        suffix = p.suffix.lower()
-        if suffix in VIDEO_SUFFIXES:
-            entry["kind"] = "video"
-            try:
-                from .qa import ffprobe_video
-
-                info = ffprobe_video(p)
-                entry["width"] = int(info.get("width") or 0)
-                entry["height"] = int(info.get("height") or 0)
-                nb_frames = info.get("nb_frames")
-                if nb_frames is not None and str(nb_frames).isdigit():
-                    entry["frames"] = int(nb_frames)
-                dur = float(info.get("duration_s") or info.get("duration") or 0.0)
-                entry["duration_s"] = round(dur, 3)
-                rate = str(info.get("avg_frame_rate") or info.get("r_frame_rate") or "")
-                num, _, den = rate.partition("/")
-                if den and float(den):
-                    entry["fps"] = round(float(num) / float(den), 3)
-                elif rate:
-                    entry["fps"] = round(float(rate), 3)
-                if "frames" not in entry and entry.get("fps") and dur > 0:
-                    entry["frames"] = int(round(float(entry["fps"]) * dur))
-            except Exception:
-                pass
-        elif suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
-            entry["kind"] = "image"
-            try:
-                with Image.open(p) as im:
-                    oriented = ImageOps.exif_transpose(im)
-                    w, h = oriented.size
-                    entry["width"] = int(w)
-                    entry["height"] = int(h)
-                    entry["frames"] = 1
-                    entry["format"] = str(im.format or suffix.lstrip(".").upper())
-            except Exception:
-                pass
-        else:
-            entry["kind"] = "file"
-        probed.append(entry)
-    return probed
+    from .media_validation import validate_media
+    return [validate_media(Path(output)) for output in outputs]
 
 
 def _cloud_memory_event(reason: str) -> dict[str, Any]:
@@ -372,6 +322,7 @@ class QueuedRender:
             "error_category": self.error_category,
             "error_message": self.error_message,
             "prompt_id": self.prompt_id,
+            "corrective_submissions": self.runtime.get("corrective_submissions", []),
             "outputs": self.outputs,
             "partial_outputs": self.partial_outputs,
             "memory_events": self.memory_events,
@@ -399,6 +350,10 @@ class QueuedRender:
         }
 
 
+class AdmissionRejected(OSError):
+    """The queue did not commit admission for this batch."""
+
+
 class RenderQueue:
     def __init__(
         self,
@@ -417,9 +372,10 @@ class RenderQueue:
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self._dir_lock: DirectoryWriterLock | None = None
-        if acquire_lock:
-            self._dir_lock = DirectoryWriterLock(self.work_dir / ".queue.lock")
-            self._dir_lock.acquire()
+        if not acquire_lock:
+            raise ValueError("A persistent render queue requires an exclusive writer lock")
+        self._dir_lock = DirectoryWriterLock(self.work_dir / ".queue.lock")
+        self._dir_lock.acquire()
         self._ledger_path = Path(ledger_path) if ledger_path else self.work_dir.parent / "cloud_ledger.jsonl"
         self._managed_assets_path = (
             Path(managed_assets_path) if managed_assets_path else self.work_dir.parent / "managed_assets.json"
@@ -462,60 +418,83 @@ class RenderQueue:
             return ev
 
     def add(self, item: QueuedRender) -> str:
-        # F06: Commit durable item checkpoint BEFORE making the item visible in memory or waking the worker!
-        # A failed persistence write leaves ZERO runnable jobs in memory or on disk.
-        items_dir = self.work_dir / "items"
+        return self.add_many([item])[0]
+
+    @contextmanager
+    def _admission_writer(self):
         with self._lock:
-            items_dir.mkdir(parents=True, exist_ok=True)
-            item_path = items_dir / f"{item.id}.json"
-            item.state_revision += 1
-            write_durable(item_path, json.dumps(self._item_to_dict(item), indent=2))
-            self._items.append(item)
-            try:
-                self._persist()
-            except OSError:
-                self._items.pop()
+            # Offline producers may stage a batch after shutdown, but only while
+            # holding the same OS lock as the worker which will later restore it.
+            if self._stop.is_set():
+                lock = DirectoryWriterLock(self.work_dir / ".queue.lock")
+                lock.acquire()
                 try:
-                    item_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                raise
-        self._wake.set()
-        return item.id
+                    yield
+                finally:
+                    lock.release()
+            else:
+                yield
 
     def add_many(self, items: list[QueuedRender]) -> list[str]:
         if not items:
             return []
-        items_dir = self.work_dir / "items"
-        written_paths: list[Path] = []
-        with self._lock:
-            items_dir.mkdir(parents=True, exist_ok=True)
+        ids = [item.id for item in items]
+        token = uuid.uuid4().hex
+        with self._admission_writer():
+            if len(set(ids)) != len(ids) or any(
+                item.id in ids for item in self._items
+            ) or any((self.history_dir / f"{job_id}.json").exists() or
+                     (self.work_dir / "items" / f"{job_id}.json").exists() for job_id in ids):
+                raise ValueError("Queue item IDs must be unique")
+            for item in items:
+                if not item.id or Path(item.id).name != item.id:
+                    raise ValueError("Invalid queue item ID")
+                item.runtime["admission_token"] = token
+                item.state_revision += 1
+            self._items.extend(items)
             try:
+                # Readers and the worker take this lock. Restore schedules only after
+                # the single atomic decision for this entire batch is present.
+                self._admitting = items
+                self._persist()
+                self._commit_admission(token, ids)
+            except Exception as exc:
+                del self._items[-len(items):]
                 for item in items:
-                    item.state_revision += 1
-                    p = items_dir / f"{item.id}.json"
-                    write_durable(p, json.dumps(self._item_to_dict(item), indent=2))
-                    written_paths.append(p)
-                prev_len = len(self._items)
-                self._items.extend(items)
-                try:
-                    self._persist()
-                except OSError:
-                    del self._items[prev_len:]
-                    raise
-            except OSError:
-                for p in written_paths:
                     try:
-                        p.unlink(missing_ok=True)
+                        self._drop_item_file(item)
                     except OSError:
                         pass
-                raise
+                raise AdmissionRejected(str(exc)) from exc
+            finally:
+                self._admitting = None
+            try:
+                write_durable(self.work_dir / "queue_state.json", json.dumps([it.public() for it in self._items], indent=2))
+            except OSError:
+                pass  # Derived display index. Restore uses the committed job records.
         self._wake.set()
-        return [item.id for item in items]
+        return ids
+
+    def _commit_admission(self, token: str, ids: list[str]) -> None:
+        # SQLite's rollback journal makes the decision atomic even if removing a
+        # provisional job file also fails. Both tables and jobs commit as a batch.
+        with closing(sqlite3.connect(self.work_dir / "admissions.sqlite3")) as db, db:
+            db.execute("PRAGMA synchronous=EXTRA")
+            db.execute("CREATE TABLE IF NOT EXISTS admissions (job TEXT PRIMARY KEY, token TEXT NOT NULL)")
+            db.executemany("INSERT INTO admissions VALUES (?, ?)", ((job_id, token) for job_id in ids))
+
+    def _admitted(self, token: str, job_id: str) -> bool:
+        database = self.work_dir / "admissions.sqlite3"
+        if not database.is_file():
+            return False
+        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+            return db.execute("SELECT 1 FROM admissions WHERE job=? AND token=?", (job_id, token)).fetchone() is not None
 
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [item.public() for item in self._items]
+            entries = [item.public() for item in self._items]
+        from .inspection_contract import present_job
+        return [present_job(entry) for entry in entries]
 
     def memory_status(self) -> dict[str, Any]:
         return self.memory_manager.status()
@@ -544,7 +523,7 @@ class RenderQueue:
                 return
         except (TypeError, ValueError):
             pass
-        interrupt()
+        # A provider without a prompt-scoped cancel operation cannot be interrupted safely.
 
     def cancel(self, item_id: str) -> bool:
         cancelled_queued_item: QueuedRender | None = None
@@ -572,6 +551,8 @@ class RenderQueue:
                             self._interrupt_provider(self._active_provider, item.prompt_id)
                         except Exception:
                             pass
+                    if item.phase == "recovery_required":
+                        return False
                     item.status = "cancelled"
                     item.phase = "cancelled"
                     item.state_revision += 1
@@ -613,10 +594,11 @@ class RenderQueue:
 
     def _persist(self) -> None:
         path = self.work_dir / "queue_state.json"
-        write_durable(path, json.dumps([item.public() for item in self._items], indent=2))
+        pending = {item.id for item in (getattr(self, "_admitting", None) or [])}
+        write_durable(path, json.dumps([item.public() for item in self._items if item.id not in pending], indent=2))
         items_dir = self.work_dir / "items"
         items_dir.mkdir(parents=True, exist_ok=True)
-        for item in self._items:
+        for item in getattr(self, "_admitting", None) or self._items:
             if item.status in {"queued", "running"}:
                 write_durable(
                     items_dir / f"{item.id}.json",
@@ -692,7 +674,7 @@ class RenderQueue:
             data["finished_at"] = data.get("finished_at") or time.time()
         elif status == "running":
             status = "error"
-            if provider == "comfyui" and (data.get("prompt_id") or raw_phase in POST_SUBMIT_PHASES):
+            if provider == "comfyui" and (data.get("prompt_id") or (data.get("runtime") or {}).get("submission_token") or raw_phase in POST_SUBMIT_PHASES):
                 # RC-10: Local job already crossed submission to ComfyUI. Never blindly resubmit!
                 phase = "recovery_required"
                 data["error"] = data.get("error") or (
@@ -775,6 +757,24 @@ class RenderQueue:
                 except OSError:
                     pass
                 continue
+            token = (data.get("runtime") or {}).get("admission_token")
+            if token:
+                if not isinstance(token, str) or len(token) != 32 or not token.isalnum():
+                    continue
+                if not self._admitted(token, item_id):
+                    continue
+            elif data.get("status") == "queued":
+                data.update(status="error", phase="recovery_required", error_category="admission_unconfirmed",
+                            error="Legacy queue admission cannot be established. Review and resubmit explicitly.")
+                legacy = self._item_from_dict(data)
+                self._items.append(legacy)
+                self._persist_history(legacy)
+                continue
+            if data.get("status") == "queued" and (data.get("prompt_id") or
+                    data.get("phase") in POST_SUBMIT_PHASES or (data.get("runtime") or {}).get("submission_token")):
+                # Cloud resume with a known task id polls the original task.
+                data["status"] = "running"
+                data["phase"] = "submitted"
             try:
                 was_running = data.get("status") == "running"
                 item = self._item_from_dict(data)
@@ -814,6 +814,10 @@ class RenderQueue:
             pass
 
     def _persist_history(self, item: QueuedRender) -> None:
+        if item.phase == "recovery_required" or item.candidate_qa.get("recovery_required"):
+            self._finish_execution(item, False, False)
+        if item.status not in {"done", "error", "cancelled"}:
+            raise ValueError("Only terminal jobs may enter history")
         path = self.history_dir / f"{item.id}.json"
         # F07: NEVER overwrite an already-committed done/complete history receipt with a non-done recovery record!
         existing = self._has_committed_terminal_history(item.id)
@@ -906,12 +910,8 @@ class RenderQueue:
         if not shutil.which("ffmpeg"):
             raise RuntimeError("ffmpeg is required for last-frame chaining")
         target.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["ffmpeg", "-y", "-sseof", "-0.08", "-i", video, "-frames:v", "1", str(target)],
-            check=True,
-            capture_output=True,
-        )
-        return target
+        from .safe_output import render_output
+        return render_output(["ffmpeg", "-sseof", "-0.08", "-i", video, "-frames:v", "1"], target)
 
     def _resolve_outputs(self, item: QueuedRender, outputs: list[str]) -> list[str]:
         root = item.output_dir or item.provider_config.output_dir
@@ -984,11 +984,12 @@ class RenderQueue:
 
     def _persist_item_durable(self, item: QueuedRender) -> None:
         """Durably write one item's record. Raises on failure, so callers can stop safely."""
-        write_durable(self.work_dir / "items" / f"{item.id}.json", json.dumps(self._item_to_dict(item), indent=2))
-        try:
-            self._persist()  # the summary file is best-effort; the item file above is the durable record
-        except OSError:
-            pass
+        with self._lock:
+            write_durable(self.work_dir / "items" / f"{item.id}.json", json.dumps(self._item_to_dict(item), indent=2))
+            try:
+                write_durable(self.work_dir / "queue_state.json", json.dumps([it.public() for it in self._items], indent=2))
+            except OSError:
+                pass  # The item checkpoint is authoritative.
 
     def _record_cloud_submission(self, item: QueuedRender, receipt: dict[str, Any]) -> None:
         """Durably note that a create request is about to be sent (raises, aborting the send, on failure)."""
@@ -1071,7 +1072,7 @@ class RenderQueue:
             item.submitted_params = merged
             item.runtime["submitted_params"] = merged
 
-    def _ensure_ollama_vram_released_before_comfy(self, item: QueuedRender) -> None:
+    def _ensure_ollama_vram_released_before_comfy(self, item: QueuedRender, *, base_url: str | None = None) -> None:
         """Bidirectional VRAM handoff: refuse ComfyUI GPU dispatch if Ollama holds VRAM or state is unknown (F10 / RC-14)."""
         from .ollama_client import (
             DEFAULT_OLLAMA_URL,
@@ -1080,7 +1081,7 @@ class RenderQueue:
             verify_ollama_vram_released,
         )
 
-        ollama_url = str(item.runtime.get("ollama_url") or DEFAULT_OLLAMA_URL)
+        ollama_url = str(base_url or item.runtime.get("ollama_url") or DEFAULT_OLLAMA_URL)
         ps_state, running, ps_err = fetch_ollama_ps_state(ollama_url, timeout_s=1.5)
         if ps_state == "offline":
             return  # Ollama daemon is explicitly not listening (ConnectionRefused/ConnectError)
@@ -1114,6 +1115,37 @@ class RenderQueue:
                 "refusing ComfyUI launch to prevent VRAM contention."
             )
 
+    def _claim_prompt(self, item: QueuedRender, prompt_id: str, attempt: str) -> None:
+        import hashlib
+        if not str(prompt_id).strip():
+            raise ValueError("Renderer acknowledgement has no identifier")
+        identity = [item.provider_config.base_url.rstrip("/"), str(prompt_id)]
+        key = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+        path = self.work_dir / "prompt_claims" / f"{key}.json"
+        claim = {"item": item.id, "attempt": attempt}
+        if path.exists():
+            if read_json_safe(path, None, quarantine=False, expected_type=dict) != claim:
+                raise OSError("Renderer prompt identifier already belongs to another submission")
+        else:
+            write_durable(path, json.dumps(claim))
+
+    def corrective_submission(self, item: QueuedRender, attempt: dict, prompt_id: str | None = None) -> None:
+        with self._lock:
+            if item.phase == "recovery_required" or self.get_cancel_event(item.id).is_set():
+                raise ComfyUICancelledError("Correction admission stopped")
+            try:
+                if prompt_id is None:
+                    item.runtime.setdefault("corrective_submissions", []).append(attempt)
+                else:
+                    self._claim_prompt(item, prompt_id, attempt["token"])
+                    attempt["prompt_id"] = prompt_id
+                item.state_revision += 1
+                self._persist_item_durable(item)
+            except (OSError, ValueError):
+                item.phase = "recovery_required"
+                self.get_cancel_event(item.id).set()
+                raise
+
     def _record_local_submitted(self, item: QueuedRender, prompt_id: str) -> None:
         """Persist local ComfyUI prompt_id durably BEFORE waiting so crashes can reconcile safely (F08 / RC-10)."""
         with self._lock:
@@ -1121,6 +1153,7 @@ class RenderQueue:
             item.phase = "rendering"
             item.state_revision += 1
             try:
+                self._claim_prompt(item, prompt_id, "base")
                 self._persist_item_durable(item)
             except OSError as exc:
                 item.runtime["ack_persist_error"] = f"{type(exc).__name__}: {exc}"
@@ -1440,6 +1473,9 @@ class RenderQueue:
             result = provider.render(item.workflow, job)
 
         with self._lock:
+            if item.prompt_id and item.prompt_id != result["prompt_id"]:
+                item.phase = "recovery_required"
+                raise ValueError("Completion identifier differs from acknowledged renderer request")
             item.prompt_id = result["prompt_id"]
             item.phase = "output_received"
             item.state_revision += 1
@@ -1477,8 +1513,16 @@ class RenderQueue:
                     "ComfyUI video job completed without producing a readable final video file.",
                     partial_outputs=list(item.outputs),
                 )
-        item.output_hashes = hash_files(item.outputs)
+        if not item.outputs:
+            raise ComfyUIExecutionError("Renderer supplied no final output", partial_outputs=[])
         item.observed_media = _probe_output_media(item.outputs)
+        record = item.runtime.get("verification_record") or {}
+        expected = (record.get("expected_output") or {}).get("media_kind")
+        if not expected and item.provider_config.provider == "runway" and str(item.workflow).startswith("runway:"):
+            expected = {"still": "image", "video": "video"}.get(item.workflow.split(":")[1])
+        if expected and not any(media["kind"] == expected for media in item.observed_media):
+            raise ComfyUIExecutionError(f"Renderer returned no valid {expected} output", partial_outputs=item.outputs)
+        item.output_hashes = {entry["path"]: entry["sha256"] for entry in item.observed_media}
 
     def _run_candidate_qa(self, item: QueuedRender, *, render_succeeded: bool = True) -> None:
         has_hook = bool(item.runtime.get("candidate_qa") or item.runtime.get("verification_record"))
@@ -1569,6 +1613,25 @@ class RenderQueue:
             cleanup_kwargs["respect_retention"] = respect_retention
         return self.memory_manager.maybe_cleanup(provider, **cleanup_kwargs)
 
+    @staticmethod
+    def _finish_execution(item: QueuedRender, succeeded: bool, cancelled: bool) -> None:
+        if item.phase == "recovery_required" or item.candidate_qa.get("recovery_required"):
+            item.status, item.phase = "error", "recovery_required"
+            item.error_category = item.error_category or "recovery_required"
+            item.error_message = item.error = item.error or item.candidate_qa.get("error") or "Checkpoint requires recovery."
+        elif item.status == "cancelled" or cancelled:
+            item.status, item.phase = "cancelled", "cancelled"
+        elif succeeded and item.candidate_qa.get("ok") is False and any(
+            item.runtime.get(k) for k in ("forge_scene", "scene_shots", "studio_voiceover")
+        ):
+            item.status, item.phase = "error", "failed"
+            item.error = str(item.candidate_qa.get("scene") or item.candidate_qa.get("voiceover")
+                             or "Requested media postprocessing failed")
+        elif succeeded and item.status == "running":
+            item.status, item.phase = "done", "complete"
+        elif item.status == "error":
+            item.phase = "failed"
+
     def _worker(self) -> None:
         try:
             self._worker_loop()
@@ -1593,9 +1656,13 @@ class RenderQueue:
                 try:
                     self._persist()
                 except OSError as exc:
-                    item.memory_events.append(
-                        {"reason": "queue-start-persist-failed", "error": f"{type(exc).__name__}: {exc}"}
-                    )
+                    item.status, item.phase = "error", "recovery_required"
+                    item.error = f"Failed to persist job start: {exc}"
+                    try:
+                        self._persist_history(item)
+                    except OSError:
+                        pass
+                    continue
 
             render_succeeded = False
             try:
@@ -1620,23 +1687,16 @@ class RenderQueue:
                 # RC-10: Keep item.status == "running" across QA & correction so cancellation still works
                 # and UI never declares completion before inspection/correction & history persistence finish!
                 self._run_candidate_qa(item, render_succeeded=render_succeeded)
-                if item.outputs:
+                if render_succeeded and item.outputs:
                     try:
-                        item.output_hashes = hash_files(item.outputs)
+                        # QA may add a new export or correction to the original outputs.
                         item.observed_media = _probe_output_media(item.outputs)
-                    except OSError:
-                        pass
-
+                        item.output_hashes = {m["path"]: m["sha256"] for m in item.observed_media}
+                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                        item.status, item.phase = "error", "failed"
+                        item.error = f"Final media validation failed: {exc}"
                 with self._lock:
-                    cancelled = item.status == "cancelled" or cancel_event.is_set()
-                    if cancelled:
-                        item.status = "cancelled"
-                        item.phase = "cancelled"
-                    elif render_succeeded and item.status == "running":
-                        item.phase = "persisting"
-                        item.status = "done"
-                    elif item.status == "error" and item.phase not in {"failed", "recovery_required"}:
-                        item.phase = "failed"
+                    self._finish_execution(item, render_succeeded, cancel_event.is_set())
 
                 try:
                     self._record_cloud_final(item)
@@ -1644,15 +1704,21 @@ class RenderQueue:
                     item.memory_events.append({"reason": "cloud-ledger-write-failed", "error": f"{type(exc).__name__}: {exc}"})
 
                 with self._lock:
-                    item.finished_at = time.time()
+                    item.finished_at = None if item.status == "queued" else time.time()
                     self._active_provider = None
                     self._active_id = None
                     if item.status == "done":
                         item.phase = "complete"
                     persist_err: str | None = None
                     try:
-                        self._persist_history(item)
+                        if item.status == "queued":
+                            self._persist_item_durable(item)
+                        else:
+                            self._persist_history(item)
                     except OSError as exc:
+                        if item.status == "queued":
+                            item.status, item.phase = "error", "recovery_required"
+                            item.error = f"Retry checkpoint failed: {exc}"
                         persist_err = f"{type(exc).__name__}: {exc}"
                         item.memory_events.append({"reason": "history-persist-failed", "error": persist_err})
                         if item.status == "done":
@@ -1669,7 +1735,7 @@ class RenderQueue:
                         )
                     self._cancel_events.pop(item.id, None)
                 on_finished = getattr(self, "_on_job_finished", None)
-                if callable(on_finished):
+                if item.status != "queued" and callable(on_finished):
                     try:
                         on_finished(item)
                     except Exception:
