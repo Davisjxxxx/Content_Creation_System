@@ -1,0 +1,12 @@
+#!/bin/sh
+# Synthetic readings for CPU-only release fixtures. No device is accessed.
+case "$1" in
+    --query-gpu=index,name,memory.used,memory.total,memory.free,temperature.gpu,utilization.gpu)
+        echo '0, RC5 fixture, 512, 8192, 7670, 48, 0' ;;
+    --query-gpu=index,name,memory.used,memory.total)
+        echo '0, RC5 fixture, 512, 8192' ;;
+    --query-gpu=memory.used,memory.free)
+        echo '512, 7670' ;;
+    --query-compute-apps=*) exit 0 ;;
+    *) exit 1 ;;
+esac

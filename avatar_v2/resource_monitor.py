@@ -294,6 +294,22 @@ def query_host_memory(process_pid: int | None = None) -> HostMemoryStats:
     )
 
 
+def measured_gpu_headroom(gpus: list[GPUTelemetry]) -> int | None:
+    """Return the minimum measured free MiB only for a complete and plausible device sample."""
+    if not gpus or len({gpu.index for gpu in gpus}) != len(gpus):
+        return None
+    if any(g.index < 0 or not g.name or g.total_mb <= 0 or min(g.used_mb, g.free_mb) < 0
+           or g.used_mb + g.free_mb > g.total_mb + 1 for g in gpus):
+        return None
+    return min(g.free_mb for g in gpus)
+
+
+def recent_gpu_headroom(snapshot: ResourceSnapshot | None) -> int | None:
+    if snapshot is None or not 0 <= time.monotonic() - snapshot.timestamp <= 30:
+        return None
+    return measured_gpu_headroom(snapshot.gpus)
+
+
 def parse_nvidia_smi_telemetry(text: str) -> list[GPUTelemetry]:
     gpus: list[GPUTelemetry] = []
     for raw in text.splitlines():
@@ -301,7 +317,7 @@ def parse_nvidia_smi_telemetry(text: str) -> list[GPUTelemetry]:
             continue
         parts = [part.strip() for part in raw.split(",")]
         if len(parts) < 5:
-            continue
+            return []
         try:
             idx = int(parts[0])
             name = parts[1]
@@ -311,9 +327,9 @@ def parse_nvidia_smi_telemetry(text: str) -> list[GPUTelemetry]:
             temp = int(float(parts[5])) if len(parts) > 5 and parts[5] not in {"", "N/A", "[N/A]"} else None
             util = int(float(parts[6])) if len(parts) > 6 and parts[6] not in {"", "N/A", "[N/A]"} else None
             gpus.append(GPUTelemetry(idx, name, used, total, free, temp_c=temp, util_pct=util))
-        except ValueError:
-            continue
-    return gpus
+        except (ValueError, OverflowError):
+            return []
+    return gpus if measured_gpu_headroom(gpus) is not None else []
 
 
 def query_gpu_telemetry(comfy_system_stats: dict[str, Any] | None = None) -> list[GPUTelemetry]:

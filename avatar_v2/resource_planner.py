@@ -23,6 +23,8 @@ from .resource_monitor import (
     StorageCheck,
     check_storage_for_job,
     estimate_job_storage_bytes,
+    measured_gpu_headroom,
+    recent_gpu_headroom,
 )
 
 RetentionStrategy = Literal["retain_all", "comfy_native_selective", "full_evict"]
@@ -239,7 +241,7 @@ class ResourcePlanner:
             rationale.append(f"Cold start for {spec.model_id}: retention={retention}.")
 
         # Offloading & text-encoder placement strategy.
-        gpu_free_mb = min((g.free_mb for g in snap.gpus), default=6500)
+        gpu_free_mb = measured_gpu_headroom(snap.gpus) or 0
         if request.explicit_vram_mode == "cpu_offload":
             offloading: OffloadingStrategy = "block_offload_cpu_te" if spec.family == "wan22" else "cpu_text_encoder"
             wan_clip: Literal["default", "cpu"] = "cpu"
@@ -448,7 +450,7 @@ class ResourcePlanner:
                 ),
             }
 
-        gpu_free_mb = min((g.free_mb for g in snap.gpus), default=6500)
+        gpu_free_mb = recent_gpu_headroom(snap) or 0
         if allow_sequential_gpu and gpu_free_mb >= 4200:
             return {
                 "execution_mode": "sequential_gpu_vlm",
@@ -523,7 +525,7 @@ class ResourcePlanner:
                 ),
             }
 
-        gpu_free_mb = min((g.free_mb for g in snap.gpus), default=6500)
+        gpu_free_mb = recent_gpu_headroom(snap) or 0
         if gpu_free_mb >= spec.min_vram_mb:
             return {
                 "allowed": True,

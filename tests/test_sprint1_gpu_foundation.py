@@ -70,6 +70,7 @@ def test_gpu_memory_manager_retains_models_below_threshold_and_escalates_above(m
     assert ev_high["unload_models"] is True
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_render_queue_unloads_on_workflow_switch_and_error(tmp_path: Path, monkeypatch):
     import threading
 

@@ -2,18 +2,18 @@
   "suite": [
     "........................................................................ [ 14%]",
     "................................................................s....... [ 28%]",
-    "........................................................................ [ 43%]",
+    "........................................................................ [ 42%]",
     "........................................................................ [ 57%]",
     "........................................................................ [ 71%]",
-    "......................s........................ss.....s................. [ 86%]",
-    "......................................................................   [100%]",
-    "497 passed, 5 skipped in 42.35s"
+    "........................s........................ss.....s............... [ 85%]",
+    "........................................................................ [100%]",
+    "499 passed, 5 skipped in 41.83s"
   ],
   "bubblewrap_host": [
     ".....                                                                    [100%]",
-    "5 passed in 4.32s"
+    "5 passed in 4.34s"
   ],
-  "distinct_cases": 502,
+  "distinct_cases": 504,
   "suite_command": "python -m pytest -q -o addopts= -p no:cacheprovider --tb=short tests",
   "host_tests": [
     "test_rc17_missing_prlimit_fails_closed_and_bounded_output_prevents_unbounded_ram",
@@ -27,5 +27,10 @@
     "mock_interrupt_calls_for_ambiguous_ack": 1,
     "final_expected": 0,
     "test": "test_uncertain_acknowledgement_cannot_be_used_for_cancellation"
+  },
+  "preliminary_gpu_regression": {
+    "commit": "958881ea09a50c8982f55c849f123840f5e98649",
+    "observation": "F                                                                        [100%]\n=================================== FAILURES ===================================\n____ test_unknown_gpu_headroom_cannot_schedule_sequential_or_dispatch_local ____\ntests/test_rc5_invariants.py:229: in test_unknown_gpu_headroom_cannot_schedule_sequential_or_dispatch_local\n    assert choose_llm_execution_schedule(allow_sequential_gpu=True).mode == \"cpu_only\"\nE   AssertionError: assert 'sequential_gpu' == 'cpu_only'\nE     \nE     - cpu_only\nE     + sequential_gpu\n=========================== short test summary info ============================\nFAILED tests/test_rc5_invariants.py::test_unknown_gpu_headroom_cannot_schedule_sequential_or_dispatch_local\n1 failed in 0.31s",
+    "final_observation": "Unknown or stale headroom refuses sequential GPU admission. Separate no-device renderer control recorded zero prompt submissions."
   }
 }

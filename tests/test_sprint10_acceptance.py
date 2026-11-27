@@ -140,6 +140,7 @@ def _wait_queue_done(api: desktop.DesktopAPI, queue_id: str, timeout_s: float = 
 # --------------------------------------------------------------------------- Journey A: Automatic Image Generation
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_journey_a_automatic_generation_history_and_binding(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     app_home, out_dir = _isolate_desktop(monkeypatch, tmp_path)
     out_img = _make_png(out_dir / "auto_cafe.png", (896, 1280), (140, 95, 70))
@@ -203,6 +204,7 @@ def test_journey_a_automatic_generation_history_and_binding(monkeypatch: pytest.
 # --------------------------------------------------------------------------- Journey B: Guided Generation (Lock + Randomize)
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_journey_b_guided_lock_randomize_survives_compilation_routing_and_correction(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -375,6 +377,7 @@ def test_journey_c_local_images_profiles_unicode_and_ephemeral_staging_cleanup(
 # --------------------------------------------------------------------------- Journey D: Video Generation + Starter Preservation + FLF2V
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_journey_d_video_starter_never_replaced_and_flf2v_wired(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -613,6 +616,7 @@ def test_journey_e_live_bwrap_sandbox_isolation_and_fail_closed(tmp_path: Path) 
 # --------------------------------------------------------------------------- Journey F: Production DesktopAPI -> CorrectionCoordinator Flow
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_journey_f_production_desktop_correction_coordinator_end_to_end(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

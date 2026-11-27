@@ -1,3 +1,4 @@
+import pytest
 import json
 import threading
 from pathlib import Path
@@ -262,6 +263,7 @@ def test_previous_output_resolution_archive_and_candidate_failures(tmp_path: Pat
         raise AssertionError("missing video should fail")
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_execute_forces_cleanup_renders_archives_and_extracts_candidate(tmp_path: Path, monkeypatch):
     output = tmp_path / "provider" / "clip.mp4"
     output.parent.mkdir()
@@ -314,6 +316,7 @@ def test_execute_forces_cleanup_renders_archives_and_extracts_candidate(tmp_path
     assert queue.memory_manager.events[0]["unload_models"] is True  # video jobs unload after render
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_image_jobs_keep_models_loaded_for_fast_replay(tmp_path: Path, monkeypatch):
     """FLUX.2 photo jobs keep their models loaded between runs (pre and post cleanup never
     unload); video jobs keep the unload behavior so the big Wan weights release the GPU."""
@@ -368,6 +371,7 @@ def test_image_jobs_keep_models_loaded_for_fast_replay(tmp_path: Path, monkeypat
     assert "keep image models" not in post2["reason"]
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_execute_chaining_rebinds_primary_h3_picture(tmp_path: Path, monkeypatch):
     prior_video = tmp_path / "prior.mp4"
     prior_video.write_bytes(b"video")

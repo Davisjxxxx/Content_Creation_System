@@ -28,6 +28,8 @@ Covers all 20 required Sprint 7 Section 13 verification areas:
 
 from __future__ import annotations
 
+import time
+
 import shutil
 import subprocess
 from pathlib import Path
@@ -169,7 +171,7 @@ class _SimulatedVLMClient(LocalOllamaClient):
 
 def _snapshot(*, ram_sev: str = "normal", temp_sev: str = "normal", gpu_free_mb: int = 7200) -> ResourceSnapshot:
     return ResourceSnapshot(
-        timestamp=1.0,
+        timestamp=time.monotonic(),
         host=HostMemoryStats(
             ram_total_mb=64000,
             ram_available_mb=32000 if ram_sev == "normal" else 2000,

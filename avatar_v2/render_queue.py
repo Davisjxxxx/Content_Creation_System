@@ -1084,8 +1084,6 @@ class RenderQueue:
 
         ollama_url = str(base_url or item.runtime.get("ollama_url") or DEFAULT_OLLAMA_URL)
         ps_state, running, ps_err = fetch_ollama_ps_state(ollama_url, timeout_s=1.5)
-        if ps_state == "offline":
-            return  # Ollama daemon is explicitly not listening (ConnectionRefused/ConnectError)
         if ps_state == "unknown":
             # F10: Timeout, HTTP error, or malformed /api/ps means residency is UNKNOWN -> fail closed!
             ev = {"reason": "pre-comfy-ollama-handoff", "released": False, "status": "unknown", "error": ps_err}
@@ -1099,22 +1097,28 @@ class RenderQueue:
             for m in running
             if int(m.get("size_vram") or 0) > 0
         ]
-        if not gpu_holders:
-            return
-        client = LocalOllamaClient(base_url=ollama_url, timeout_s=3.0)
-        for model_name in gpu_holders:
-            if model_name:
-                try:
-                    client.unload_model(model_name)
-                except Exception:
-                    pass
-        rel = verify_ollama_vram_released(ollama_url, timeout_s=4.0, poll_interval_s=0.2)
-        item.memory_events.append({"reason": "pre-comfy-ollama-handoff", **rel})
-        if not rel.get("released"):
-            raise RuntimeError(
-                f"Local Ollama still holds GPU VRAM ({gpu_holders}; status={rel.get('status')}); "
-                "refusing ComfyUI launch to prevent VRAM contention."
-            )
+        if gpu_holders:
+            client = LocalOllamaClient(base_url=ollama_url, timeout_s=3.0)
+            for model_name in gpu_holders:
+                if model_name:
+                    try:
+                        client.unload_model(model_name)
+                    except Exception:
+                        pass
+            rel = verify_ollama_vram_released(ollama_url, timeout_s=4.0, poll_interval_s=0.2)
+            item.memory_events.append({"reason": "pre-comfy-ollama-handoff", **rel})
+            if not rel.get("released"):
+                raise RuntimeError(
+                    f"Local Ollama still holds GPU VRAM ({gpu_holders}; status={rel.get('status')}); "
+                    "refusing ComfyUI launch to prevent VRAM contention."
+                )
+        # A quiet or absent Ollama daemon cannot establish physical GPU headroom.
+        from .resource_monitor import measured_gpu_headroom, query_gpu_telemetry
+        free = measured_gpu_headroom(query_gpu_telemetry())
+        if free is None or free == 0:
+            item.memory_events.append({"reason": "pre-comfy-headroom", "telemetry_status":
+                                       "unavailable" if free is None else "complete", "free_mb": free})
+            raise RuntimeError("Cannot confirm available local GPU headroom; refusing renderer dispatch")
 
     def _claim_prompt(self, item: QueuedRender, prompt_id: str, attempt: str) -> None:
         import hashlib

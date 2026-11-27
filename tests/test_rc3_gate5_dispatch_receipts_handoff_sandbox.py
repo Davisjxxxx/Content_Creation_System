@@ -70,6 +70,7 @@ def _make_job(job_id: str = "rc3-g5-1", *, seed: int = 41001, frames: int = 144)
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_rc12_wan5b_correction_selects_5b_workflow_and_placeholders(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -177,6 +178,7 @@ def test_rc12_wan5b_correction_selects_5b_workflow_and_placeholders(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_rc13_resolved_graph_seed_still_frames_and_real_mp4_ffprobe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

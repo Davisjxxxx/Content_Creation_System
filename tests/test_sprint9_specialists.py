@@ -6,6 +6,8 @@ benchmarks (executed via ``scripts/eval_sprint9_specialists.py``).
 
 from __future__ import annotations
 
+import time
+
 import json
 from pathlib import Path
 from typing import Any
@@ -27,7 +29,7 @@ from avatar_v2.workflows_builder import build_flux2_masked_edit_workflow, withou
 
 def _snap(*, gpu_free_mb: int = 7200, ram_sev: str = "normal") -> ResourceSnapshot:
     return ResourceSnapshot(
-        timestamp=1.0,
+        timestamp=time.monotonic(),
         host=HostMemoryStats(
             ram_total_mb=64000,
             ram_available_mb=32000 if ram_sev == "normal" else 1800,

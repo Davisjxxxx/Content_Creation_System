@@ -54,6 +54,7 @@ def _make_job(job_id: str = "rc3-job-1") -> RenderJob:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_rc10_crash_between_provider_queue_and_on_submitted_never_replays(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

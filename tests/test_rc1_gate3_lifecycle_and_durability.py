@@ -67,6 +67,7 @@ def _wait_for_status(queue: RenderQueue, item_id: str, targets: set[str], timeou
     raise AssertionError(f"Item {item_id} did not reach {targets}; current={queue.list()}")
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_rc16_error_with_partial_outputs_raises_and_never_marks_done(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """ComfyUI history with BOTH status_str=error AND partial node outputs must fail, NOT succeed."""
     payload = {
@@ -172,6 +173,7 @@ def test_rc16_output_path_traversal_blocked(tmp_path: Path) -> None:
         queue.shutdown()
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_rc10_job_stays_running_during_qa_and_cancel_preserves_original_output(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -309,6 +311,7 @@ def test_rc18_corrupt_json_quarantined_across_stores(tmp_path: Path) -> None:
         q.shutdown()
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_rc18_worker_survives_disk_full_and_single_writer_lock_enforced(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

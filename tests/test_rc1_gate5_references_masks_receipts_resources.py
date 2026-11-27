@@ -309,6 +309,7 @@ def test_rc12_and_rc23_masked_edit_registered_staged_exif_and_exact_black_mask(t
     assert Path(step.workflow).is_absolute()
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_rc13_ground_truth_submitted_params_and_observed_media(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """QueuedRender receipt reports actual submitted seed/dims/frames and probed output dimensions/hashes."""
     out_dir = tmp_path / "out"

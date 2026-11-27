@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 import httpx
 from PIL import Image, ImageOps
 
-from .resource_monitor import ResourceSnapshot
+from .resource_monitor import ResourceSnapshot, recent_gpu_headroom
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -195,6 +195,7 @@ def fetch_ollama_ps_state(
     - ``"online"``: valid JSON response with parsed ``models`` list.
     """
     url = _ensure_loopback_url(base_url)
+    started = time.monotonic()
     try:
         with httpx.Client(timeout=timeout_s) as client:
             resp = client.get(f"{url}/api/ps")
@@ -203,6 +204,8 @@ def fetch_ollama_ps_state(
                 return "unknown", [], "Stale cached Ollama residency sample"
             resp.raise_for_status()
             payload = resp.json()
+            if time.monotonic() - started > timeout_s:
+                return "unknown", [], "Ollama residency sample missed its deadline"
     except (httpx.ConnectError, ConnectionRefusedError) as exc:
         import errno
         chain: BaseException | None = exc
@@ -448,8 +451,8 @@ def choose_llm_execution_schedule(
         )
 
     if allow_sequential_gpu:
-        gpu_free_mb = min((g.free_mb for g in snapshot.gpus), default=6500) if snapshot else 6500
-        if gpu_free_mb >= 5800:
+        gpu_free_mb = recent_gpu_headroom(snapshot)
+        if gpu_free_mb is not None and gpu_free_mb >= 5800:
             return LLMExecutionSchedule(
                 mode="sequential_gpu",
                 num_gpu=-1,
@@ -520,8 +523,8 @@ def choose_vision_execution_schedule(
         )
 
     if allow_sequential_gpu:
-        gpu_free_mb = min((g.free_mb for g in snapshot.gpus), default=6500) if snapshot else 6500
-        if gpu_free_mb >= min_gpu_free_mb:
+        gpu_free_mb = recent_gpu_headroom(snapshot)
+        if gpu_free_mb is not None and gpu_free_mb >= max(1, min_gpu_free_mb):
             return LLMExecutionSchedule(
                 mode="sequential_gpu",
                 num_gpu=-1,

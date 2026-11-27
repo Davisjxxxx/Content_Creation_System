@@ -218,3 +218,46 @@ def test_uncertain_acknowledgement_cannot_be_used_for_cancellation(tmp_path):
         assert queue.cancel(item.id) is False
         interrupt.assert_not_called()
     assert item.phase == "recovery_required"
+
+
+def test_unknown_gpu_headroom_cannot_schedule_sequential_or_dispatch_local(tmp_path, monkeypatch):
+    from avatar_v2 import ollama_client, resource_monitor
+    from avatar_v2.ollama_client import choose_llm_execution_schedule, choose_vision_execution_schedule
+    from avatar_v2.resource_planner import ResourcePlanner
+    guard = resource_monitor.ResourceGuard()
+    snapshot = guard.evaluate(gpus=[])
+    assert choose_llm_execution_schedule(allow_sequential_gpu=True).mode == "cpu_only"
+    assert choose_vision_execution_schedule(allow_sequential_gpu=True, snapshot=snapshot).mode == "cpu_only"
+    assert ResourcePlanner().plan_visual_inspection(requires_vlm=True, allow_sequential_gpu=True,
+                                                    snapshot=snapshot)["execution_mode"] == "cpu_vlm"
+    from dataclasses import replace
+    healthy = replace(snapshot, gpus=[resource_monitor.GPUTelemetry(0, "fixture", 100, 8192, 8000)])
+    assert choose_llm_execution_schedule(allow_sequential_gpu=True, snapshot=healthy).mode == "sequential_gpu"
+    assert choose_llm_execution_schedule(allow_sequential_gpu=True,
+                                         snapshot=replace(healthy, timestamp=healthy.timestamp - 60)).mode == "cpu_only"
+    assert resource_monitor.parse_nvidia_smi_telemetry("0, GPU, 50, 8000, 7900, 48, 0\n1, GPU, N/A, 8000, 7900") == []
+    queue = RenderQueue(tmp_path / "queue")
+    item = _item(tmp_path)
+    try:
+        monkeypatch.setattr(resource_monitor, "query_gpu_telemetry", lambda: [])
+        for state in ("offline", "online"):
+            monkeypatch.setattr(ollama_client, "fetch_ollama_ps_state", lambda *a, **kw: (state, [], ""))
+            with pytest.raises(RuntimeError, match="GPU headroom"):
+                queue._ensure_ollama_vram_released_before_comfy(item)
+        gpu = resource_monitor.GPUTelemetry(0, "fixture", 200, 8192, 7900)
+        monkeypatch.setattr(resource_monitor, "query_gpu_telemetry", lambda: [gpu])
+        queue._ensure_ollama_vram_released_before_comfy(item)
+    finally:
+        queue.shutdown()
+
+def test_delayed_complete_residency_is_not_current(monkeypatch):
+    from unittest.mock import MagicMock
+    from avatar_v2 import ollama_client
+    client = MagicMock()
+    response = client.return_value.__enter__.return_value.get.return_value
+    response.headers = {}
+    response.json.return_value = {"models": []}
+    monkeypatch.setattr(ollama_client.httpx, "Client", client)
+    with patch.object(ollama_client.time, "monotonic", side_effect=[10.0, 13.0]):
+        state, _, detail = ollama_client.fetch_ollama_ps_state(timeout_s=1.5)
+    assert state == "unknown" and "deadline" in detail

@@ -556,6 +556,7 @@ def test_cloud_jobs_route_to_runway_and_skip_local_gpu_cleanup(tmp_path, monkeyp
     assert restored.cloud_receipt["credits_charged"] == 8 and restored.provider_config.provider == "runway"
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_local_comfyui_jobs_keep_forced_preclean(tmp_path, monkeypatch):
     out_mp4 = tmp_path / "out.mp4"
     out_mp4.write_bytes((Path(__file__).parent / "fixtures/rc5/clip.mp4").read_bytes())

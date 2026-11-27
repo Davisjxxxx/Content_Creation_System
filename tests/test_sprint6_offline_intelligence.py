@@ -16,6 +16,8 @@ Covers:
 
 from __future__ import annotations
 
+import time
+
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +51,7 @@ def _snap(*, ram_pct: float = 55.0, gpu_free_mb: int = 6200, temp_c: int = 55):
     host = HostMemoryStats(64000, int(64000 * ram_pct / 100.0), ram_pct, 8192, 100, 1.2, 10, 20, 0.0, 0.0)
     gpus = [GPUTelemetry(0, "RTX 4070", 8188 - gpu_free_mb, 8188, gpu_free_mb, temp_c=temp_c, util_pct=5)]
     storage = StorageStatus("/sim", 915.0, 50.0, "normal")
-    return guard.evaluate(host=host, gpus=gpus, storage=storage, now=100.0)
+    return guard.evaluate(host=host, gpus=gpus, storage=storage, now=time.monotonic())
 
 
 def _ok_storage():

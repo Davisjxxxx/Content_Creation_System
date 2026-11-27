@@ -318,6 +318,7 @@ def test_a_daily_limit_the_owner_sets_stops_new_jobs(api, home):
 # --------------------------------------------------------------------------- integrity
 
 
+@pytest.mark.usefixtures("measured_local_gpu")
 def test_queue_hashes_outputs_and_verify_detects_changes(tmp_path, monkeypatch):
     output = tmp_path / "out.png"
     output.write_bytes((Path(__file__).parent / "fixtures/rc5/still.png").read_bytes())
