@@ -1,0 +1,24 @@
+{
+  "protected_sha256_matched_preflight": {
+    "dist/AvatarV2/AvatarV2": "8e71ad4d409f38c69f813ada968ccca1bf17832e7325b4eb5303e130002d4893",
+    "dist/AvatarV2.next/AvatarV2": "2ee61d892b290e8df9b5303f55725dd56b748d788bf20552c8fb51a78ab23dee",
+    "dist/AvatarV2.rc2/AvatarV2": "5eb0a9a43a08f10d433dd5829320092af47584ea898aaa675430d74ab70cfd1c",
+    "dist/AvatarV2.rc3/AvatarV2": "cb3fad889b41b10856ff1dfacf9111b7589905943f89d554d33566d59cf4f48e",
+    "dist/AvatarV2.rc4/AvatarV2": "a63423b57203ea547d9fcde49e4bafec6e92030b47d69e0077f50a1169a6ed0b",
+    "/home/jd/.avatar_v2/desktop.json": "5dd11ff5d7dffc72a8542c9a67461aaf20501016c7cad1e13c4b256af7fbf043"
+  },
+  "rc4_full_tree_sha256": "8cefc6da46adde6a16074ab70fb9b42747360752f436a8fa4bf838467c5343ac",
+  "rc4_tree_entries": 42708,
+  "release_checkout_head": "5987859508497ba61e8303180b332f780da7ebd6",
+  "release_checkout_status": [
+    "## rc4-astra-remediation...origin/rc4-astra-remediation",
+    "?? .serena/",
+    "?? lora_training/"
+  ],
+  "audit_heads": {
+    "rc1": "5d53b2acf5c5b83d8c44de74f4babee6419cdff0",
+    "rc2": "c63fb9fb7d4598db2a122b16b4c3a03feb1a2316",
+    "rc3": "9909031c4c3e9b39d0b4c29f6d0619be564d8a74",
+    "rc4": "de6df8a590de5cb432f9087b8870c770cec3912d"
+  }
+}

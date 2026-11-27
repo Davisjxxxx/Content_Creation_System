@@ -1,0 +1,18 @@
+{
+  "commit": "7fcfa4a8c9ec93b1c2b92a9753354a258af3bce0",
+  "executable_sha256": "d9f22e7e171f3fb91dd2dec5113de0c9d7fb2a7b19623d8c1d4a19f189f9c420",
+  "bundle_sha256": "1017a8b36e954adfe18f275f5684017c5ebc028438ba6d3ac382600831a2f031",
+  "tree_entries": 42710,
+  "application_code_objects": 61,
+  "mismatches": [],
+  "required_modules_missing": [],
+  "assets": {
+    "avatar_v2/ui/index.html": "d8361504e2ee10fa7d413ad3a1b112e946c52fc1c3f6bae51b0b22aea2a48a9b",
+    "avatar_v2/data/prompt_libraries.json": "f5d07ab5a7364ff7e8c5771752f74135b36fb9203db6d993733d0b64c0dc3caa",
+    "avatar_v2/sdk_client.py": "46a249b14cf213ee4da0efb8a72737c8991c9c0f644f13642c21ede55671b0a5",
+    "workflows/animatediff_sd15_api.json": "3bcfa5560c10ead491c79b9350e38c3bf168f139cbbb900ce5d3048e02412d4d",
+    "workflows/animatediff_sdxl_api.json": "3bcfa5560c10ead491c79b9350e38c3bf168f139cbbb900ce5d3048e02412d4d",
+    "workflows/wan22_i2v_14b_gguf_api.json": "062c81a58b52fdb9402522262d9f08aa7d9e5e41cafee772280ed90f530207a0",
+    "workflows/wan22_i2v_5b_turbo_gguf_api.json": "7f1cd4d5b8dd192e37ce9e62233ee30a4792b97a1e8ee021dc211fe4de00c1d4"
+  }
+}

@@ -1,0 +1,297 @@
+{
+  "missing_device_observations": [
+    "history fixture-0.json {'status': 'error', 'phase': 'failed', 'prompt_id': None, 'outputs': [], 'observed_media': [], 'error': 'RuntimeError: Cannot confirm available local GPU headroom; refusing renderer dispatch'}",
+    "history fixture-1.json {'status': 'error', 'phase': 'failed', 'prompt_id': None, 'outputs': [], 'observed_media': [], 'error': 'RuntimeError: Cannot confirm available local GPU headroom; refusing renderer dispatch'}",
+    "HTTP POSTs []"
+  ],
+  "launcher": {
+    "views": {
+      "make": true,
+      "forge": true,
+      "library": true,
+      "settings": true
+    },
+    "recipes": {
+      "look": {
+        "shown": true,
+        "steps": 3
+      },
+      "photos": {
+        "shown": true,
+        "steps": 2
+      },
+      "voice": {
+        "shown": true,
+        "steps": 2
+      },
+      "talk": {
+        "shown": true,
+        "steps": 2
+      },
+      "act": {
+        "shown": true,
+        "steps": 4
+      },
+      "move": {
+        "shown": true,
+        "steps": 4
+      },
+      "scene": {
+        "shown": true,
+        "steps": 3
+      }
+    },
+    "checks": {
+      "tiles": 7,
+      "forge_prompt": true,
+      "forge_shots": 0,
+      "forge_models": true,
+      "guided_opens": true,
+      "subject_refs_roles": true,
+      "character_profiles_ok": true,
+      "script_panel_shown": true,
+      "script_sandbox_available": false,
+      "browse_local_present": true,
+      "automatic_restored": true,
+      "avatars_ok": true,
+      "scene_shots_editor": 1,
+      "scene_add_shot": 2,
+      "avatars_tab": "0 saved avatars",
+      "avatars_grid": 1,
+      "all_tab": "0 items",
+      "state_ok": true,
+      "presenter_price": 32,
+      "voiceover_price": 1,
+      "move_without_master_explains": true,
+      "library_ok": true,
+      "engine_state": "not_installed",
+      "missing_image_refused": true,
+      "missing_video_refused": true,
+      "viewer_opens": true,
+      "viewer_buttons": 2,
+      "viewer_missing_explained": true,
+      "viewer_enter_uses": true,
+      "viewer_next": true,
+      "viewer_escape": true,
+      "select_black_on_white": true,
+      "settings_limits": true
+    },
+    "js_errors": [],
+    "reported_at": "2026-11-27T22:55:37.342744+00:00"
+  },
+  "archived_desktop_tests": [
+    "..................................                                       [100%]",
+    "34 passed, 1 deselected in 13.99s"
+  ],
+  "actual_host_bubblewrap": [
+    "SDK asset /home/jd/avatar_rc5/dist/AvatarV2.rc5/_internal/avatar_v2/sdk_client.py interpreter /usr/bin/python3",
+    "healthy completed  SDK_READY",
+    "",
+    "incomplete error Lost required sandbox process telemetry (fixture_partial_census); stopped admission and terminated run fail-closed."
+  ],
+  "two_boot_queue_fault": [
+    "launch 1 history error recovery_required QA recovery True POSTs ['/prompt']",
+    "launch 2 history error recovery_required QA recovery True POSTs ['/prompt']"
+  ],
+  "unchanged_unpin_probe": {
+    "result": "raised the injected write error at unpin_job",
+    "error": "OSError: fixture save failed",
+    "next_cases": "faultblocks and active/finished pin regression ran separately"
+  },
+  "observations": {
+    "bin_audio_healthy": {
+      "observed": [
+        "history fixture-0.json {'status': 'done', 'phase': 'complete', 'prompt_id': '1', 'outputs': ['/home/test/outputs/clip_voiceover_0b7dff6eb5f84d5eaadf3b7e21b2c9cb.mp4', '/home/test/outputs/clip.mp4'], 'observed_media': [{'kind': 'video', 'duration_s': 1.0, 'format': 'mov,mp4,m4a,3gp,3g2,mj2', 'width': 160, 'height': 96, 'frames': 8, 'fps': 8.0, 'path': '/home/test/outputs/clip_voiceover_0b7dff6eb5f84d5eaadf3b7e21b2c9cb.mp4', 'exists': True, 'size_bytes': 2540, 'sha256': '302bf5c268813bdb1418c58af36e4536d652ae4cbdcb5ab2c870c15ea345030d'}, {'kind': 'video', 'duration_s': 1.0, 'format': 'mov,mp4,m4a,3gp,3g2,mj2', 'width': 160, 'height': 96, 'frames': 8, 'fps': 8.0, 'path': '/home/test/outputs/clip.mp4', 'exists': True, 'size_bytes': 1798, 'sha256': 'b5e6e97d556226cb2cbc960a7dbf6e50895d08a5c38ff0b090faf1ebdac7f300'}], 'error': ''}",
+        "HTTP POSTs ['/prompt'] protected log none original intact True QA {'ok': True, 'voiceover': 'added', 'file': 'clip_voiceover_0b7dff6eb5f84d5eaadf3b7e21b2c9cb.mp4'}"
+      ],
+      "required_observations": [
+        "protected log none original intact True",
+        "'voiceover': 'added'",
+        "'frames': 8"
+      ]
+    },
+    "bin_audio": {
+      "observed": [
+        "history fixture-0.json {'status': 'error', 'phase': 'failed', 'prompt_id': None, 'outputs': [], 'observed_media': [], 'error': 'RuntimeError: Cannot verify local Ollama VRAM release (status=unknown: Incomplete Ollama residency telemetry); refusing ComfyUI launch to prevent VRAM contention.'}",
+        "HTTP POSTs [] protected log none original intact True QA {}"
+      ],
+      "required_observations": [
+        "HTTP POSTs []",
+        "original intact True",
+        "Incomplete Ollama residency"
+      ]
+    },
+    "bin_render_healthy": {
+      "observed": [
+        "history fixture-0.json {'status': 'done', 'phase': 'complete', 'prompt_id': '1', 'outputs': ['/home/test/outputs/good.png'], 'observed_media': [{'kind': 'image', 'width': 128, 'height': 96, 'frames': 1, 'format': 'PNG', 'path': '/home/test/outputs/good.png', 'exists': True, 'size_bytes': 290, 'sha256': 'e734d8bb73191efb8f9becc1bbac2d8368890ee999fdbd6d8b3502bab28b7d3e'}], 'error': ''}",
+        "history fixture-1.json {'status': 'error', 'phase': 'failed', 'prompt_id': '2', 'outputs': ['/home/test/outputs/short.png'], 'observed_media': [], 'error': \"UnidentifiedImageError: cannot identify image file '/home/test/outputs/short.png'\"}",
+        "HTTP POSTs ['/prompt', '/prompt']"
+      ],
+      "required_observations": [
+        "'status': 'done', 'phase': 'complete'",
+        "'status': 'error', 'phase': 'failed'",
+        "UnidentifiedImageError",
+        "'width': 128"
+      ]
+    },
+    "bin_render": {
+      "observed": [
+        "history fixture-0.json {'status': 'error', 'phase': 'failed', 'prompt_id': None, 'outputs': [], 'observed_media': [], 'error': 'RuntimeError: Cannot verify local Ollama VRAM release (status=unknown: Incomplete Ollama residency telemetry); refusing ComfyUI launch to prevent VRAM contention.'}",
+        "history fixture-1.json {'status': 'error', 'phase': 'failed', 'prompt_id': None, 'outputs': [], 'observed_media': [], 'error': 'RuntimeError: Cannot verify local Ollama VRAM release (status=unknown: Incomplete Ollama residency telemetry); refusing ComfyUI launch to prevent VRAM contention.'}",
+        "HTTP POSTs []"
+      ],
+      "required_observations": [
+        "HTTP POSTs []",
+        "Incomplete Ollama residency"
+      ]
+    },
+    "bin_repeated_healthy": {
+      "observed": [
+        "history fixture-0.json {'status': 'done', 'phase': 'complete', 'prompt_id': '1', 'outputs': ['/home/test/outputs/good.png'], 'observed_media': [{'kind': 'image', 'width': 128, 'height': 96, 'frames': 1, 'format': 'PNG', 'path': '/home/test/outputs/good.png', 'exists': True, 'size_bytes': 290, 'sha256': 'e734d8bb73191efb8f9becc1bbac2d8368890ee999fdbd6d8b3502bab28b7d3e'}], 'error': ''}",
+        "history fixture-1.json {'status': 'error', 'phase': 'recovery_required', 'prompt_id': None, 'outputs': [], 'observed_media': [], 'error': \"RuntimeError: Failed to durably persist acknowledged ComfyUI prompt_id '1': Renderer prompt identifier already belongs to another submission\"}",
+        "HTTP POSTs ['/prompt', '/prompt']"
+      ],
+      "required_observations": [
+        "'status': 'done', 'phase': 'complete'",
+        "'status': 'error', 'phase': 'recovery_required'",
+        "already belongs to another submission"
+      ]
+    },
+    "bin_repeated": {
+      "observed": [
+        "history fixture-0.json {'status': 'error', 'phase': 'failed', 'prompt_id': None, 'outputs': [], 'observed_media': [], 'error': 'RuntimeError: Cannot verify local Ollama VRAM release (status=unknown: Incomplete Ollama residency telemetry); refusing ComfyUI launch to prevent VRAM contention.'}",
+        "history fixture-1.json {'status': 'error', 'phase': 'failed', 'prompt_id': None, 'outputs': [], 'observed_media': [], 'error': 'RuntimeError: Cannot verify local Ollama VRAM release (status=unknown: Incomplete Ollama residency telemetry); refusing ComfyUI launch to prevent VRAM contention.'}",
+        "HTTP POSTs []"
+      ],
+      "required_observations": [
+        "HTTP POSTs []"
+      ]
+    },
+    "bin_wan": {
+      "observed": [
+        "admission {'ok': True, 'action': 'scene', 'queue_id': 'a446e45c57', 'queued': [{'queue_id': 'a446e45c57'}], 'total_credits': 0, 'local': True, 'shots': 1, 'minutes': 6, 'photo_first': False}",
+        "history a446e45c57.json {'status': 'done', 'phase': 'complete', 'prompt_id': '1', 'outputs': ['/home/test/app/runs/outputs/a446e45c57/scene_a446e45c57.mp4', '/home/test/app/runs/outputs/a446e45c57/clip.mp4'], 'requested_params': {'seed': 406071658, 'width': 720, 'height': 1280, 'frames': 80, 'steps': 4, 'cfg': 1.0, 'model': 'Wan2.2-I2V-A14B-HighNoise-Q4_K_S.gguf', 'workflow': '/rc/_internal/workflows/wan22_i2v_14b_gguf_api.json', 'workflow_sha256': '062c81a58b52fdb9402522262d9f08aa7d9e5e41cafee772280ed90f530207a0', 'staged_references': {'INIT_IMAGE': '/home/test/outputs/a.png', 'LAST_FRAME': '/home/test/outputs/b.png'}}, 'submitted_params': {'seed': 406071658, 'width': 480, 'height': 640, 'frames': 81, 'steps': 4, 'cfg': 1.0, 'model': 'Wan2.2-I2V-A14B-HighNoise-Q4_K_S.gguf', 'workflow': '/rc/_internal/workflows/wan22_i2v_14b_gguf_api.json', 'workflow_sha256': '062c81a58b52fdb9402522262d9f08aa7d9e5e41cafee772280ed90f530207a0', 'staged_references': {'INIT_IMAGE': '/home/test/outputs/a.png', 'LAST_FRAME': '/home/test/outputs/b.png'}, 'resolved_seeds': [406071658], 'resolved_graph_sha256': 'b34ca0d12da6be4b73da8d42daf94af3e357e69b285d7377ed41b36302d0fee1'}, 'observed_media': [{'kind': 'video', 'duration_s': 1.0, 'format': 'mov,mp4,m4a,3gp,3g2,mj2', 'width': 160, 'height': 96, 'frames': 8, 'fps': 8.0, 'path': '/home/test/app/runs/outputs/a446e45c57/scene_a446e45c57.mp4', 'exists': True, 'size_bytes': 1800, 'sha256': '6250f1ff90137995a131ccfc81a42dc2946870f46742369c88d904e1a1bc8293'}, {'kind': 'video', 'duration_s': 1.0, 'format': 'mov,mp4,m4a,3gp,3g2,mj2', 'width': 160, 'height': 96, 'frames': 8, 'fps': 8.0, 'path': '/home/test/app/runs/outputs/a446e45c57/clip.mp4', 'exists': True, 'size_bytes': 1798, 'sha256': 'b5e6e97d556226cb2cbc960a7dbf6e50895d08a5c38ff0b090faf1ebdac7f300'}], 'error': ''}",
+        "HTTP POSTs ['/prompt'] graph [('LoadImage', {'image': 'avatar_v2_studio-forge_scene-local-462c6549_init_image_a.png'}), ('WanFirstLastFrameToVideo', {'width': 480, 'height': 640, 'length': 81}), ('KSamplerAdvanced', {'noise_seed': 406071658}), ('KSamplerAdvanced', {'noise_seed': 406071658}), ('LoadImage', {'image': 'avatar_v2_studio-forge_scene-local-462c6549_last_frame_b.png'})]"
+      ],
+      "required_observations": [
+        "'width': 720, 'height': 1280, 'frames': 80",
+        "'width': 480, 'height': 640, 'frames': 81",
+        "'width': 160, 'height': 96, 'frames': 8",
+        "'WanFirstLastFrameToVideo'"
+      ]
+    },
+    "rc4controls": {
+      "observed": [
+        "v4 (True, 'http://127.0.0.1:48535', 'verified_owned_localhost_pinned_ipv4')",
+        "v6 (False, '', 'ipv6_listener_not_owned_on_port:48535')",
+        "wrong port (False, '', 'endpoint_port_mismatch:owned_48535_vs_target_28189')",
+        "missing listening census (False, '', 'unreadable_listener_telemetry:census unavailable')",
+        "start (False, '', 'pid_reused')",
+        "boot (False, '', 'missing_record_boot_id')",
+        "exited (False, '', 'process_exited')",
+        "desktop global authorization denied RendererOwnershipError",
+        "standalone queue global authorization denied RendererOwnershipError",
+        "import source types {'midjourney': 'Midjourney (manual export from your own account)', 'other_ai': 'Another image generator (manual export)', 'photo': 'Photograph you are authorized to use'}",
+        "sidecar preserved by probe existing independent note"
+      ],
+      "required_observations": [
+        "desktop global authorization denied",
+        "standalone queue global authorization denied",
+        "sidecar preserved by probe existing independent note",
+        "pid_reused",
+        "process_exited"
+      ]
+    },
+    "legacy": {
+      "observed": [
+        "unselected presenter False",
+        "photo-first accepted True",
+        "continuation after moved ending True bound True",
+        "staged ending before transition /home/test/app/staged_refs/ref_9bf55c62f708aa788190.png True",
+        "missing staged ending {'ok': False, 'scene': 'not started: requested end picture is missing or no longer accessible.'} new jobs 0",
+        "legacy end with no digest {'ok': False, 'scene': 'Select the ending picture again to bind this saved scene.'} bound /home/test/app/staged_refs/ref_9bf55c62f708aa788190.png new jobs 0"
+      ],
+      "required_observations": [
+        "continuation after moved ending True bound True",
+        "Select the ending picture again",
+        "new jobs 0"
+      ]
+    },
+    "faultblocks": {
+      "observed": [
+        "empty gpu samples {'before': [], 'after': [], 'cleanup_requested': True, 'effective': False, 'vram_released_verified': False}",
+        "residency None RuntimeError",
+        "residency {} RuntimeError",
+        "residency {'models': [{'name': 'fixture'}]} RuntimeError",
+        "residency {'models': []} admit",
+        "residency {'models': 'bad'} RuntimeError",
+        "criteria Exactly two cups and the wooden box must remain closed. ['Exact count: 2 cups', 'Object state: the wooden box closed']",
+        "criteria Exactly two cups and three bowls, with the lid open and the box closed. ['Exact count: 2 cups', 'Exact count: 3 bowls', 'Object state: the lid open', 'Explicit requirement: the box closed']",
+        "criteria The wooden box must remain closed and the gate must stay open. ['Object state: The wooden box closed', 'Object state: the gate open']",
+        "same filename archive b'pre-existing' ref_d340e38bec67479c9dc4db6e66e37d27.png True",
+        "link sibling link_a6fdf4e0d9b7475f8f8f9203317bc3e5.png preexisting preserved True",
+        "hard sibling hard_0be7f7e958d846f896a59123f3f0bc7b.png preexisting preserved True",
+        "registry commits 8 entries 11",
+        "partial copy exists False",
+        "rejected item ran after reopen False",
+        "one missing RSS record (False, {300, 301}, 0, 'proc_status_vmrss_unreadable')",
+        "initial QA fault error recovery_required True Failed to persist initial inspection checkpoint: QA checkpoint full"
+      ],
+      "required_observations": [
+        "'vram_released_verified': False",
+        "residency {} RuntimeError",
+        "residency {'models': []} admit",
+        "rejected item ran after reopen False",
+        "one missing RSS record (False",
+        "initial QA fault error recovery_required True",
+        "partial copy exists False"
+      ]
+    },
+    "candidatefault": {
+      "observed": [
+        "unselected presenter False",
+        "photo-first accepted True",
+        "continuation after moved ending True bound True",
+        "FLF loads [('LoadImage', '/home/test/app/staged_refs/ref_3c347144beff1d587b64.png'), ('LoadImage', '/home/test/app/staged_refs/ref_3c347144beff1d587b64.png')] receipt 1879769200 actual seeds [1879769200, 1879769200] shape [480, 832, 81]",
+        "inspection invoked for original.png",
+        "failed candidate checkpoint error recovery_required [None, 'candidate-checkpoint-persist-failed'] ['/home/test/lifecycle/original.png', '/home/test/lifecycle/corrected.png']"
+      ],
+      "required_observations": [
+        "failed candidate checkpoint error recovery_required",
+        "inspection invoked for original.png"
+      ]
+    },
+    "correceipt": {
+      "observed": [
+        "correction acknowledged; durable job prompt base-ack correction receipt present True",
+        "correction state running correcting cancel True",
+        "provider posts [('/prompt', None), ('/interrupt', 'owned-fix')] render result ['ComfyUICancelledError'] history cancelled original True"
+      ],
+      "required_observations": [
+        "base-ack correction receipt present True",
+        "('/interrupt', 'owned-fix')",
+        "history cancelled original True"
+      ]
+    },
+    "binding": {
+      "observed": [
+        "** (missing_binding.py:4): WARNING **: 16:55:23.732: Disabled hardware acceleration because GTK failed to initialize GL: The current backend does not support OpenGL.",
+        "current file matches inspection False shipped UI verdict just now \u00b7 Not inspected",
+        "missing requirement binding just now \u00b7 Not inspected",
+        "startup configured True account calls 0",
+        "positive pending count to zero, account calls 0"
+      ],
+      "required_observations": [
+        "missing requirement binding just now \u00b7 Not inspected",
+        "positive pending count to zero, account calls 0"
+      ]
+    }
+  },
+  "long_temp_directory_control": {
+    "observed": "OSError: AF_UNIX path too long",
+    "location": "avatar_v2/script_broker.py:409",
+    "caller": "avatar_v2/script_runner.py:566",
+    "effect": "broker bind failed before sandbox execution; reran the identical healthy and incomplete controls under a short private TMPDIR",
+    "rc4_source": "identical temp root and socket bind construction at 4dee3e5"
+  }
+}
