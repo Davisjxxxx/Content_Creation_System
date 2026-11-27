@@ -174,18 +174,34 @@ def inspect_local_ollama_models(base_url: str = DEFAULT_OLLAMA_URL, *, timeout_s
     return out
 
 
-def list_running_ollama_models(base_url: str = DEFAULT_OLLAMA_URL, *, timeout_s: float = 3.0) -> list[dict[str, Any]]:
-    """Query currently loaded local Ollama models via loopback ``/api/ps``."""
+def _fetch_running_ollama_models_status(
+    base_url: str = DEFAULT_OLLAMA_URL,
+    *,
+    timeout_s: float = 3.0,
+) -> tuple[bool, list[dict[str, Any]], str]:
+    """Query loopback ``/api/ps`` distinguishing unreachable/error from reachable-empty (RC-14)."""
     url = _ensure_loopback_url(base_url)
     try:
         with httpx.Client(timeout=timeout_s) as client:
             resp = client.get(f"{url}/api/ps")
             resp.raise_for_status()
             payload = resp.json()
-    except Exception:
-        return []
+    except Exception as exc:
+        return False, [], f"{type(exc).__name__}: {exc}"
+    if not isinstance(payload, dict):
+        return False, [], "Malformed /api/ps payload"
     models = payload.get("models")
-    return [m for m in models if isinstance(m, dict)] if isinstance(models, list) else []
+    if models is None:
+        return True, [], ""
+    if not isinstance(models, list):
+        return False, [], "Malformed /api/ps models list"
+    return True, [m for m in models if isinstance(m, dict)], ""
+
+
+def list_running_ollama_models(base_url: str = DEFAULT_OLLAMA_URL, *, timeout_s: float = 3.0) -> list[dict[str, Any]]:
+    """Query currently loaded local Ollama models via loopback ``/api/ps``."""
+    ok, models, _err = _fetch_running_ollama_models_status(base_url, timeout_s=timeout_s)
+    return models if ok else []
 
 
 def _query_gpu_vram_mb() -> tuple[int | None, int | None]:
@@ -221,11 +237,12 @@ def verify_ollama_vram_released(
 ) -> dict[str, Any]:
     """Wait until Ollama has ACTUALLY unloaded GPU weights instead of assuming HTTP 200 means released.
 
-    Addresses the Sprint 6 finding where ``keep_alive: 0`` returned HTTP 200 while 3.6–6.9 GB of
-    VRAM remained allocated asynchronously for 1–3 seconds.
+    Fail-closed telemetry (RC-14):
+    - Returns explicit ``status`` in ``{"released", "resident", "unknown"}``.
+    - If Ollama ``/api/ps`` is unreachable/errors OR required GPU telemetry (``min_free_vram_mb``)
+      cannot be read, returns ``released=False, status="unknown"`` rather than falsely claiming released!
     """
     url = _ensure_loopback_url(base_url)
-    fetch_ps = ps_fetcher or (lambda: list_running_ollama_models(url, timeout_s=2.0))
     fetch_vram = vram_fetcher or _query_gpu_vram_mb
 
     t0 = time.monotonic()
@@ -234,10 +251,41 @@ def verify_ollama_vram_released(
     last_active: list[dict[str, Any]] = []
     last_used: int | None = None
     last_free: int | None = None
+    last_err = ""
 
     while True:
         polls += 1
-        running = fetch_ps() or []
+        if ps_fetcher is not None:
+            try:
+                raw_ps = ps_fetcher()
+                if raw_ps is None:
+                    ps_ok, running, ps_err = False, [], "ps_fetcher returned None"
+                else:
+                    ps_ok, running, ps_err = True, list(raw_ps), ""
+            except Exception as exc:
+                ps_ok, running, ps_err = False, [], f"{type(exc).__name__}: {exc}"
+        else:
+            ps_ok, running, ps_err = _fetch_running_ollama_models_status(url, timeout_s=2.0)
+
+        used_mb, free_mb = fetch_vram()
+        last_used, last_free = used_mb, free_mb
+
+        if not ps_ok:
+            last_err = ps_err or "Ollama /api/ps unavailable"
+            if time.monotonic() >= deadline:
+                return {
+                    "released": False,
+                    "status": "unknown",
+                    "error": last_err,
+                    "elapsed_ms": round((time.monotonic() - t0) * 1000.0, 1),
+                    "polls": polls,
+                    "active_vram_models": last_active,
+                    "gpu_used_mb": last_used,
+                    "gpu_free_mb": last_free,
+                }
+            time.sleep(max(0.05, float(poll_interval_s)))
+            continue
+
         vram_holders = [
             {
                 "name": str(m.get("name") or m.get("model") or ""),
@@ -248,14 +296,29 @@ def verify_ollama_vram_released(
             and (model is None or str(m.get("name") or m.get("model") or "") == model)
         ]
         last_active = vram_holders
-        used_mb, free_mb = fetch_vram()
-        last_used, last_free = used_mb, free_mb
 
         ps_clear = len(vram_holders) == 0
-        vram_clear = min_free_vram_mb is None or free_mb is None or free_mb >= min_free_vram_mb
+        if min_free_vram_mb is not None and free_mb is None:
+            # Required VRAM threshold cannot be verified without GPU telemetry -> unknown!
+            if time.monotonic() >= deadline:
+                return {
+                    "released": False,
+                    "status": "unknown",
+                    "error": "GPU free VRAM telemetry unavailable while min_free_vram_mb threshold is enforced.",
+                    "elapsed_ms": round((time.monotonic() - t0) * 1000.0, 1),
+                    "polls": polls,
+                    "active_vram_models": last_active,
+                    "gpu_used_mb": last_used,
+                    "gpu_free_mb": last_free,
+                }
+            time.sleep(max(0.05, float(poll_interval_s)))
+            continue
+
+        vram_clear = min_free_vram_mb is None or (free_mb is not None and free_mb >= min_free_vram_mb)
         if ps_clear and vram_clear:
             return {
                 "released": True,
+                "status": "released",
                 "elapsed_ms": round((time.monotonic() - t0) * 1000.0, 1),
                 "polls": polls,
                 "active_vram_models": vram_holders,
@@ -265,6 +328,7 @@ def verify_ollama_vram_released(
         if time.monotonic() >= deadline:
             return {
                 "released": False,
+                "status": "resident" if not ps_clear else "unknown",
                 "elapsed_ms": round((time.monotonic() - t0) * 1000.0, 1),
                 "polls": polls,
                 "active_vram_models": last_active,

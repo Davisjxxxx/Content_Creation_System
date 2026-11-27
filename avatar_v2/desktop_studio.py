@@ -414,15 +414,38 @@ class StudioMixin:
 
         if action == "list":
             profiles = store.list_profiles()
-            # Re-authorize saved profile reference paths for thumbnail preview on reload.
+            # RC-19: Verify saved SHA-256 fingerprints on reload; flag changed files as "changed — relink"
+            # and NEVER silently re-authorize a modified external file as unchanged!
             for prof in profiles:
                 rset = prof.get("reference_set") or {}
-                paths = [r.get("path") for r in (rset.get("references") or []) if isinstance(r, dict) and r.get("path")]
+                has_changed = False
+                has_missing = False
+                ok_paths: list[str] = []
+                refs_to_check: list[dict[str, Any]] = [
+                    r for r in (rset.get("references") or []) if isinstance(r, dict) and r.get("path")
+                ]
                 if isinstance(rset.get("starter_image"), dict) and rset["starter_image"].get("path"):
-                    paths.append(rset["starter_image"]["path"])
-                existing = [p for p in paths if Path(str(p)).is_file()]
-                if existing:
-                    mgr.register_selected(existing, workflow="multi_reference")
+                    refs_to_check.append(rset["starter_image"])
+                for ref_entry in refs_to_check:
+                    rpath = Path(str(ref_entry["path"])).expanduser()
+                    saved_fp = str(ref_entry.get("asset_fingerprint") or "").strip()
+                    if not rpath.is_file():
+                        ref_entry["integrity_status"] = "missing"
+                        has_missing = True
+                        continue
+                    if saved_fp:
+                        live_fp = sha256_file(rpath) or ""
+                        if live_fp and live_fp != saved_fp:
+                            ref_entry["integrity_status"] = "changed — relink"
+                            ref_entry["live_fingerprint"] = live_fp
+                            has_changed = True
+                            continue
+                    ref_entry["integrity_status"] = "ok"
+                    ok_paths.append(str(rpath))
+                prof["has_changed_references"] = has_changed
+                prof["has_missing_references"] = has_missing
+                if ok_paths:
+                    mgr.register_selected(ok_paths, workflow="multi_reference")
             return {"ok": True, "profiles": profiles}
 
         if action == "delete":
@@ -507,13 +530,14 @@ class StudioMixin:
         task: str,
         workflow_supports_multiref: bool,
         stage: bool = False,
-    ) -> tuple[list[str], list[str], dict[str, Any] | None]:
-        """Validate, detect conflicts, select relevant multi-view references, and optionally stage them."""
+        return_set: bool = False,
+    ) -> Any:
+        """Validate, detect conflicts, enforce cardinality/fingerprints, select multi-view refs, and optionally stage them."""
         if not isinstance(raw_subject_refs, dict):
-            return [], [], None
+            return ([], [], None, None) if return_set else ([], [], None)
         entries = [e for e in (raw_subject_refs.get("references") or []) if isinstance(e, dict) and str(e.get("path") or "").strip()]
         if not entries:
-            return [], [], None
+            return ([], [], None, None) if return_set else ([], [], None)
         mgr = self._reference_manager()
         starter_item = (
             SubjectReferenceItem(role="primary_starter", path=starter_image)
@@ -522,11 +546,21 @@ class StudioMixin:
         )
         items: list[SubjectReferenceItem] = []
         for entry in entries:
+            raw_p = str(entry["path"])
+            saved_fp = str(entry.get("asset_fingerprint") or "").strip()
+            # RC-19: Refuse silently using a reference whose bytes changed on disk since profile save!
+            if saved_fp and Path(raw_p).expanduser().is_file():
+                live_fp = sha256_file(Path(raw_p).expanduser()) or ""
+                if live_fp and live_fp != saved_fp:
+                    raise ValueError(
+                        f"Reference '{Path(raw_p).name}' changed on disk since it was saved — relink it before generating."
+                    )
             items.append(
                 SubjectReferenceItem(
                     role=str(entry.get("role") or "front_body"),  # type: ignore[arg-type]
                     subject_id=str(entry.get("subject_id") or "primary"),
-                    path=str(entry["path"]),
+                    path=raw_p,
+                    asset_fingerprint=saved_fp,
                     preserve_identity=bool(raw_subject_refs.get("preserve_identity", True)),
                     preserve_appearance=bool(raw_subject_refs.get("preserve_appearance", True)),
                     preserve_wardrobe=bool(raw_subject_refs.get("preserve_wardrobe", True)),
@@ -543,16 +577,36 @@ class StudioMixin:
         conflicts = [c for c in ref_set.detect_conflicts(check_disk=True) if c.severity == "error"]
         if conflicts:
             raise ValueError(conflicts[0].message)
+        # RC-06: Explicitly refuse unsupported locked reference cardinality (e.g. starter + 4 locked on 4-slot FLUX.2)
+        # and ambiguous multi-subject mixing rather than silently dropping or flattening references!
+        if workflow_supports_multiref:
+            max_slots = 4
+            locked_count = sum(1 for r in items if r.locked)
+            starter_slots = 1 if starter_item is not None else 0
+            if starter_slots + locked_count > max_slots:
+                raise ValueError(
+                    f"Too many locked references ({starter_slots + locked_count}) for the {max_slots}-slot FLUX.2 workflow. "
+                    "Unlock or remove a reference instead of silently dropping one."
+                )
+            distinct_subjects = sorted({r.subject_id for r in items})
+            if len(distinct_subjects) > 1 and not raw_subject_refs.get("allow_multi_subject"):
+                raise ValueError(
+                    f"Multiple subjects ({', '.join(distinct_subjects)}) were supplied for a single-subject render. "
+                    "Select one subject profile or explicitly confirm multi-subject mode."
+                )
         if stage:
             ref_set = ref_set.stage_all(mgr, require_authorization=in_js_bridge())
+        max_supp = max(1, 4 - (1 if (workflow_supports_multiref and starter_item is not None) else 0))
         selection = select_relevant_references(
             ref_set,
             prompt=prompt,
             task=task,
-            max_supplemental=4,
+            max_supplemental=max_supp,
             workflow_supports_multiref=workflow_supports_multiref,
         )
         selected_paths = [str(r["path"]) for r in selection["selected"]]
+        if return_set:
+            return selected_paths, list(selection["workflow_limitations"]), selection, ref_set
         return selected_paths, list(selection["workflow_limitations"]), selection
 
     # ------------------------------------------------------------------ Script mode (Sprint 4)
@@ -1683,6 +1737,17 @@ class StudioMixin:
                 action="forge_scene",
                 verbatim=True,
             )
+            end_image = str(spec.get("end_image") or "").strip()
+            if end_image and Path(end_image).expanduser().is_file() and items:
+                staged_end = self._stage_reference_if_external(end_image, workflow="image_to_video")
+                items[-1].job.asset_map["LAST_FRAME"] = staged_end
+            for it in items:
+                if spec.get("visual_inspection_vlm") is not None:
+                    it.runtime["visual_inspection_vlm"] = bool(spec.get("visual_inspection_vlm"))
+                if spec.get("auto_correct") is not None:
+                    it.runtime["auto_correct"] = bool(spec.get("auto_correct"))
+                if spec.get("verification_record") is not None:
+                    it.runtime["verification_record"] = dict(spec["verification_record"])
         except ValueError as exc:
             return {"ok": False, "scene": f"not started: {exc}"}
         if not items:
@@ -1865,14 +1930,18 @@ class StudioMixin:
         try:
             staged_subject_refs: list[str] = []
             ref_selection_meta: dict[str, Any] | None = None
+            resolved_ref_set: SubjectReferenceSet | None = None
+            if image and not Path(image).expanduser().is_file():
+                raise ValueError("That start picture isn't on this computer anymore.")
             if subject_refs:
-                staged_subject_refs, _ref_warns, ref_selection_meta = self._resolve_subject_references(
+                staged_subject_refs, _ref_warns, ref_selection_meta, resolved_ref_set = self._resolve_subject_references(
                     starter_image=image,
                     raw_subject_refs=subject_refs,
                     prompt=prompt,
                     task="image_generate" if action == "photo" else "video_scene",
                     workflow_supports_multiref=(action == "photo" or not image),
                     stage=True,
+                    return_set=True,
                 )
             if action == "photo":
                 raw_user_prompt = prompt
@@ -1897,7 +1966,7 @@ class StudioMixin:
                 count = max(1, min(int(options.get("count") or 1), 4))
                 short_label = ob.PHOTO_MODELS[photo_model]["label"].split(" (")[0]
                 photo_refs = list(staged_subject_refs)
-                if image and Path(image).expanduser().is_file():
+                if image:
                     staged_starter = self._stage_reference_if_external(image, workflow="multi_reference")
                     if staged_starter not in photo_refs:
                         photo_refs.insert(0, staged_starter)
@@ -1907,6 +1976,7 @@ class StudioMixin:
                         raw_user_prompt or prompt,
                         requested_action="photo",
                         starter_image=image or None,
+                        subject_refs=resolved_ref_set,
                         guided_spec=guided_spec,
                         input_mode="guided" if guided else "automatic",
                         model_preference=f"flux2_{photo_model}",
@@ -1951,11 +2021,22 @@ class StudioMixin:
                 total_minutes = ob.PHOTO_MODELS[photo_model]["estimated_minutes"] * count
                 two_stage = False
             else:
+                raw_scene_prompt = prompt
+                scene_guided_spec = None
                 shots = self._forge_shots(options)
                 if not shots:
                     raise ValueError("Describe at least one shot (it becomes the video scene).")
                 if guided:
                     reg_vid = "wan22_a14b" if video_model == "a14b" else "wan22_5b"
+                    g_dict = dict(guided)
+                    if any(str(v or "").strip() for v in (g_dict.get("attributes") or {}).values()) or g_dict.get("randomized"):
+                        scene_guided_spec = build_spec_from_guided_payload(
+                            prompt=raw_scene_prompt or shots[0],
+                            task="scene",
+                            guided=g_dict,
+                            model_preference=reg_vid,
+                            frames=local_engine.FRAMES,
+                        )
                     shots = [
                         self._compile_guided_prompt(
                             prompt=shot_text,
@@ -1974,13 +2055,24 @@ class StudioMixin:
                             model_id=f"flux2_{photo_model}",
                             frames=1,
                         )
-                if image and not Path(image).expanduser().is_file():
-                    raise ValueError("That start picture isn't on this computer anymore.")
+                end_image = str(options.get("end_image") or "").strip()
+                if end_image and not Path(end_image).expanduser().is_file():
+                    raise ValueError("That end picture isn't on this computer anymore.")
+                settings_now = self._settings()
+                eff_vlm = (
+                    bool(options["visual_inspection_vlm"])
+                    if options.get("visual_inspection_vlm") is not None
+                    else bool(settings_now.get("local_vlm_inspection", False))
+                )
+                eff_ac = (
+                    bool(options["auto_correct"])
+                    if options.get("auto_correct") is not None
+                    else bool(settings_now.get("local_auto_correct", False))
+                )
+                if eff_ac:
+                    eff_vlm = True
                 photo_minutes = ob.PHOTO_MODELS[photo_model]["estimated_minutes"]
                 if image:
-                    end_image = str(options.get("end_image") or "").strip()
-                    if end_image and not Path(end_image).expanduser().is_file():
-                        raise ValueError("That end picture isn't on this computer anymore.")
                     items = self._studio_scene_items(
                         {"image": image, "shots": shots, "shape": shape},
                         video_model=video_model,
@@ -1994,30 +2086,34 @@ class StudioMixin:
                     vid_ver = None
                     try:
                         routed_vid = plan_intelligent_generation(
-                            prompt or shots[0],
+                            raw_scene_prompt or shots[0],
                             requested_action="scene",
                             starter_image=image,
+                            subject_refs=resolved_ref_set,
+                            guided_spec=scene_guided_spec,
                             input_mode="guided" if guided else "automatic",
                             model_preference="wan22_a14b" if video_model == "a14b" else "wan22_5b",
                             use_llm=False,
                         )
                         if routed_vid.ok and routed_vid.verification_record is not None:
                             vid_ver = routed_vid.verification_record.public()
+                            if end_image:
+                                end_resolved = str(Path(end_image).expanduser().resolve())
+                                vid_ver.setdefault("reference_requirements", []).append(
+                                    {
+                                        "asset_id": "end_frame_0",
+                                        "role": "end_keyframe",
+                                        "path": end_resolved,
+                                        "subject_id": "primary",
+                                        "origin": "user_source",
+                                        "asset_fingerprint": sha256_file(end_resolved) or "",
+                                        "preserve_identity": True,
+                                        "preserve_appearance": True,
+                                        "preserve_wardrobe": True,
+                                    }
+                                )
                     except Exception:
                         vid_ver = None
-                    settings_now = self._settings()
-                    eff_vlm = (
-                        bool(options["visual_inspection_vlm"])
-                        if options.get("visual_inspection_vlm") is not None
-                        else bool(settings_now.get("local_vlm_inspection", False))
-                    )
-                    eff_ac = (
-                        bool(options["auto_correct"])
-                        if options.get("auto_correct") is not None
-                        else bool(settings_now.get("local_auto_correct", False))
-                    )
-                    if eff_ac:
-                        eff_vlm = True
                     for it in items:
                         it.runtime["reference_selection"] = ref_selection_meta
                         if vid_ver is not None:
@@ -2029,6 +2125,21 @@ class StudioMixin:
                     total_minutes = len(shots) * local_engine.VIDEO_MODELS[video_model]["estimated_minutes"]
                     two_stage = False
                 else:
+                    vid_ver_cont = None
+                    try:
+                        routed_cont = plan_intelligent_generation(
+                            raw_scene_prompt or shots[0],
+                            requested_action="scene",
+                            subject_refs=resolved_ref_set,
+                            guided_spec=scene_guided_spec,
+                            input_mode="guided" if guided else "automatic",
+                            model_preference="wan22_a14b" if video_model == "a14b" else "wan22_5b",
+                            use_llm=False,
+                        )
+                        if routed_cont.ok and routed_cont.verification_record is not None:
+                            vid_ver_cont = routed_cont.verification_record.public()
+                    except Exception:
+                        vid_ver_cont = None
                     items = [
                         self._forge_photo_item(
                             prompt=prompt,
@@ -2044,6 +2155,10 @@ class StudioMixin:
                                     "shape": shape,
                                     "video_model": video_model,
                                     "vram_mode": vram_mode,
+                                    "end_image": end_image,
+                                    "visual_inspection_vlm": eff_vlm,
+                                    "auto_correct": eff_ac,
+                                    "verification_record": vid_ver_cont,
                                 },
                             },
                             reference_images=staged_subject_refs,
@@ -2051,6 +2166,13 @@ class StudioMixin:
                     ]
                     total_minutes = photo_minutes + len(shots) * local_engine.VIDEO_MODELS[video_model]["estimated_minutes"]
                     two_stage = True
+            # RC-19: Pin staged references for every queued item so LRU cache eviction never deletes active inputs!
+            mgr_pin = self._reference_manager()
+            for it in items:
+                for rk in ("INIT_IMAGE", "LAST_FRAME", "REF_IMAGE_1", "REF_IMAGE_2", "REF_IMAGE_3", "REF_IMAGE_4"):
+                    rv = it.job.asset_map.get(rk)
+                    if rv:
+                        mgr_pin.pin_staged(str(rv), it.id)
         except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
         queue_ids = self.queue.add_many(items)

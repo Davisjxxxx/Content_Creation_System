@@ -30,6 +30,8 @@ from .script_broker import GenerationBroker
 from .sdk_client import AvatarV2Client, RunLimitReached, RunStopped, SDKError
 
 ADAPTER_VERSION = "1.0"
+# RC-21: Honest packaging status — optional source-only translator, not exposed by default in packaged desktop UI.
+PACKAGED_STATUS = "source_only_optional"
 
 SUPPORTED_ENDPOINTS: tuple[str, ...] = (
     "POST /sdapi/v1/txt2img",

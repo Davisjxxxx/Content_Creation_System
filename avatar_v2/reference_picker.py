@@ -439,6 +439,10 @@ class LocalReferenceManager:
                 tmp = self.staging_dir / f".tmp_{checked.sha256[:20]}_{os.getpid()}{suffix}"
                 shutil.copy2(resolved, tmp)
                 os.replace(tmp, target)
+                try:
+                    os.utime(target, None)
+                except OSError:
+                    pass
                 copied = True
             else:
                 try:
@@ -471,10 +475,38 @@ class LocalReferenceManager:
             "source": "local",
         }
 
+    def pin_staged(self, staged_path: str | Path, job_id: str) -> None:
+        """Pin a staged reference file so LRU pruning cannot evict it while ``job_id`` is queued/running (RC-19)."""
+        resolved = str(Path(staged_path).expanduser().resolve(strict=False))
+        jid = str(job_id or "").strip()
+        if not jid:
+            return
+        with self._lock:
+            pins = getattr(self, "_pinned", None)
+            if pins is None:
+                pins = {}
+                self._pinned = pins
+            pins.setdefault(resolved, set()).add(jid)
+
+    def unpin_job(self, job_id: str) -> None:
+        """Release all staged reference pins held by a finished/cancelled job."""
+        jid = str(job_id or "").strip()
+        if not jid:
+            return
+        with self._lock:
+            pins = getattr(self, "_pinned", None)
+            if not pins:
+                return
+            for path_key in list(pins.keys()):
+                pins[path_key].discard(jid)
+                if not pins[path_key]:
+                    del pins[path_key]
+
     def _prune_staging_locked(self) -> None:
-        """Keep the ephemeral staging cache bounded by LRU mtime."""
+        """Keep the ephemeral staging cache bounded by LRU mtime, never evicting pinned active-job refs."""
         if not self.staging_dir.is_dir():
             return
+        pins = getattr(self, "_pinned", None) or {}
         media_files = [
             p
             for p in self.staging_dir.iterdir()
@@ -482,8 +514,10 @@ class LocalReferenceManager:
         ]
         if len(media_files) <= self._max_staged_files:
             return
-        media_files.sort(key=lambda p: p.stat().st_mtime)
-        for stale in media_files[: len(media_files) - self._max_staged_files]:
+        evictable = [p for p in media_files if not pins.get(str(p.resolve(strict=False)))]
+        evictable.sort(key=lambda p: p.stat().st_mtime)
+        need_drop = len(media_files) - self._max_staged_files
+        for stale in evictable[:need_drop]:
             try:
                 stale.unlink(missing_ok=True)
                 stale.with_suffix(".json").unlink(missing_ok=True)

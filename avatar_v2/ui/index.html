@@ -357,6 +357,10 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
     <p class="tiny" id="forgeShotHint">Split from your prompt automatically. Edit any line if you want it different.</p>
     <div class="shots" id="forgeShots"></div>
     <div class="row" style="margin-top:8px"><button class="mini" id="forgeAddShot" onclick="forgeAddShot()">+ Add a shot</button><button class="mini" onclick="forgeSplit()">Re-split from my prompt</button></div>
+    <details id="forgeEndFrameBox" style="margin-top:10px">
+      <summary class="tiny" style="cursor:pointer">End picture (optional · first-and-last-frame video)</summary>
+      <div class="thumbs" id="forgeEndImages" style="margin-top:8px"></div>
+    </details>
   </div>
   <button class="btn primary go" id="goForge" onclick="forgeGo()">Make it</button>
   <div class="note" id="noteForge"></div>
@@ -499,7 +503,7 @@ const ST_DEFAULT_ANGLES=['identity_three_quarter_left','identity_three_quarter_r
 const MOVE_IDEAS=['She smiles warmly and nods.','She waves hello to the camera.','She explains something with natural hand gestures.','She turns to face the camera and smiles.','She laughs naturally, then looks back at the camera.'];
 const st={data:null,engine:null,thumbs:new Map(),localMeta:new Map(),recipe:null,look:'natural',actVideo:'',moveImage:'',sceneImage:'',actImage:'',anglesImage:'',sceneShots:[''],priceTimer:null,sig:{},talkerTimer:null,lastJobs:0,noteUntil:{},libKind:'all',libItems:[],libShown:60,libImages:[],pickShown:{},pickExpanded:{},presenterAddOpen:false,
   opts:{stCount:'4',stTalkMode:'type',stActBody:'body',stActShape:'tall',moveEngine:'best',moveSeconds:'5',moveShape:'tall',sceneShape:'tall',forgeAction:'scene',forgeCount:'2',forgeInputMode:'automatic'},engineChosen:false,
-  forge:{data:null,image:'',shots:[],edited:false,priceTimer:null,noteUntil:0,guided:{attributes:{},locked:{},randomized:{},seed:41001},subjectRefs:[],profiles:[],myStuffOpen:false},
+  forge:{data:null,image:'',endImage:'',shots:[],edited:false,priceTimer:null,noteUntil:0,guided:{attributes:{},locked:{},randomized:{},seed:41001},subjectRefs:[],profiles:[],myStuffOpen:false},
   script:{report:null,sandbox:null,configs:[],refs:[],run:null,record:null}};
 const SCENE_IDEAS=['She walks into the room and smiles at the camera.','She sits down at the desk and opens a laptop.','She explains a point with natural hand gestures.','The camera slowly pushes in as she keeps talking.','She laughs, then turns back to the camera.'];
 // Each shot starts from the previous shot's last frame, so every line begins where the last one ended:
@@ -1102,6 +1106,7 @@ function forgeOptions(){const o={action:st.opts.forgeAction||'scene',prompt:$('f
   if(o.auto_correct)o.visual_inspection_vlm=true;
   if(o.action==='photo')o.count=Number(st.opts.forgeCount);
   if(o.action==='scene'&&st.forge.edited)o.shots=st.forge.shots.map(t=>t.trim()).filter(Boolean);
+  if(o.action==='scene'&&st.forge.endImage)o.end_image=st.forge.endImage;
   const g=forgeGuidedPayload();if(g)o.guided=g;
   const sr=forgeSubjectRefsPayload();if(sr)o.subject_references=sr;
   return o}
@@ -1264,6 +1269,7 @@ async function forgeLoad(){
   if($('forgeAutoCorrect'))$('forgeAutoCorrect').checked=!!r.local_auto_correct;
   await stLoadImages();  // so "Choose from My stuff…" has the pictures to offer
   stPickImages('forgeImages',()=>st.forge.image,v=>st.forge.image=v,{workflow:'image_to_video',onChange:forgePriceSoon});
+  if($('forgeEndImages'))stPickImages('forgeEndImages',()=>st.forge.endImage,v=>st.forge.endImage=v,{workflow:'image_to_video',onChange:forgePriceSoon});
   forgeRenderGuided();
   st.forge.profiles=r.character_profiles||[];
   subjRender();

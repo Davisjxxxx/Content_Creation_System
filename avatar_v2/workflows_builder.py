@@ -996,5 +996,6 @@ BUILTIN_BUILDERS = {
     "wan22": build_wan_flf2v_workflow,
     "wan22_funcontrol": build_wan_funcontrol_workflow,
     "flux2_txt2img": build_flux2_txt2img_workflow,
+    "flux2_masked_edit": build_flux2_masked_edit_workflow,
     "upscale": build_upscale_workflow,
 }

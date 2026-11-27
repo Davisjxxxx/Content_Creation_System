@@ -284,10 +284,33 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             engine_restart=self._engine_restart_hook,
         )
         settings = self._settings()
+        # RC-20: Environment overrides (AVATAR_V2_GPU_AUTOCLEAN / THRESHOLD / CHECK_INTERVAL)
+        # MUST always take precedence over desktop.json / DEFAULT_SETTINGS!
+        env_auto = os.getenv("AVATAR_V2_GPU_AUTOCLEAN")
+        env_thresh = os.getenv("AVATAR_V2_GPU_THRESHOLD")
+        env_interval = os.getenv("AVATAR_V2_GPU_CHECK_INTERVAL")
+        eff_enabled = (
+            env_auto.strip().lower() not in {"0", "false", "no", "off"}
+            if env_auto is not None and env_auto.strip() != ""
+            else bool(settings.get("gpu_autoclean", True))
+        )
+        eff_threshold = float(settings.get("gpu_threshold", 0.85))
+        if env_thresh is not None and env_thresh.strip() != "":
+            try:
+                tval = float(env_thresh.strip())
+                eff_threshold = tval / 100.0 if tval > 1.0 else tval
+            except ValueError:
+                pass
+        eff_interval = float(settings.get("gpu_check_interval_s", 5))
+        if env_interval is not None and env_interval.strip() != "":
+            try:
+                eff_interval = float(env_interval.strip())
+            except ValueError:
+                pass
         self.queue.memory_manager.update_settings(
-            enabled=bool(settings.get("gpu_autoclean", True)),
-            threshold=float(settings.get("gpu_threshold", 0.85)),
-            check_interval_s=float(settings.get("gpu_check_interval_s", 5)),
+            enabled=eff_enabled,
+            threshold=eff_threshold,
+            check_interval_s=eff_interval,
         )
 
     def _settings(self) -> dict[str, Any]:
@@ -913,40 +936,69 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             if not ok_budget:
                 raise RuntimeError(reason)
 
-        # Always verify Ollama VRAM is released before submitting an incompatible ComfyUI job!
+        # RC-14: Always verify Ollama VRAM is actually released before submitting a GPU ComfyUI job!
         settings = self._settings()
         ollama_url = str(settings.get("vision_classifier_url") or DEFAULT_SETTINGS["vision_classifier_url"])
-        verify_ollama_vram_released(ollama_url, timeout_s=8.0)
+        rel = verify_ollama_vram_released(ollama_url, timeout_s=8.0)
+        if item.runtime.get("visual_inspection_vlm") and not rel.get("released"):
+            raise RuntimeError(
+                f"Refusing ComfyUI corrective render because Ollama VRAM release was not verified "
+                f"(status={rel.get('status', 'unknown')}, detail={rel.get('error') or rel.get('active_vram_models')})."
+            )
 
         provider = ComfyUIProvider(item.provider_config)
-        is_9b = "9b" in str(step.model_id or "").lower()
-        photo_cfg = ob.PHOTO_MODELS["9b" if is_9b else "4b"]
         asset_map = dict(item.job.asset_map or {})
-        asset_map.update(
-            {
-                "FORGE_UNET": photo_cfg["unet"],
-                "FORGE_TEXT_ENCODER": photo_cfg["text_encoder"],
-                "FORGE_VAE": ob.SHARED_MODELS["FORGE_VAE"][1],
-                "PROMPT": step.revised_prompt,
-                "NEGATIVE_PROMPT": ob.photo_negative_for_prompt(step.revised_prompt),
-                "WIDTH": int(step.generation_settings.get("width") or item.job.asset_map.get("WIDTH") or item.job.shot.width or 896),
-                "HEIGHT": int(step.generation_settings.get("height") or item.job.asset_map.get("HEIGHT") or item.job.shot.height or 1280),
-                "STEPS": int(photo_cfg["steps"]),
-                "CFG": float(photo_cfg["cfg"]),
-                "SEED": int(step.seed),
-                "OUTPUT_PREFIX": f"avatar_v2/cor_{item.id[:8]}_{step.strategy}",
-            }
-        )
-        for i in range(1, 5):
-            asset_map.pop(f"REF_IMAGE_{i}", None)
-        for idx, rpath in enumerate((step.reference_paths or [])[:4], start=1):
-            if rpath and Path(rpath).expanduser().is_file():
-                asset_map[f"REF_IMAGE_{idx}"] = str(Path(rpath).expanduser().resolve())
+        workflow_target = str(step.workflow or "")
+        if step.strategy == "video_regeneration" or workflow_target.endswith(".json"):
+            from . import local_engine
+
+            if not workflow_target or not Path(workflow_target).is_file():
+                workflow_target = str(local_engine.WORKFLOW)
+            asset_map.update(
+                {
+                    "PROMPT": step.revised_prompt,
+                    "WAN_SEED": int(step.seed),
+                    "SEED": int(step.seed),
+                    "WAN_PREFIX": f"avatar_v2/cor_{item.id[:8]}_{step.strategy}",
+                    "OUTPUT_PREFIX": f"avatar_v2/cor_{item.id[:8]}_{step.strategy}",
+                }
+            )
+        else:
+            is_9b = "9b" in str(step.model_id or "").lower()
+            photo_cfg = ob.PHOTO_MODELS["9b" if is_9b else "4b"]
+            asset_map.update(
+                {
+                    "FORGE_UNET": photo_cfg["unet"],
+                    "FORGE_TEXT_ENCODER": photo_cfg["text_encoder"],
+                    "FORGE_VAE": ob.SHARED_MODELS["FORGE_VAE"][1],
+                    "PROMPT": step.revised_prompt,
+                    "NEGATIVE_PROMPT": ob.photo_negative_for_prompt(step.revised_prompt),
+                    "WIDTH": int(step.generation_settings.get("width") or item.job.asset_map.get("WIDTH") or item.job.shot.width or 896),
+                    "HEIGHT": int(step.generation_settings.get("height") or item.job.asset_map.get("HEIGHT") or item.job.shot.height or 1280),
+                    "STEPS": int(photo_cfg["steps"]),
+                    "CFG": float(photo_cfg["cfg"]),
+                    "SEED": int(step.seed),
+                    "OUTPUT_PREFIX": f"avatar_v2/cor_{item.id[:8]}_{step.strategy}",
+                }
+            )
+            if workflow_target == "builtin:flux2_masked_edit":
+                mask_p = str(getattr(step, "mask_path", "") or "").strip()
+                if not mask_p or not Path(mask_p).expanduser().is_file():
+                    raise RuntimeError("Masked edit requires an explicit existing mask image file.")
+                src_p = str(step.reference_paths[0]) if step.reference_paths else str(item.outputs[-1])
+                asset_map["SOURCE_IMAGE"] = str(Path(src_p).expanduser().resolve())
+                asset_map["MASK_IMAGE"] = str(Path(mask_p).expanduser().resolve())
+                asset_map.setdefault("FLUX_EDIT_DENOISE", float(step.generation_settings.get("denoise") or 0.72))
+            for i in range(1, 5):
+                asset_map.pop(f"REF_IMAGE_{i}", None)
+            for idx, rpath in enumerate((step.reference_paths or [])[:4], start=1):
+                if rpath and Path(rpath).expanduser().is_file():
+                    asset_map[f"REF_IMAGE_{idx}"] = str(Path(rpath).expanduser().resolve())
 
         cor_job = item.job.model_copy(update={"asset_map": asset_map})
         cancel_ev = self.queue.get_cancel_event(item.id) if hasattr(self, "queue") and self.queue is not None else None
         t0 = time.monotonic()
-        res = RenderQueue._call_provider_render(provider, step.workflow, cor_job, cancel_event=cancel_ev)
+        res = RenderQueue._call_provider_render(provider, workflow_target, cor_job, cancel_event=cancel_ev)
         elapsed_ms = round((time.monotonic() - t0) * 1000.0, 1)
         resolved = self.queue._resolve_outputs(item, res.get("outputs") or [])
         if not resolved or not Path(resolved[0]).is_file():
@@ -990,7 +1042,14 @@ class DesktopAPI(StudioMixin, PresenterMixin):
 
         if use_vlm and comfy_warm and item.provider_config.provider == "comfyui":
             try:
-                ComfyUIProvider(item.provider_config).free_memory(unload_models=True)
+                # RC-14: Wait via GPUMemoryManager for verified ComfyUI VRAM release before VLM!
+                ev = self.queue.memory_manager.maybe_cleanup(
+                    ComfyUIProvider(item.provider_config),
+                    reason="pre-vlm-unload",
+                    force=True,
+                    unload_models=True,
+                )
+                item.memory_events.append(ev)
                 self.queue._last_local_model_id = None
                 self.queue._last_local_workflow = None
                 comfy_warm = False
@@ -1051,10 +1110,16 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                     cancel_ev.set()
 
             def _re_inspect(cand_path: str, ver_rec: GenerationVerificationRecord):
-                # Release ComfyUI weights before sequential GPU VLM reinspection when VLM is enabled.
+                # RC-14: Wait via GPUMemoryManager for verified ComfyUI unload before sequential GPU VLM reinspection.
                 if use_vlm:
                     try:
-                        ComfyUIProvider(item.provider_config).free_memory(unload_models=True)
+                        ev = self.queue.memory_manager.maybe_cleanup(
+                            ComfyUIProvider(item.provider_config),
+                            reason="pre-vlm-reinspect-unload",
+                            force=True,
+                            unload_models=True,
+                        )
+                        item.memory_events.append(ev)
                         self.queue._last_local_model_id = None
                         self.queue._last_local_workflow = None
                     except Exception:

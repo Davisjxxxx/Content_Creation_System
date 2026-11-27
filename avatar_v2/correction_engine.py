@@ -189,6 +189,8 @@ class PlannedCorrectionStep:
     preserved_satisfied_criteria: list[str]
     expected_improvement: str
     generation_settings: dict[str, Any]
+    mask_path: str = ""
+    mask_provenance: Literal["", "user", "harness"] = ""
     requires_human_review: bool = False
     stop_reason: str = ""
 
@@ -267,6 +269,8 @@ def select_correction_step(
     allow_targeted_edit: bool = True,
     registry: ModelRegistry = DEFAULT_REGISTRY,
     prefer_full_regeneration: bool = False,
+    explicit_mask_path: str | None = None,
+    mask_provenance: Literal["", "user", "harness"] = "",
 ) -> PlannedCorrectionStep:
     """Select the least disruptive verified correction strategy for failed mandatory criteria."""
     media_kind = record.expected_output.media_kind
@@ -314,34 +318,12 @@ def select_correction_step(
     workflow = model_spec.workflow if model_spec else record.selected_workflow
     next_seed = int(base_seed) + attempt_number * 137
 
-    # --- Video correction path (bounded max-1 regeneration or keyframe correction) ---
+    # --- Video correction path (bounded max-1 regeneration using _MEIPASS-aware Wan workflow; RC-12) ---
+    # Note: Single-step PNG-only keyframe_correction is disabled because VideoInspector requires an MP4 output.
     if media_kind == "video":
-        if "revise_ending_keyframe" in rec_types and "keyframe_correction" not in prior_strategies:
-            strategy = "keyframe_correction"
-            is_local = True
-            k_model = "flux2_9b"
-            k_wf = "builtin:flux2_txt2img"
-            ref_paths = user_ref_paths[:3]
-            ref_changes = ["Using user source references to synthesize a consistent ending keyframe before Wan FLF2V."]
-            exp = "Align ending keyframe environment, lighting, and subject traits before video regeneration."
-            prompt = build_corrective_prompt(
-                record, failed_assessments=failed, satisfied_assessments=satisfied, strategy=strategy, is_localized_edit=True
-            )
-            return PlannedCorrectionStep(
-                strategy=strategy,
-                is_localized_edit=is_local,
-                model_id=k_model,
-                workflow=k_wf,
-                revised_prompt=prompt,
-                reference_paths=ref_paths,
-                reference_changes=ref_changes,
-                seed=next_seed,
-                failed_criterion_ids=failed_ids,
-                supporting_evidence=evidence,
-                preserved_satisfied_criteria=preserved_ids,
-                expected_improvement=exp,
-                generation_settings={"width": 896, "height": 1280, "frames": 1, "seed": next_seed},
-            )
+        from . import local_engine
+
+        wan_workflow = str(local_engine.WORKFLOW) if local_engine.WORKFLOW.is_file() else workflow
         strategy = "video_regeneration"
         prompt = build_corrective_prompt(
             record, failed_assessments=failed, satisfied_assessments=satisfied, strategy=strategy, is_localized_edit=False
@@ -350,7 +332,7 @@ def select_correction_step(
             strategy=strategy,
             is_localized_edit=False,
             model_id=model_id,
-            workflow=workflow,
+            workflow=wan_workflow,
             revised_prompt=prompt,
             reference_paths=user_ref_paths[:1],  # Never silently replace user starter_image!
             reference_changes=["Preserved original user starter image verbatim for bounded video regeneration."],
@@ -419,7 +401,42 @@ def select_correction_step(
                 stop_reason="missing_required_orientation_reference",
             )
 
-    # 2. Prefer localized FLUX.2 ReferenceLatent edit FIRST when candidate exists and edit is allowed!
+    # 2a. Explicit-mask localized edit ONLY when an explicit user/harness mask file is supplied (RC-12).
+    if (
+        allow_targeted_edit
+        and not prefer_full_regeneration
+        and explicit_mask_path
+        and Path(explicit_mask_path).expanduser().is_file()
+        and "masked_localized_edit" not in prior_strategies
+        and bool(current_best_path)
+        and Path(current_best_path).expanduser().is_file()
+    ):
+        strategy = "masked_localized_edit"
+        prov: Literal["", "user", "harness"] = mask_provenance or "user"
+        ref_paths = [current_best_path] + [p for p in user_ref_paths if p != current_best_path]
+        ref_paths = ref_paths[:4]
+        prompt = build_corrective_prompt(
+            record, failed_assessments=failed, satisfied_assessments=satisfied, strategy="targeted_image_edit", is_localized_edit=True
+        )
+        return PlannedCorrectionStep(
+            strategy=strategy,
+            is_localized_edit=True,
+            model_id=model_id,
+            workflow="builtin:flux2_masked_edit",
+            revised_prompt=prompt,
+            reference_paths=ref_paths,
+            reference_changes=[f"Explicit {prov}-supplied mask applied via builtin:flux2_masked_edit on '{Path(current_best_path).name}'."],
+            seed=next_seed,
+            failed_criterion_ids=failed_ids,
+            supporting_evidence=evidence,
+            preserved_satisfied_criteria=preserved_ids,
+            expected_improvement="Fix failed requirement(s) strictly inside explicit mask with zero outside-mask pixel drift.",
+            generation_settings={"width": record.expected_output.width, "height": record.expected_output.height, "frames": 1, "seed": next_seed, "denoise": 0.72},
+            mask_path=str(Path(explicit_mask_path).expanduser().resolve()),
+            mask_provenance=prov,
+        )
+
+    # 2b. Prefer localized FLUX.2 ReferenceLatent edit FIRST when candidate exists and edit is allowed!
     can_edit = (
         allow_targeted_edit
         and not prefer_full_regeneration
@@ -656,6 +673,8 @@ class CorrectionCoordinator:
         status_callback: Callable[[str], None] | None = None,
         prefer_full_regeneration: bool = False,
         current_model_id: str | None = None,
+        explicit_mask_path: str | None = None,
+        mask_provenance: Literal["", "user", "harness"] = "",
     ) -> CorrectionSessionReport:
         """Execute up to ``budget.limit_for_media(media_kind)`` validated corrections and retain the best candidate."""
         t_session = time.monotonic()
@@ -712,6 +731,8 @@ class CorrectionCoordinator:
                 allow_targeted_edit=budget.allow_targeted_edit,
                 registry=self.registry,
                 prefer_full_regeneration=prefer_full_regeneration,
+                explicit_mask_path=explicit_mask_path,
+                mask_provenance=mask_provenance,
             )
 
             # Unsupported or human-review escalation stops cleanly without wasting GPU!

@@ -16,7 +16,7 @@ from typing import Any, Callable, Literal
 from . import cloud_ledger
 from .errors import classify_exception
 from .gpu_memory import GPUMemoryManager
-from .integrity import hash_files
+from .integrity import hash_files, sha256_file
 from .models import ProviderConfig, RenderJob
 from .ownership import DirectoryWriterLock, read_json_safe
 from .providers import ComfyUIProvider, RunwayProvider
@@ -84,6 +84,112 @@ def write_durable(path: Path, text: str) -> None:
         raise
 
 
+def _snapshot_submitted_params(item: "QueuedRender", job: RenderJob) -> dict[str, Any]:
+    """Capture the actual effective graph parameters submitted to the renderer (RC-13)."""
+    amap = dict(job.asset_map or {})
+    shot = job.shot
+
+    def _int_opt(*keys: str, default: int) -> int:
+        for k in keys:
+            val = amap.get(k)
+            if val is not None and str(val).strip() != "":
+                try:
+                    return int(float(val))
+                except (TypeError, ValueError):
+                    continue
+        return default
+
+    seed = _int_opt("SEED", "WAN_SEED", default=int(shot.seed))
+    width = _int_opt("WIDTH", "WAN_WIDTH", default=int(item.runtime.get("width") or shot.width))
+    height = _int_opt("HEIGHT", "WAN_HEIGHT", default=int(item.runtime.get("height") or shot.height))
+    frames = _int_opt("FRAMES", "WAN_LENGTH", default=int(item.runtime.get("frames") or shot.frames))
+    steps = amap.get("STEPS") if amap.get("STEPS") is not None else item.runtime.get("steps")
+    cfg = amap.get("CFG") if amap.get("CFG") is not None else item.runtime.get("cfg")
+    model_file = (
+        amap.get("FORGE_UNET")
+        or amap.get("WAN_HIGH_MODEL")
+        or amap.get("WAN_DIFFUSION_MODEL")
+        or item.runtime.get("model")
+    )
+    wf_sha = ""
+    if item.workflow and not str(item.workflow).startswith(("builtin:", "runway:")):
+        wf_p = Path(str(item.workflow)).expanduser()
+        if wf_p.is_file():
+            wf_sha = sha256_file(wf_p) or ""
+    ref_keys = ("INIT_IMAGE", "LAST_FRAME", "SOURCE_IMAGE", "MASK_IMAGE", "REF_IMAGE_1", "REF_IMAGE_2", "REF_IMAGE_3", "REF_IMAGE_4")
+    staged_refs = {k: str(amap[k]) for k in ref_keys if amap.get(k)}
+    return {
+        "seed": seed,
+        "width": width,
+        "height": height,
+        "frames": frames,
+        "steps": steps,
+        "cfg": cfg,
+        "model": str(model_file) if model_file is not None else None,
+        "workflow": str(item.workflow or ""),
+        "workflow_sha256": wf_sha,
+        "staged_references": staged_refs,
+    }
+
+
+def _probe_output_media(outputs: list[str]) -> list[dict[str, Any]]:
+    """Probe actual saved PNG/JPG/MP4 artifacts on disk via PIL / ffprobe (RC-13)."""
+    from PIL import Image, ImageOps
+
+    probed: list[dict[str, Any]] = []
+    for raw in outputs:
+        p = Path(str(raw)).expanduser()
+        entry: dict[str, Any] = {"path": str(p), "exists": p.is_file()}
+        if not p.is_file():
+            probed.append(entry)
+            continue
+        try:
+            entry["size_bytes"] = p.stat().st_size
+            entry["sha256"] = sha256_file(p) or ""
+        except OSError:
+            pass
+        suffix = p.suffix.lower()
+        if suffix in VIDEO_SUFFIXES:
+            entry["kind"] = "video"
+            try:
+                from .qa import ffprobe_video
+
+                info = ffprobe_video(p)
+                entry["width"] = int(info.get("width") or 0)
+                entry["height"] = int(info.get("height") or 0)
+                nb_frames = info.get("nb_frames")
+                if nb_frames and str(nb_frames).isdigit():
+                    entry["frames"] = int(nb_frames)
+                dur = float(info.get("duration") or 0.0)
+                entry["duration_s"] = round(dur, 3)
+                rate = str(info.get("avg_frame_rate") or info.get("r_frame_rate") or "")
+                num, _, den = rate.partition("/")
+                if den and float(den):
+                    entry["fps"] = round(float(num) / float(den), 3)
+                elif rate:
+                    entry["fps"] = round(float(rate), 3)
+                if "frames" not in entry and entry.get("fps") and dur > 0:
+                    entry["frames"] = int(round(float(entry["fps"]) * dur))
+            except Exception:
+                pass
+        elif suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
+            entry["kind"] = "image"
+            try:
+                with Image.open(p) as im:
+                    oriented = ImageOps.exif_transpose(im)
+                    w, h = oriented.size
+                    entry["width"] = int(w)
+                    entry["height"] = int(h)
+                    entry["frames"] = 1
+                    entry["format"] = str(im.format or suffix.lstrip(".").upper())
+            except Exception:
+                pass
+        else:
+            entry["kind"] = "file"
+        probed.append(entry)
+    return probed
+
+
 def _cloud_memory_event(reason: str) -> dict[str, Any]:
     return {
         "reason": reason,
@@ -118,12 +224,20 @@ class QueuedRender:
     candidate_qa: dict[str, Any] = field(default_factory=dict)
     cloud_receipt: dict[str, Any] = field(default_factory=dict)
     output_hashes: dict[str, str] = field(default_factory=dict)
+    submitted_params: dict[str, Any] = field(default_factory=dict)
+    observed_media: list[dict[str, Any]] = field(default_factory=list)
     queued_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
 
     def public(self) -> dict[str, Any]:
         shot = self.job.shot
+        sub = self.submitted_params or {}
+        obs0 = next((m for m in (self.observed_media or []) if m.get("exists") and m.get("width")), {})
+        eff_seed = sub.get("seed") if sub.get("seed") is not None else shot.seed
+        eff_w = obs0.get("width") or sub.get("width") or self.runtime.get("width") or shot.width
+        eff_h = obs0.get("height") or sub.get("height") or self.runtime.get("height") or shot.height
+        eff_frames = obs0.get("frames") or sub.get("frames") or self.runtime.get("frames") or shot.frames
         return {
             "id": self.id,
             "job_id": self.job.job_id,
@@ -133,10 +247,12 @@ class QueuedRender:
             "cloud_receipt": self.cloud_receipt,
             "cloud_estimate": self.runtime.get("estimate_credits") if self.provider_config.provider != "comfyui" else None,
             "output_hashes": self.output_hashes,
+            "submitted_params": self.submitted_params,
+            "observed_media": self.observed_media,
             "candidate_slot": self.runtime.get("candidate_slot"),
             "studio_action": self.runtime.get("studio_action"),
             "profile": self.profile,
-            "seed": shot.seed,
+            "seed": eff_seed,
             "status": self.status,
             "phase": self.phase,
             "error": self.error,
@@ -160,13 +276,13 @@ class QueuedRender:
             ),
             "avatar": self.job.avatar.display_name,
             "prompt": self.job.prompt[:400],
-            "model": self.runtime.get("model"),
+            "model": self.runtime.get("model") or sub.get("model"),
             "workflow": Path(self.workflow).name if self.workflow else "",
-            "resolution": [shot.width, shot.height],
-            "frames": shot.frames,
-            "duration_s": shot.duration_s,
-            "steps": self.runtime.get("steps"),
-            "cfg": self.runtime.get("cfg"),
+            "resolution": [int(eff_w), int(eff_h)],
+            "frames": int(eff_frames),
+            "duration_s": obs0.get("duration_s") or shot.duration_s,
+            "steps": sub.get("steps") if sub.get("steps") is not None else self.runtime.get("steps"),
+            "cfg": sub.get("cfg") if sub.get("cfg") is not None else self.runtime.get("cfg"),
         }
 
 
@@ -354,6 +470,8 @@ class RenderQueue:
             "candidate_qa": item.candidate_qa,
             "cloud_receipt": item.cloud_receipt,
             "output_hashes": item.output_hashes,
+            "submitted_params": item.submitted_params,
+            "observed_media": item.observed_media,
             "queued_at": item.queued_at,
             "started_at": item.started_at,
             "finished_at": item.finished_at,
@@ -434,6 +552,8 @@ class RenderQueue:
             candidate_qa=dict(data.get("candidate_qa") or {}),
             cloud_receipt=dict(data.get("cloud_receipt") or {}),
             output_hashes=dict(data.get("output_hashes") or {}),
+            submitted_params=dict(data.get("submitted_params") or {}),
+            observed_media=list(data.get("observed_media") or []),
             queued_at=float(data.get("queued_at") or time.time()),
             started_at=data.get("started_at"),
             finished_at=data.get("finished_at"),
@@ -957,6 +1077,8 @@ class RenderQueue:
             cancel_event = self.get_cancel_event(item.id)
             try:
                 with self._lock:
+                    item.submitted_params = _snapshot_submitted_params(item, job)
+                    item.runtime["submitted_params"] = item.submitted_params
                     item.phase = "submitted"
                 result = self._call_provider_render(
                     provider,
@@ -969,6 +1091,7 @@ class RenderQueue:
                 item.gpu_trace = self.memory_manager.stop_trace()
         else:
             item.memory_events.append(_cloud_memory_event(f"pre-render:{item.profile}"))
+            item.submitted_params = _snapshot_submitted_params(item, job)
             if item.prompt_id:
                 job.asset_map["RUNWAY_RESUME_TASK_ID"] = item.prompt_id
             else:
@@ -993,6 +1116,7 @@ class RenderQueue:
         if item.runtime.get("extract_candidate_frame"):
             self._extract_candidate_frame(item)
         item.output_hashes = hash_files(item.outputs)
+        item.observed_media = _probe_output_media(item.outputs)
 
     def _run_candidate_qa(self, item: QueuedRender, *, render_succeeded: bool = True) -> None:
         has_hook = bool(item.runtime.get("candidate_qa") or item.runtime.get("verification_record"))
@@ -1131,6 +1255,7 @@ class RenderQueue:
                 if item.outputs:
                     try:
                         item.output_hashes = hash_files(item.outputs)
+                        item.observed_media = _probe_output_media(item.outputs)
                     except OSError:
                         pass
 

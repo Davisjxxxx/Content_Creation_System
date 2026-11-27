@@ -63,7 +63,16 @@ _DYNAMIC_ASSET = re.compile(r"^(REF_IMAGE|IDENTITY_REF|BODY_REF|HAIR_REF|WARDROB
 
 
 def _is_asset_key(key: str) -> bool:
-    fixed = {"INIT_IMAGE", "LAST_FRAME", "MOTION_VIDEO", "SCENE_IMAGE", "AUDIO", "SOURCE_VIDEO"}
+    fixed = {
+        "INIT_IMAGE",
+        "LAST_FRAME",
+        "MOTION_VIDEO",
+        "SCENE_IMAGE",
+        "AUDIO",
+        "SOURCE_VIDEO",
+        "SOURCE_IMAGE",
+        "MASK_IMAGE",
+    }
     return key in fixed or bool(_DYNAMIC_ASSET.match(key))
 
 

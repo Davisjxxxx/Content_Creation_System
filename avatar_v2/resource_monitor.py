@@ -565,25 +565,42 @@ class ResourceGuard:
         swap_rate = 0.0
         if host_stats.pswpin is not None and host_stats.pswpout is not None:
             total_pages = host_stats.pswpin + host_stats.pswpout
-            # Rolling window (~5s) with minimum 1.0s span so rapid polling neither amplifies
-            # a 1-page glitch into a false spike NOR conceals sustained paging by resetting dt!
-            anchor: tuple[float, int] | None = None
-            for old_ts, old_pages in self._swap_history:
-                if ts - old_ts >= 1.0:
-                    anchor = (old_ts, old_pages)
-                    break
-            if anchor is not None:
-                dt = max(ts - anchor[0], 1.0)
-                swap_rate = max(total_pages - anchor[1], 0) / dt
-            elif self._last_sample_ts is not None and self._last_swap_pages is not None and (ts - self._last_sample_ts) >= 1.0:
-                dt = ts - self._last_sample_ts
-                swap_rate = max(total_pages - self._last_swap_pages, 0) / dt
+            # RC-14: Time-bucketed counter anchors (0.25s resolution over rolling 8s window).
+            # Invariant across 10ms / 20ms / 100ms / 2s / jittered polling, and resets cleanly
+            # on stale gaps (>30s) or kernel counter resets / backward clock jumps!
+            if (
+                self._last_sample_ts is not None
+                and (ts < self._last_sample_ts or (ts - self._last_sample_ts) > 30.0)
+            ) or (self._last_swap_pages is not None and total_pages < self._last_swap_pages):
+                self._swap_history.clear()
+                self._last_sample_ts = ts
+                self._last_swap_pages = total_pages
+                self._swap_history.append((ts, total_pages))
+            else:
+                anchor: tuple[float, int] | None = None
+                for old_ts, old_pages in self._swap_history:
+                    if 1.0 <= (ts - old_ts) <= 10.0 and total_pages >= old_pages:
+                        anchor = (old_ts, old_pages)
+                        break
+                if anchor is not None:
+                    dt = ts - anchor[0]
+                    swap_rate = max(total_pages - anchor[1], 0) / dt
+                elif (
+                    self._last_sample_ts is not None
+                    and self._last_swap_pages is not None
+                    and 1.0 <= (ts - self._last_sample_ts) <= 30.0
+                    and total_pages >= self._last_swap_pages
+                ):
+                    dt = ts - self._last_sample_ts
+                    swap_rate = max(total_pages - self._last_swap_pages, 0) / dt
 
-            self._swap_history.append((ts, total_pages))
-            while len(self._swap_history) > 2 and (ts - self._swap_history[0][0]) > 6.0:
-                self._swap_history.popleft()
-            self._last_sample_ts = ts
-            self._last_swap_pages = total_pages
+                # Record at most one anchor per 0.25s bucket so 10ms polling never evicts 1s+ history!
+                if not self._swap_history or (ts - self._swap_history[-1][0]) >= 0.25:
+                    self._swap_history.append((ts, total_pages))
+                while len(self._swap_history) > 2 and (ts - self._swap_history[0][0]) > 8.0:
+                    self._swap_history.popleft()
+                self._last_sample_ts = ts
+                self._last_swap_pages = total_pages
 
         psi_pressure = (host_stats.psi_some_avg10 or 0.0) >= PSI_ACTIVE_AVG10 or (host_stats.psi_full_avg10 or 0.0) >= 2.0
         active_pressure = swap_rate >= SWAP_ACTIVE_PAGES_PER_S or psi_pressure

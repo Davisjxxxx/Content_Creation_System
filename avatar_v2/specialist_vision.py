@@ -344,9 +344,20 @@ def generate_region_mask(
     feather_px: int = 18,
     shape: Literal["rect", "ellipse"] = "rect",
     out_path: str | Path | None = None,
+    image_path: str | Path | None = None,
 ) -> Image.Image:
-    """Create a white-on-black edit mask (white = editable region, black = strictly preserved region)."""
-    mask = Image.new("L", (int(width), int(height)), 0)
+    """Create a white-on-black edit mask (white = editable region, black = strictly preserved region).
+
+    When ``image_path`` is supplied, opens it with ``ImageOps.exif_transpose`` so mask dimensions
+    match the exact EXIF-oriented pixel canvas (RC-12).
+    """
+    if image_path is not None:
+        with Image.open(Path(image_path).expanduser()) as src_im:
+            oriented = ImageOps.exif_transpose(src_im)
+            width, height = oriented.size
+    w_i = max(1, int(width))
+    h_i = max(1, int(height))
+    mask = Image.new("L", (w_i, h_i), 0)
     draw = ImageDraw.Draw(mask)
 
     zones_map: dict[str, tuple[float, float, float, float]] = {
@@ -364,10 +375,10 @@ def generate_region_mask(
         norm_list.append(zones_map["center"])
 
     for x0_p, y0_p, x1_p, y1_p in norm_list:
-        x0 = int(max(0.0, min(100.0, x0_p - pad_pct)) / 100.0 * width)
-        y0 = int(max(0.0, min(100.0, y0_p - pad_pct)) / 100.0 * height)
-        x1 = int(max(0.0, min(100.0, x1_p + pad_pct)) / 100.0 * width)
-        y1 = int(max(0.0, min(100.0, y1_p + pad_pct)) / 100.0 * height)
+        x0 = max(0, min(w_i - 1, int(round(max(0.0, min(100.0, x0_p - pad_pct)) / 100.0 * w_i))))
+        y0 = max(0, min(h_i - 1, int(round(max(0.0, min(100.0, y0_p - pad_pct)) / 100.0 * h_i))))
+        x1 = max(0, min(w_i, int(round(max(0.0, min(100.0, x1_p + pad_pct)) / 100.0 * w_i))))
+        y1 = max(0, min(h_i, int(round(max(0.0, min(100.0, y1_p + pad_pct)) / 100.0 * h_i))))
         if x1 <= x0 or y1 <= y0:
             continue
         if shape == "ellipse":
@@ -392,7 +403,12 @@ def measure_outside_mask_preservation(
     *,
     change_threshold: int = 3,
 ) -> dict[str, Any]:
-    """Quantitatively measure pixel changes inside vs outside the intended edit mask (Section 7)."""
+    """Quantitatively measure pixel changes inside vs outside the intended edit mask (Section 7 / RC-23).
+
+    Reports BOTH:
+    - Exact full-resolution RGB pixel comparison on exact-black mask pixels (``mask == 0``), and
+    - Downsampled (512px) luminance summary for quick feather-band inspection.
+    """
     with (
         Image.open(Path(original_path).expanduser()) as o_raw,
         Image.open(Path(edited_path).expanduser()) as e_raw,
@@ -402,11 +418,25 @@ def measure_outside_mask_preservation(
         edit = ImageOps.exif_transpose(e_raw).convert("RGB")
         if edit.size != orig.size:
             edit = edit.resize(orig.size, Image.Resampling.LANCZOS)
-        mask = m_raw.convert("L")
+        mask = ImageOps.exif_transpose(m_raw).convert("L")
         if mask.size != orig.size:
             mask = mask.resize(orig.size, Image.Resampling.BILINEAR)
 
         diff = ImageChops.difference(orig, edit)
+        # Exact full-resolution RGB check strictly where mask == 0 (RC-23).
+        r_b, g_b, b_b = diff.split()
+        max_ch = ImageChops.lighter(ImageChops.lighter(r_b, g_b), b_b)
+        exact_black_px = 0
+        exact_black_changed = 0
+        exact_black_max = 0
+        for mv, dv in zip(mask.getdata(), max_ch.getdata()):
+            if mv == 0:
+                exact_black_px += 1
+                if dv > 0:
+                    exact_black_changed += 1
+                    if dv > exact_black_max:
+                        exact_black_max = dv
+
         diff_gray = diff.convert("L")
 
         # Pure Pillow pixel scan at up to 512 px working resolution for fast, deterministic stats.
@@ -432,6 +462,10 @@ def measure_outside_mask_preservation(
         in_changed_pct = round(100.0 * sum(1 for v in in_diffs if v > change_threshold) / len(in_diffs), 2) if in_diffs else 0.0
 
         return {
+            "exact_black_mask_pixels": exact_black_px,
+            "exact_black_mask_changed_pixels": exact_black_changed,
+            "exact_black_mask_max_channel_diff": exact_black_max,
+            "exact_black_mask_zero_drift": exact_black_px > 0 and exact_black_changed == 0,
             "outside_mask_pixels": len(out_diffs),
             "outside_mask_mean_abs_diff": out_mean,
             "outside_mask_max_diff": out_max,
@@ -439,5 +473,9 @@ def measure_outside_mask_preservation(
             "inside_mask_pixels": len(in_diffs),
             "inside_mask_mean_abs_diff": in_mean,
             "inside_mask_pct_changed": in_changed_pct,
-            "strictly_preserved_outside_mask": out_changed_pct <= 1.0 and out_mean <= 1.0,
+            "strictly_preserved_outside_mask": (
+                (exact_black_px > 0 and exact_black_changed == 0)
+                if exact_black_px > 0
+                else (out_changed_pct <= 1.0 and out_mean <= 1.0)
+            ),
         }
