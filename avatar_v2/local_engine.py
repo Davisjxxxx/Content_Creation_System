@@ -8,11 +8,13 @@ enough on 8 GB of VRAM.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
-WORKFLOW = Path(__file__).resolve().parent.parent / "workflows" / "wan22_i2v_14b_gguf_api.json"
-WORKFLOW_5B = Path(__file__).resolve().parent.parent / "workflows" / "wan22_i2v_5b_turbo_gguf_api.json"
+_BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+WORKFLOW = _BUNDLE_ROOT / "workflows" / "wan22_i2v_14b_gguf_api.json"
+WORKFLOW_5B = _BUNDLE_ROOT / "workflows" / "wan22_i2v_5b_turbo_gguf_api.json"
 ENGINE_LABEL = "Wan 2.2 14B (GGUF Q4_K_S) + Lightning 4-step"
 
 # Workflow placeholder -> (ComfyUI models subfolder, file name). Must match setup_local_engine.sh.

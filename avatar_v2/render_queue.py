@@ -119,6 +119,7 @@ class QueuedRender:
             "memory_events": self.memory_events,
             "gpu_trace": self.gpu_trace,
             "candidate_qa": self.candidate_qa,
+            "verification_record": self.runtime.get("verification_record"),
             "chain_from_previous": self.chain_from_previous,
             "queued_at": self.queued_at,
             "started_at": self.started_at,

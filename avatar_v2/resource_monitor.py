@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -483,6 +484,7 @@ class ResourceGuard:
         self.storage_path = Path(storage_path or Path.home()).expanduser()
         self._last_sample_ts: float | None = None
         self._last_swap_pages: int | None = None
+        self._swap_history: deque[tuple[float, int]] = deque(maxlen=64)
         self._ram_state: Severity = "normal"
         self._temp_state: Severity = "normal"
 
@@ -563,11 +565,23 @@ class ResourceGuard:
         swap_rate = 0.0
         if host_stats.pswpin is not None and host_stats.pswpout is not None:
             total_pages = host_stats.pswpin + host_stats.pswpout
-            if self._last_sample_ts is not None and self._last_swap_pages is not None:
-                # Floor dt at 1.0s so a single background page fault during sub-second calls
-                # never gets amplified into a false-positive high pages/sec swap thrashing spike.
-                dt = max(ts - self._last_sample_ts, 1.0)
+            # Rolling window (~5s) with minimum 1.0s span so rapid polling neither amplifies
+            # a 1-page glitch into a false spike NOR conceals sustained paging by resetting dt!
+            anchor: tuple[float, int] | None = None
+            for old_ts, old_pages in self._swap_history:
+                if ts - old_ts >= 1.0:
+                    anchor = (old_ts, old_pages)
+                    break
+            if anchor is not None:
+                dt = max(ts - anchor[0], 1.0)
+                swap_rate = max(total_pages - anchor[1], 0) / dt
+            elif self._last_sample_ts is not None and self._last_swap_pages is not None and (ts - self._last_sample_ts) >= 1.0:
+                dt = ts - self._last_sample_ts
                 swap_rate = max(total_pages - self._last_swap_pages, 0) / dt
+
+            self._swap_history.append((ts, total_pages))
+            while len(self._swap_history) > 2 and (ts - self._swap_history[0][0]) > 6.0:
+                self._swap_history.popleft()
             self._last_sample_ts = ts
             self._last_swap_pages = total_pages
 

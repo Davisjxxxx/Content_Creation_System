@@ -41,7 +41,41 @@ from .script_broker import (
 )
 from .script_inspector import ScriptInspectionReport, inspect_script
 
-SDK_CLIENT_SOURCE = Path(__file__).resolve().parent / "sdk_client.py"
+def _resolve_sdk_client_source() -> Path:
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidate = Path(meipass) / "avatar_v2" / "sdk_client.py"
+        if candidate.is_file():
+            return candidate
+    return Path(__file__).resolve().parent / "sdk_client.py"
+
+
+SDK_CLIENT_SOURCE = _resolve_sdk_client_source()
+
+
+def resolve_script_python(explicit: str | None = None) -> str:
+    """Resolve a real general-purpose Python 3 interpreter for sandboxed Script mode.
+
+    When packaged with PyInstaller (``sys.frozen`` is True), ``sys.executable`` points to
+    the frozen AvatarV2 desktop binary — NEVER a general-purpose Python interpreter.
+    """
+    for cand in (explicit, os.environ.get("AVATAR_V2_SCRIPT_PYTHON")):
+        if cand and Path(str(cand)).expanduser().is_file() and os.access(str(Path(str(cand)).expanduser()), os.X_OK):
+            return str(Path(str(cand)).expanduser())
+
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+
+    for name in ("python3", "python3.14", "python3.12", "python3.11"):
+        found = shutil.which(name)
+        if found and Path(found).is_file():
+            return found
+    for fallback in ("/usr/bin/python3", "/usr/local/bin/python3"):
+        if Path(fallback).is_file():
+            return fallback
+    raise SandboxUnavailableError(
+        "No host Python 3 interpreter found for Script mode (set AVATAR_V2_SCRIPT_PYTHON or install python3)."
+    )
 
 
 class SandboxUnavailableError(RuntimeError):
@@ -146,13 +180,15 @@ def _python_ro_mounts(python_exe: Path) -> list[tuple[str, str]]:
         _add(Path(base))
 
     # If python lives in a virtualenv (e.g. .venv314/bin/python), mount ONLY that venv read-only,
-    # NEVER the whole repository or user home directory.
-    prefix = Path(sys.prefix).resolve()
-    base_prefix = Path(sys.base_prefix).resolve()
+    # NEVER the whole repository, user home directory, or PyInstaller _MEIPASS bundle.
     exe_resolved = python_exe.resolve()
-    for p in (prefix, base_prefix, exe_resolved.parent.parent):
+    candidates: list[Path] = [exe_resolved.parent.parent]
+    if not getattr(sys, "frozen", False):
+        candidates.extend([Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()])
+    for p in candidates:
         if p.exists() and not any(str(p).startswith(std) for std in ("/usr", "/lib", "/bin")):
-            _add(p)
+            if (p / "bin").is_dir() or (p / "lib").is_dir():
+                _add(p)
     return mounts
 
 
@@ -290,7 +326,7 @@ class ScriptRunManager:
         self._cancel_fn = cancel_fn
         self._reference_manager = reference_manager
         self._planner = planner or ResourcePlanner()
-        self._python_exe = python_exe or sys.executable
+        self._python_exe = resolve_script_python(python_exe)
         self._bwrap_override = bwrap_override
         self._snapshot_override = snapshot_override
         self._storage_check_override = storage_check_override

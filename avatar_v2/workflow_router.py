@@ -571,6 +571,46 @@ class WorkflowRouter:
             )
             for r in spec.required_attributes
         ]
+        existing_cids = {c.criterion_id for c in criteria}
+        for fname in (
+            "composition", "environment", "lighting", "camera_perspective",
+            "visual_style", "atmosphere", "colors_and_materials",
+            "motion", "camera_movement",
+        ):
+            attr = getattr(spec, fname, None)
+            if attr is not None and getattr(attr, "value", "") and getattr(attr, "state", "") == "locked":
+                cid = f"guided_locked_{fname}"
+                if cid not in existing_cids:
+                    criteria.append(
+                        AcceptanceCriterion(
+                            criterion_id=cid,
+                            category=fname,
+                            description=f"Locked {fname.replace('_', ' ')}: {attr.value}",
+                            source="guided_ui",
+                            mandatory=True,
+                            locked=True,
+                            verifiable_automatically=(fname not in {"visual_style", "atmosphere"}),
+                        )
+                    )
+                    existing_cids.add(cid)
+        for s_idx, subj in enumerate(spec.subjects):
+            for sf in ("appearance", "clothing", "expression", "pose"):
+                sattr = getattr(subj, sf, None)
+                if sattr is not None and getattr(sattr, "value", "") and getattr(sattr, "state", "") == "locked":
+                    cid = f"guided_locked_subj{s_idx}_{sf}"
+                    if cid not in existing_cids:
+                        criteria.append(
+                            AcceptanceCriterion(
+                                criterion_id=cid,
+                                category=sf,
+                                description=f"Locked {sf}: {sattr.value}",
+                                source="guided_ui",
+                                mandatory=True,
+                                locked=True,
+                                verifiable_automatically=True,
+                            )
+                        )
+                        existing_cids.add(cid)
         unverifiable: list[str] = []
         if is_video and primary_spec.negative_prompt_strength == "ignored_cfg1" and spec.excluded_attributes:
             unverifiable.append(

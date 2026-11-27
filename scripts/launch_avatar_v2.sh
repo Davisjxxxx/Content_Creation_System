@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Avatar V2 desktop launcher — cwd-independent.
+# Avatar V2 desktop launcher — cwd-independent and rollback-safe.
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,19 +15,25 @@ else
     PYTHON_BIN="$APP_DIR/.venv/bin/python"
 fi
 
-cd "$APP_DIR"
-
-# A freshly built package waits in dist/AvatarV2.next while the app is open, and is switched in on
-# the next launch. The build it replaces is renamed (never deleted) so it stays available for rollback.
+# Isolated release-candidate launch: run dist/AvatarV2.next without touching production dist/AvatarV2!
 NEXT_BUILD="$APP_DIR/dist/AvatarV2.next"
-if [ -x "$NEXT_BUILD/AvatarV2" ] && ! pgrep -f "$APP_DIR/dist/AvatarV2/AvatarV2" >/dev/null 2>&1; then
+if [ "${AVATAR_V2_CANDIDATE:-0}" = "1" ]; then
+    if [ ! -x "$NEXT_BUILD/AvatarV2" ]; then
+        echo "Release candidate not found at $NEXT_BUILD/AvatarV2" >&2
+        exit 1
+    fi
+    exec "$NEXT_BUILD/AvatarV2" "$@"
+fi
+
+# Explicit promotion only: never silently replace production dist/AvatarV2 with an unapproved RC!
+if [ "${AVATAR_V2_PROMOTE_NEXT:-0}" = "1" ] && [ -x "$NEXT_BUILD/AvatarV2" ] && ! pgrep -f "$APP_DIR/dist/AvatarV2/AvatarV2" >/dev/null 2>&1; then
     if [ -d "$APP_DIR/dist/AvatarV2" ]; then
         mv "$APP_DIR/dist/AvatarV2" "$APP_DIR/dist/AvatarV2-prev-$(date +%Y%m%d-%H%M%S)"
     fi
     mv "$NEXT_BUILD" "$APP_DIR/dist/AvatarV2"
 fi
 
-# Prefer the tested PyInstaller build when it exists, unless AVATAR_V2_FROM_SOURCE=1.
+# Prefer the tested PyInstaller production build when it exists, unless AVATAR_V2_FROM_SOURCE=1.
 # The previous build is preserved under dist/ for rollback (see docs/RECOVERY_AND_ROLLBACK.md).
 if [ "${AVATAR_V2_FROM_SOURCE:-0}" != "1" ] && [ -x "$APP_DIR/dist/AvatarV2/AvatarV2" ]; then
     exec "$APP_DIR/dist/AvatarV2/AvatarV2" "$@"
@@ -39,4 +45,5 @@ if [ ! -x "$PYTHON_BIN" ]; then
     exit 1
 fi
 
+cd "$APP_DIR"
 exec "$PYTHON_BIN" -m avatar_v2.desktop "$@"

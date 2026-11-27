@@ -182,6 +182,19 @@ class GenerationBroker:
                 self._state = "completed"
                 self._cond.notify_all()
 
+    def charge_corrective_attempt(self, parent_job_id: str, *, note: str = "") -> tuple[bool, str]:
+        """Charge a corrective generation attempt against the SAME host-enforced run budget."""
+        with self._lock:
+            if self._state in {"stopping", "stopped"}:
+                return False, "Script run was stopped; refusing additional corrective generation."
+            if self._submitted_count >= self.max_items:
+                return False, (
+                    f"Shared script run budget exhausted ({self._submitted_count}/{self.max_items}); "
+                    f"cannot start corrective attempt for {parent_job_id}."
+                )
+            self._submitted_count += 1
+            return True, f"Charged corrective attempt ({self._submitted_count}/{self.max_items}) {note}".strip()
+
     def snapshot_status(self) -> dict[str, Any]:
         with self._lock:
             self._refresh_jobs_locked()

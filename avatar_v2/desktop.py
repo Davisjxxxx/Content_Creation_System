@@ -9,6 +9,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,7 +41,7 @@ from .runtime_profiles import payload as runtime_profiles_payload
 from .runtime_profiles import resolve_profile
 from .workflows_builder import WAN_FPS, snap_wan_canvas, wan_frame_count
 
-APP_HOME = Path.home() / ".avatar_v2"
+APP_HOME = Path(os.environ.get("AVATAR_V2_HOME") or (Path.home() / ".avatar_v2")).expanduser().resolve()
 CONFIG_PATH = APP_HOME / "desktop.json"
 RUNS_DIR = APP_HOME / "runs"
 QUEUE_DIR = APP_HOME / "queue"
@@ -65,9 +66,17 @@ DEFAULT_PRESENTER_PERSONALITY = (
     "plain language, check for understanding, and keep a calm, professional tone."
 )
 
+
+def _bundle_root() -> Path:
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass)
+    return Path(__file__).resolve().parent.parent
+
+
 BUNDLED_WORKFLOWS: dict[str, Path] = {
-    "ad_sd15": Path(__file__).resolve().parent.parent / "workflows" / "animatediff_sd15_api.json",
-    "ad_sdxl": Path(__file__).resolve().parent.parent / "workflows" / "animatediff_sdxl_api.json",
+    "ad_sd15": _bundle_root() / "workflows" / "animatediff_sd15_api.json",
+    "ad_sdxl": _bundle_root() / "workflows" / "animatediff_sdxl_api.json",
 }
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -870,6 +879,68 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    def _execute_local_correction_step(self, item: QueuedRender, step: Any) -> tuple[str, float]:
+        """Production ComfyUI executor for a single bounded Sprint 8/9 corrective generation step."""
+        from .ollama_client import verify_ollama_vram_released
+        from . import offline_builder as ob
+
+        # Charge shared script run budget if this job originated from Script mode!
+        script_run_id = str(item.runtime.get("script_run_id") or "")
+        if script_run_id and hasattr(self, "_script_run_manager") and self._script_run_manager is not None:
+            broker = getattr(self._script_run_manager, "_active_broker", None)
+            if broker is not None and getattr(broker, "run_id", "") == script_run_id:
+                ok_budget, reason = broker.charge_corrective_attempt(item.id, note=step.strategy)
+                if not ok_budget:
+                    raise RuntimeError(reason)
+
+        # Always verify Ollama VRAM is released before submitting an incompatible ComfyUI job!
+        settings = self._settings()
+        ollama_url = str(settings.get("vision_classifier_url") or DEFAULT_SETTINGS["vision_classifier_url"])
+        verify_ollama_vram_released(ollama_url, timeout_s=8.0)
+
+        provider = ComfyUIProvider(item.provider_config)
+        is_9b = "9b" in str(step.model_id or "").lower()
+        photo_cfg = ob.PHOTO_MODELS["9b" if is_9b else "4b"]
+        asset_map = dict(item.job.asset_map or {})
+        asset_map.update(
+            {
+                "FORGE_UNET": photo_cfg["unet"],
+                "FORGE_TEXT_ENCODER": photo_cfg["text_encoder"],
+                "FORGE_VAE": ob.SHARED_MODELS["FORGE_VAE"][1],
+                "PROMPT": step.revised_prompt,
+                "WIDTH": int(step.generation_settings.get("width") or item.job.asset_map.get("WIDTH") or item.job.shot.width or 896),
+                "HEIGHT": int(step.generation_settings.get("height") or item.job.asset_map.get("HEIGHT") or item.job.shot.height or 1280),
+                "STEPS": int(photo_cfg["steps"]),
+                "CFG": float(photo_cfg["cfg"]),
+                "SEED": int(step.seed),
+                "OUTPUT_PREFIX": f"avatar_v2/cor_{item.id[:8]}_{step.strategy}",
+            }
+        )
+        for i in range(1, 5):
+            asset_map.pop(f"REF_IMAGE_{i}", None)
+        for idx, rpath in enumerate((step.reference_paths or [])[:4], start=1):
+            if rpath and Path(rpath).expanduser().is_file():
+                asset_map[f"REF_IMAGE_{idx}"] = str(Path(rpath).expanduser().resolve())
+
+        cor_job = item.job.model_copy(update={"asset_map": asset_map})
+        t0 = time.monotonic()
+        res = provider.render(step.workflow, cor_job)
+        elapsed_ms = round((time.monotonic() - t0) * 1000.0, 1)
+        resolved = self.queue._resolve_outputs(item, res.get("outputs") or [])
+        if not resolved or not Path(resolved[0]).is_file():
+            raise RuntimeError("Corrective ComfyUI render finished with no readable output file.")
+        out_path = resolved[0]
+        if item.archive_dir:
+            try:
+                target_dir = Path(item.archive_dir).expanduser() / item.id
+                target_dir.mkdir(parents=True, exist_ok=True)
+                dest = target_dir / Path(out_path).name
+                shutil.copy2(out_path, dest)
+                out_path = str(dest)
+            except OSError:
+                pass
+        return out_path, elapsed_ms
+
     def _run_visual_inspection(self, item: QueuedRender) -> dict[str, Any]:
         """Run non-intrusive Sprint 7 local visual inspection behind the existing frontend."""
         from .inspection_contract import GenerationVerificationRecord
@@ -895,6 +966,15 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         planner = getattr(self.queue, "resource_planner", None)
         comfy_warm = bool(getattr(self.queue, "_last_local_model_id", None))
 
+        if use_vlm and comfy_warm and item.provider_config.provider == "comfyui":
+            try:
+                ComfyUIProvider(item.provider_config).free_memory(unload_models=True)
+                self.queue._last_local_model_id = None
+                self.queue._last_local_workflow = None
+                comfy_warm = False
+            except Exception:
+                pass
+
         if target.suffix.lower() in VIDEO_SUFFIXES or record.expected_output.media_kind == "video":
             inspector = VideoInspector(ollama_url=ollama_url, planner=planner)
             result = inspector.inspect_video(
@@ -903,7 +983,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                 use_vlm=use_vlm,
                 preferred_model=preferred_model,
                 comfy_models_warm=comfy_warm,
-                allow_sequential_gpu=False,
+                allow_sequential_gpu=bool(use_vlm),
             )
         else:
             inspector_img = VisualInspector(ollama_url=ollama_url, planner=planner)
@@ -913,7 +993,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                 use_vlm=use_vlm,
                 preferred_model=preferred_model,
                 comfy_models_warm=comfy_warm,
-                allow_sequential_gpu=False,
+                allow_sequential_gpu=bool(use_vlm),
             )
 
         item.runtime["verification_record"]["inspection_result"] = result.model_dump()
@@ -940,6 +1020,14 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                     cancel_ev.set()
 
             def _re_inspect(cand_path: str, ver_rec: GenerationVerificationRecord):
+                # Release ComfyUI weights before sequential GPU VLM reinspection when VLM is enabled.
+                if use_vlm:
+                    try:
+                        ComfyUIProvider(item.provider_config).free_memory(unload_models=True)
+                        self.queue._last_local_model_id = None
+                        self.queue._last_local_workflow = None
+                    except Exception:
+                        pass
                 p_cand = Path(cand_path)
                 if p_cand.suffix.lower() in VIDEO_SUFFIXES or ver_rec.expected_output.media_kind == "video":
                     return VideoInspector(ollama_url=ollama_url, planner=planner).inspect_video(
@@ -950,25 +1038,26 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                 )
 
             gen_hook = item.runtime.get("_corrective_generate_hook")
-            if callable(gen_hook):
-                coordinator = CorrectionCoordinator(planner=planner)
-                session = coordinator.run_bounded_correction(
-                    record=record,
-                    original_output_id=item.id,
-                    original_output_path=str(target),
-                    initial_inspection=result,
-                    generate_fn=gen_hook,
-                    inspect_fn=_re_inspect,
-                    cancel_event=cancel_ev,
-                    status_callback=_status_cb,
-                )
-                item.runtime["verification_record"]["correction_session"] = session.model_dump()
-                for cpath in session.all_candidate_paths:
-                    if cpath and cpath not in item.outputs and Path(cpath).is_file():
-                        item.outputs.append(cpath)
-                correction_summary = session.compact_ui_summary()
-                summary["ui_status"] = session.ui_status
-                summary["ui_status_label"] = session.ui_status_label
+            if not callable(gen_hook):
+                gen_hook = lambda step: self._execute_local_correction_step(item, step)
+            coordinator = CorrectionCoordinator(planner=planner)
+            session = coordinator.run_bounded_correction(
+                record=record,
+                original_output_id=item.id,
+                original_output_path=str(target),
+                initial_inspection=result,
+                generate_fn=gen_hook,
+                inspect_fn=_re_inspect,
+                cancel_event=cancel_ev,
+                status_callback=_status_cb,
+            )
+            item.runtime["verification_record"]["correction_session"] = session.model_dump()
+            for cpath in session.all_candidate_paths:
+                if cpath and cpath not in item.outputs and Path(cpath).is_file():
+                    item.outputs.append(cpath)
+            correction_summary = session.compact_ui_summary()
+            summary["ui_status"] = session.ui_status
+            summary["ui_status_label"] = session.ui_status_label
 
         return {
             "ok": True,
@@ -986,7 +1075,14 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             # A prompt-only scene: the start photo just rendered, so its shots go next.
             return self._forge_continue_scene(item)
         if item.runtime.get("scene_shots"):
-            return self._studio_finish_scene(item)
+            scene_res = self._studio_finish_scene(item)
+            if item.runtime.get("verification_record") and not item.runtime.get("candidate_qa_reference"):
+                vis = self._run_visual_inspection(item)
+                if isinstance(scene_res, dict) and isinstance(vis, dict):
+                    scene_res["inspection"] = vis.get("inspection")
+                    scene_res["correction"] = vis.get("correction")
+                    scene_res["decision"] = vis.get("decision")
+            return scene_res
         if item.runtime.get("studio_voiceover"):
             return self._studio_mux_voiceover(item)
         if item.runtime.get("verification_record") and not item.runtime.get("candidate_qa_reference"):

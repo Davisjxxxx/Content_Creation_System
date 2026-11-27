@@ -1717,7 +1717,18 @@ class StudioMixin:
                     stage=True,
                 )
             if action == "photo":
+                raw_user_prompt = prompt
+                guided_spec = None
                 if guided:
+                    g_dict = dict(guided)
+                    if any(str(v or "").strip() for v in (g_dict.get("attributes") or {}).values()) or g_dict.get("randomized"):
+                        guided_spec = build_spec_from_guided_payload(
+                            prompt=prompt,
+                            task="photo",
+                            guided=g_dict,
+                            model_preference=f"flux2_{photo_model}",
+                            frames=1,
+                        )
                     prompt, _ = self._compile_guided_prompt(
                         prompt=prompt,
                         action="photo",
@@ -1735,28 +1746,37 @@ class StudioMixin:
                 ver_record = None
                 try:
                     routed = plan_intelligent_generation(
-                        prompt,
+                        raw_user_prompt or prompt,
                         requested_action="photo",
                         starter_image=image or None,
+                        guided_spec=guided_spec,
                         input_mode="guided" if guided else "automatic",
                         model_preference=f"flux2_{photo_model}",
                         use_llm=False,
                     )
                     if routed.ok and routed.verification_record is not None:
                         ver_record = routed.verification_record.public()
+                        ver_record["compiled_prompt"] = prompt
                 except Exception:
                     ver_record = None
+                opt_extra: dict[str, Any] = {
+                    "guided_mode": bool(guided),
+                    "reference_selection": ref_selection_meta,
+                    "verification_record": ver_record,
+                }
+                if options.get("auto_correct") is not None:
+                    opt_extra["auto_correct"] = bool(options.get("auto_correct"))
+                if options.get("visual_inspection_vlm") is not None:
+                    opt_extra["visual_inspection_vlm"] = bool(options.get("visual_inspection_vlm"))
+                if options.get("visual_inspection_model"):
+                    opt_extra["visual_inspection_model"] = str(options.get("visual_inspection_model"))
                 items = [
                     self._forge_photo_item(
                         prompt=prompt,
                         shape=shape,
                         photo_model=photo_model,
                         label=f"Avatar photo {index} of {count} · {short_label} · your GPU",
-                        extra_runtime={
-                            "guided_mode": bool(guided),
-                            "reference_selection": ref_selection_meta,
-                            "verification_record": ver_record,
-                        },
+                        extra_runtime=dict(opt_extra),
                         reference_images=photo_refs,
                     )
                     for index in range(1, count + 1)
@@ -1791,6 +1811,9 @@ class StudioMixin:
                     raise ValueError("That start picture isn't on this computer anymore.")
                 photo_minutes = ob.PHOTO_MODELS[photo_model]["estimated_minutes"]
                 if image:
+                    end_image = str(options.get("end_image") or "").strip()
+                    if end_image and not Path(end_image).expanduser().is_file():
+                        raise ValueError("That end picture isn't on this computer anymore.")
                     items = self._studio_scene_items(
                         {"image": image, "shots": shots, "shape": shape},
                         video_model=video_model,
@@ -1798,6 +1821,33 @@ class StudioMixin:
                         action="forge_scene",
                         verbatim=True,
                     )
+                    if end_image:
+                        staged_end = self._stage_reference_if_external(end_image, workflow="image_to_video")
+                        items[-1].job.asset_map["LAST_FRAME"] = staged_end
+                    vid_ver = None
+                    try:
+                        routed_vid = plan_intelligent_generation(
+                            prompt or shots[0],
+                            requested_action="scene",
+                            starter_image=image,
+                            input_mode="guided" if guided else "automatic",
+                            model_preference="wan22_a14b" if video_model == "a14b" else "wan22_5b",
+                            use_llm=False,
+                        )
+                        if routed_vid.ok and routed_vid.verification_record is not None:
+                            vid_ver = routed_vid.verification_record.public()
+                    except Exception:
+                        vid_ver = None
+                    for it in items:
+                        it.runtime["reference_selection"] = ref_selection_meta
+                        if vid_ver is not None:
+                            it.runtime["verification_record"] = vid_ver
+                        if options.get("visual_inspection_vlm") is not None:
+                            it.runtime["visual_inspection_vlm"] = bool(options.get("visual_inspection_vlm"))
+                        if options.get("visual_inspection_model"):
+                            it.runtime["visual_inspection_model"] = str(options.get("visual_inspection_model"))
+                        if options.get("auto_correct") is not None:
+                            it.runtime["auto_correct"] = bool(options.get("auto_correct"))
                     total_minutes = len(shots) * local_engine.VIDEO_MODELS[video_model]["estimated_minutes"]
                     two_stage = False
                 else:

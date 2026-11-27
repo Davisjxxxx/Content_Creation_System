@@ -334,11 +334,18 @@ def compute_inspection_status(
     if optional_failed:
         return ("warn", "some_uncertain", UI_INSPECTION_LABELS["some_uncertain"], True)
     if mandatory and all(a.status == "passed" for a in mandatory):
+        if needs_human_corroboration:
+            return (
+                "warn",
+                "review_recommended",
+                UI_INSPECTION_LABELS["review_recommended"],
+                True,
+            )
         return (
             "pass",
             "requirements_verified",
             UI_INSPECTION_LABELS["requirements_verified"],
-            needs_human_corroboration,
+            False,
         )
     return ("warn", "some_uncertain", UI_INSPECTION_LABELS["some_uncertain"], True)
 

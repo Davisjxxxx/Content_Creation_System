@@ -8,13 +8,24 @@ Zero local LLM dependency; zero legacy adult/hardcoded content defaults.
 from __future__ import annotations
 
 import json
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from .prompt_schema import CREATIVE_FIELD_NAMES, PromptAttribute, StructuredPromptSpec
 
-DEFAULT_LIBRARY_PATH = Path(__file__).resolve().parent / "data" / "prompt_libraries.json"
+
+def _resolve_default_library_path() -> Path:
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cand = Path(meipass) / "avatar_v2" / "data" / "prompt_libraries.json"
+        if cand.is_file():
+            return cand
+    return Path(__file__).resolve().parent / "data" / "prompt_libraries.json"
+
+
+DEFAULT_LIBRARY_PATH = _resolve_default_library_path()
 
 REQUIRED_CATEGORIES: tuple[str, ...] = (
     "composition",
