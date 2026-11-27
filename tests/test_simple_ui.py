@@ -52,7 +52,7 @@ def test_every_image_recipe_picks_any_picture_from_my_stuff():
     assert "No presenter is set — pick the photo to start from" in HTML  # blank slate when no master exists
     assert "{requirePick:true}" in HTML and "Pick the photo to start from:" in HTML  # the scene never auto-loads a picture
     assert "Change…" in HTML and "hide every other picture" in HTML  # after picking, the other pictures collapse away
-    assert "Delete this photo and start from a blank slate" in HTML  # the last avatar can be removed
+    assert "Detach her master photo reference" in HTML  # RC-02: presenter master Remove detaches without deleting external originals
     assert "studio_avatar_delete" in HTML and "Remove this avatar so it is no longer an option" in HTML  # bad avatars can go
     assert "studio_presenter_add" in HTML and "Add from My stuff" in HTML and "Presenter option" in HTML  # older pictures can join her face options
 

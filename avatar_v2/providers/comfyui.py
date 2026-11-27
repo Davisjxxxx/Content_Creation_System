@@ -204,10 +204,41 @@ class ComfyUIProvider:
             raise RuntimeError(f"ComfyUI did not return prompt_id: {data}")
         return str(prompt_id)
 
-    def interrupt(self) -> None:
+    def interrupt(self, prompt_id: str | None = None, *, allow_global: bool = False) -> bool:
+        """Cancel a specific ComfyUI prompt without disrupting unrelated work on a shared renderer.
+
+        - If ``prompt_id`` is provided, removes it from ComfyUI's pending queue first; only sends
+          a prompt-scoped ``POST /interrupt`` if ``prompt_id`` is currently running.
+        - Refuses unscoped global ``POST /interrupt`` unless ``allow_global=True`` (owned private engine).
+        """
+        pid = str(prompt_id or "").strip()
         with httpx.Client(timeout=10) as client:
+            if pid:
+                try:
+                    q_resp = client.get(f"{self.base_url}/queue")
+                    q_resp.raise_for_status()
+                    q_data = q_resp.json()
+                except Exception:
+                    q_data = {}
+                pending = q_data.get("queue_pending") or []
+                running = q_data.get("queue_running") or []
+                pending_ids = {str(entry[1]) for entry in pending if isinstance(entry, list) and len(entry) >= 2}
+                running_ids = {str(entry[1]) for entry in running if isinstance(entry, list) and len(entry) >= 2}
+                if pid in pending_ids:
+                    resp = client.post(f"{self.base_url}/queue", json={"delete": [pid]})
+                    resp.raise_for_status()
+                    return True
+                if pid in running_ids:
+                    resp = client.post(f"{self.base_url}/interrupt", json={"prompt_id": pid})
+                    resp.raise_for_status()
+                    return True
+                if not allow_global:
+                    return False
+            if not allow_global:
+                return False
             response = client.post(f"{self.base_url}/interrupt", json={})
             response.raise_for_status()
+            return True
 
     def queue_status(self) -> dict[str, Any]:
         """Return queue occupancy so cache cleanup can stay idle-only."""

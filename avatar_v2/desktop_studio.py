@@ -14,6 +14,7 @@ import hashlib
 import io
 import json
 import mimetypes
+import os
 import re
 import secrets
 import shutil
@@ -32,7 +33,9 @@ from . import cloud_ledger, local_engine
 from . import offline_builder as ob
 from .composer import build_job
 from .integrity import sha256_file
+from .js_bridge import in_js_bridge
 from .library import AvatarProfile
+from .ownership import classify_media_ownership, write_json_atomic
 from .policy import depicts_minor
 from .presenter import MOTION_REALISM, NO_TEXT, compile_presenter_prompt
 from .prompt_compilers import compile_prompt_for_model
@@ -308,13 +311,18 @@ class StudioMixin:
     # ------------------------------------------------------------------ helpers
 
     def _reference_manager(self) -> LocalReferenceManager:
-        """Shared LocalReferenceManager guarding external file access and controlled job staging."""
+        """Shared LocalReferenceManager guarding external file access and controlled job staging.
+
+        Trusts ONLY app-owned media subdirectories (never raw APP_HOME config/logs/ledger!).
+        """
         mgr: LocalReferenceManager | None = getattr(self, "_local_ref_manager", None)
-        app_home = _desktop().APP_HOME
+        d = _desktop()
+        app_home = d.APP_HOME
         if mgr is None:
             mgr = LocalReferenceManager(staging_dir=app_home / "staged_refs")
             self._local_ref_manager = mgr
-        mgr.add_trusted_root(app_home)
+        for media_root in (app_home, d.RUNS_DIR, d.IMPORTS_DIR, d.VOICEOVER_DIR, app_home / "thumbs"):
+            mgr.add_trusted_root(media_root)
         try:
             mgr.add_trusted_root(self._archive_dir())
         except Exception:
@@ -333,7 +341,8 @@ class StudioMixin:
         if not cleaned:
             return ""
         mgr = self._reference_manager()
-        staged = mgr.stage_for_job(cleaned, workflow=workflow, require_authorization=False)
+        # Enforce strict native-picker / trusted-root authorization for page-facing JsBridge calls (RC-03).
+        staged = mgr.stage_for_job(cleaned, workflow=workflow, require_authorization=in_js_bridge())
         return str(staged["staged_path"])
 
     def _remember_directory(self, setting_key: str, path: str | Path) -> None:
@@ -535,7 +544,7 @@ class StudioMixin:
         if conflicts:
             raise ValueError(conflicts[0].message)
         if stage:
-            ref_set = ref_set.stage_all(mgr, require_authorization=False)
+            ref_set = ref_set.stage_all(mgr, require_authorization=in_js_bridge())
         selection = select_relevant_references(
             ref_set,
             prompt=prompt,
@@ -1294,46 +1303,148 @@ class StudioMixin:
             return {"ok": False, "error": "That avatar isn't saved."}
         return {"ok": True, "deleted": avatar_id}
 
-    def studio_delete(self, options: dict[str, Any]) -> dict[str, Any]:
-        """Delete one thing from My stuff: its file, and every history entry that lists it.
+    def _managed_media_roots(self) -> tuple[list[Path], list[Path], list[Path]]:
+        """Explicit app-owned media directories eligible for managed deletion (Astra RC-02)."""
+        d = _desktop()
+        output_roots: list[Path] = [d.APP_HOME, d.RUNS_DIR, d.VOICEOVER_DIR]
+        try:
+            output_roots.append(self._archive_dir())
+        except Exception:
+            pass
+        import_roots: list[Path] = [d.IMPORTS_DIR]
+        staging_roots: list[Path] = [d.APP_HOME / "staged_refs"]
+        return output_roots, import_roots, staging_roots
 
-        Only files the app's own records list can be removed this way; the bridge never
-        gets to delete an arbitrary path.
+    def studio_delete(self, options: dict[str, Any]) -> dict[str, Any]:
+        """Detach a reference or delete ONE app-owned managed output from My stuff (Astra RC-02).
+
+        Strict media-ownership invariants:
+        - External original files, symlinks, and hard-linked files are NEVER unlinked on disk.
+        - Removing an externally backed presenter master detaches the reference cleanly while
+          preserving the original bytes untouched.
+        - For verified app-owned managed files, physical unlink runs BEFORE history mutation so a
+          filesystem error (permission denied / busy / read-only) never orphans the file from history.
         """
-        path = str((options or {}).get("path") or "").strip()
+        opts = dict(options or {})
+        path = str(opts.get("path") or "").strip()
+        detach_only = bool(opts.get("detach_only"))
         if not path:
             return {"ok": False, "error": "No file given."}
         target = Path(path).expanduser()
         profile = self._studio_profile()
         front = str(profile.identity_refs.get("front") or "") if profile is not None else ""
-        was_master = bool(front) and Path(front).expanduser() == target
+        was_master = bool(front) and (
+            Path(front).expanduser() == target
+            or (target.exists() and Path(front).expanduser().exists() and Path(front).expanduser().resolve() == target.resolve())
+        )
+
+        # Explicit detach (e.g., presenter master Remove control) NEVER deletes files from disk.
+        if detach_only:
+            if not was_master:
+                return {"ok": False, "error": "That photo is not currently set as the presenter master."}
+            self._clear_master_refs()
+            return {
+                "ok": True,
+                "detached": True,
+                "deleted_file": False,
+                "deleted": target.name,
+                "records_updated": 0,
+                "ownership": "detached_reference",
+            }
+
+        # Refuse deleting non-media files (configs, logs, JSON records, ledgers) under all circumstances!
+        if _kind(str(target)) == "file":
+            return {"ok": False, "deleted_file": False, "error": "Only media files can be managed through My stuff."}
+
+        out_roots, imp_roots, stg_roots = self._managed_media_roots()
+        ownership = classify_media_ownership(
+            target,
+            managed_output_roots=out_roots,
+            managed_import_roots=imp_roots,
+            staging_roots=stg_roots,
+        )
+
+        # External original / symlink / hardlink: NEVER unlink! If it was the presenter master, detach safely.
+        if not ownership.deletable and ownership.classification != "missing":
+            if was_master:
+                self._clear_master_refs()
+                return {
+                    "ok": True,
+                    "detached": True,
+                    "deleted_file": False,
+                    "deleted": target.name,
+                    "records_updated": 0,
+                    "ownership": ownership.classification,
+                    "message": "Detached presenter master reference; external original file was preserved untouched.",
+                }
+            return {
+                "ok": False,
+                "deleted_file": False,
+                "ownership": ownership.classification,
+                "error": ownership.reason,
+            }
+
+        # Scan history records (read-only first!) to verify this managed file belongs to My stuff.
         history_dir = _desktop().HISTORY_DIR
-        updated = 0
+        matching_records: list[tuple[Path, dict[str, Any], list[str]]] = []
+        canon_target = Path(ownership.canonical_path) if ownership.canonical_path else target
         for record_file in history_dir.glob("*.json"):
             try:
                 record = json.loads(record_file.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            outputs = record.get("outputs") or []
-            kept = [str(o) for o in outputs if Path(str(o)).expanduser() != target]
-            if len(kept) == len(outputs):
+            if not isinstance(record, dict):
                 continue
-            if kept:
-                record["outputs"] = kept
-                record_file.write_text(json.dumps(record, indent=2), encoding="utf-8")
-            else:
-                record_file.unlink(missing_ok=True)  # nothing left to show for this job
-            updated += 1
-        if not updated and not was_master:
-            return {"ok": False, "error": "That file isn't in My stuff."}
-        try:
-            target.unlink(missing_ok=True)
-        except OSError as exc:
-            return {"ok": False, "error": f"Could not delete the file: {exc}"}
+            outputs = record.get("outputs") or []
+            kept: list[str] = []
+            matched_here = False
+            for o in outputs:
+                op = Path(str(o)).expanduser()
+                if op == target or (ownership.canonical_path and op.exists() and Path(os.path.realpath(op)) == canon_target):
+                    matched_here = True
+                else:
+                    kept.append(str(o))
+            if matched_here:
+                matching_records.append((record_file, record, kept))
+
+        if not matching_records and not was_master:
+            return {"ok": False, "deleted_file": False, "error": "That file isn't in My stuff."}
+
+        # Perform physical unlink BEFORE mutating history so a failed unlink never orphans the file!
+        deleted_file = False
+        if ownership.deletable and target.exists():
+            try:
+                target.unlink()
+                deleted_file = True
+            except OSError as exc:
+                return {
+                    "ok": False,
+                    "deleted_file": False,
+                    "error": f"Could not delete the file (history left unchanged): {exc}",
+                }
+
+        updated = 0
+        for record_file, record, kept in matching_records:
+            try:
+                if kept:
+                    record["outputs"] = kept
+                    write_json_atomic(record_file, record)
+                else:
+                    record_file.unlink(missing_ok=True)
+                updated += 1
+            except OSError:
+                continue
+
         if was_master:
-            self._clear_master_refs()  # blank slate: recipes ask which picture to start from
-        # Its cached thumbnail becomes an orphan; harmless, and reused hashes avoid clutter.
-        return {"ok": True, "deleted": target.name, "records_updated": updated}
+            self._clear_master_refs()
+        return {
+            "ok": True,
+            "detached": was_master and not deleted_file,
+            "deleted_file": deleted_file,
+            "deleted": target.name,
+            "records_updated": updated,
+            "ownership": ownership.classification,
+        }
 
     def _clear_master_refs(self) -> None:
         """After her master photo is deleted, drop it from the vault so the app starts from a blank slate."""
@@ -1898,6 +2009,8 @@ class StudioMixin:
             return self.reference_thumbnail(str(source))
         if kind != "video" or not source.is_file():
             return {"ok": False, "error": "No preview for this file."}
+        if not self._reference_manager().is_path_authorized(source):
+            return {"ok": False, "error": "That video was not selected through Avatar V2."}
         try:
             stat = source.stat()
             key = hashlib.sha1(f"{source.resolve()}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()[:20]
@@ -1969,6 +2082,8 @@ class StudioMixin:
         source = Path(str(path or "")).expanduser()
         if _kind(str(source)) != "video" or not source.is_file():
             return {"ok": False, "error": "That video is no longer on this computer."}
+        if not self._reference_manager().is_path_authorized(source):
+            return {"ok": False, "error": "That video was not selected through Avatar V2."}
         try:
             url = self._ensure_media_server().register(source)
             meta = _probe_video_meta(source)

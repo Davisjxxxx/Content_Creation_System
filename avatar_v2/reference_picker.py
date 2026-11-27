@@ -364,7 +364,13 @@ class LocalReferenceManager:
                 return True
             if _is_within_root(resolved, self.staging_dir):
                 return True
-            return any(_is_within_root(resolved, root) for root in self._trusted_roots)
+            if any(_is_within_root(resolved, root) for root in self._trusted_roots):
+                # Trusted roots may authorize ONLY media assets — never app configs, logs, or ledgers (RC-03).
+                if resolved.is_dir():
+                    return True
+                suffix = resolved.suffix.lower()
+                return suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg"}
+            return False
 
     def authorize_existing(self, raw_path: str | Path, *, workflow: str = "single_start") -> ValidatedReference:
         """Verify that a path is authorized AND still exists/valid on disk."""

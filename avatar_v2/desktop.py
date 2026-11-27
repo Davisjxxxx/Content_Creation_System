@@ -24,6 +24,18 @@ from . import brand_instructor
 from .desktop_presenter import PresenterMixin
 from .desktop_studio import StudioMixin
 from .integrity import sha256_file
+from .js_bridge import in_js_bridge
+from .ownership import (
+    OwnedProcessHandle,
+    ProcessOwnershipRecord,
+    classify_media_ownership,
+    inspect_process_identity,
+    load_ownership_record,
+    save_ownership_record,
+    send_signal_if_owned,
+    verify_process_ownership,
+    write_json_atomic,
+)
 from .voiceover import apply_pronunciations
 from .avatar_designer import build_designer_prompt, coverage_report, designer_spec, slot_by_id
 from .h3_runtime import H3_FPS, preset_by_id, presets_payload, valid_frame_count
@@ -48,6 +60,7 @@ QUEUE_DIR = APP_HOME / "queue"
 HISTORY_DIR = APP_HOME / "history"
 LIBRARY_DIR = APP_HOME / "library"
 COMFY_PID_PATH = APP_HOME / "comfyui.pid"
+COMFY_OWNER_PATH = APP_HOME / "comfyui_owner.json"
 COMFY_LOG_PATH = APP_HOME / "logs" / "comfyui.log"
 RUNWAY_AVATARS_PATH = APP_HOME / "runway_avatars.json"
 CLOUD_LEDGER_PATH = APP_HOME / "cloud_ledger.jsonl"
@@ -138,15 +151,8 @@ _RUNWAY_NUMERIC_SETTINGS = (
 
 
 def _proc_alive(pid: int | None) -> bool:
-    """True only for a live process (a zombie's /proc entry does not count)."""
-    if not pid:
-        return False
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
-            state = handle.read().split()[2]
-        return state != "Z"
-    except (OSError, IndexError):
-        return False
+    """True only for a live non-zombie process (uses safe /proc stat parser)."""
+    return inspect_process_identity(pid) is not None
 
 
 def _sanitize_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
@@ -183,8 +189,7 @@ def _read_json(path: Path, default: Any) -> Any:
 
 
 def _write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    write_json_atomic(path, data)
 
 
 def _clean_paths(items: list[str] | None) -> list[str]:
@@ -260,6 +265,7 @@ def _reference_bindings(job: RenderJob, resolved: dict[str, Any] | None = None) 
 class DesktopAPI(StudioMixin, PresenterMixin):
     def __init__(self) -> None:
         self._self_window = None
+        self._owned_comfy_handle: OwnedProcessHandle | None = None
         APP_HOME.mkdir(parents=True, exist_ok=True)
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
         HISTORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -814,6 +820,9 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             target_path = Path(path).expanduser().resolve()
             if not target_path.exists():
                 return {"ok": False, "error": f"File or folder no longer exists: {target_path}"}
+            if in_js_bridge():
+                if not self._reference_manager().is_path_authorized(target_path):
+                    return {"ok": False, "error": "That path is not authorized for opening through Avatar V2."}
             target = str(target_path)
             system = platform.system()
             if system == "Windows":
@@ -1781,6 +1790,41 @@ class DesktopAPI(StudioMixin, PresenterMixin):
     # ComfyUI service management
     # ------------------------------------------------------------------
 
+    def _clear_comfy_ownership_files(self) -> None:
+        handle = getattr(self, "_owned_comfy_handle", None)
+        if handle is not None:
+            handle.close()
+            self._owned_comfy_handle = None
+        for p in (COMFY_OWNER_PATH, COMFY_PID_PATH):
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+    def _current_comfy_ownership(self) -> tuple[str, ProcessOwnershipRecord | None, str]:
+        """Classify ComfyUI process ownership fail-closed: owned_private / stale_or_reused / none."""
+        handle = getattr(self, "_owned_comfy_handle", None)
+        if handle is not None:
+            ok, reason = verify_process_ownership(handle.record)
+            if ok and handle.proc.poll() is None:
+                return "owned_private", handle.record, reason
+            handle.close()
+            self._owned_comfy_handle = None
+
+        record = load_ownership_record(COMFY_OWNER_PATH)
+        if record is not None:
+            ok, reason = verify_process_ownership(record)
+            if ok:
+                return "owned_private", record, reason
+            return "stale_or_reused", record, reason
+
+        # Legacy bare integer pid file WITHOUT verified ownership metadata is NEVER trusted for signalling.
+        if COMFY_PID_PATH.is_file():
+            return "stale_or_reused", None, "unverified_legacy_pid_file"
+        return "none", None, "no_record"
+
     def comfyui_status(self) -> dict[str, Any]:
         settings = self._settings()
         ready = False
@@ -1789,26 +1833,33 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             ready = True
         except Exception:
             pass
-        pid = None
-        try:
-            pid = int(COMFY_PID_PATH.read_text(encoding="utf-8").strip())
-        except (FileNotFoundError, ValueError):
-            pass
-        alive = _proc_alive(pid)
-        if ready:
+        own_kind, record, own_reason = self._current_comfy_ownership()
+        owned = own_kind == "owned_private" and record is not None
+        pid = record.pid if owned else None
+
+        if ready and owned:
             state = "READY"
-        elif alive:
+            ownership = "owned_private"
+        elif ready and not owned:
+            state = "READY"
+            ownership = "shared_or_external"
+        elif owned:
             state = "STARTING"
-        elif pid:
+            ownership = "owned_private"
+        elif own_kind == "stale_or_reused":
             state = "ERROR"
+            ownership = "stale_or_reused"
         else:
             state = "STOPPED"
+            ownership = "stopped"
         return {
             "ok": True,
             "state": state,
             "ready": ready,
-            "pid": pid if alive else None,
-            "managed": bool(pid),
+            "pid": pid,
+            "managed": owned,
+            "ownership": ownership,
+            "ownership_reason": own_reason,
             "comfyui_dir": settings.get("comfyui_dir") or "",
             "comfyui_python": settings.get("comfyui_python") or "",
         }
@@ -1911,8 +1962,25 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             )
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        COMFY_PID_PATH.write_text(str(proc.pid), encoding="utf-8")
-        return {"ok": True, "state": "STARTING", "pid": proc.pid}
+        try:
+            port_int = int(port)
+        except ValueError:
+            port_int = None
+        owner_rec = ProcessOwnershipRecord.capture_for_pid(
+            proc.pid,
+            port=port_int,
+            fallback_cmdline=[python, *launch_args],
+        )
+        old_handle = getattr(self, "_owned_comfy_handle", None)
+        if old_handle is not None:
+            old_handle.close()
+        self._owned_comfy_handle = OwnedProcessHandle(proc, owner_rec)
+        save_ownership_record(COMFY_OWNER_PATH, owner_rec)
+        try:
+            COMFY_PID_PATH.write_text(str(proc.pid), encoding="utf-8")
+        except OSError:
+            pass
+        return {"ok": True, "state": "STARTING", "pid": proc.pid, "ownership": "owned_private"}
 
     def _engine_restart_hook(self) -> None:
         """The queue's recovery hook: start our own ComfyUI, and raise when it cannot start
@@ -1922,66 +1990,97 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             raise RuntimeError(str(result["error"]))
 
     def comfyui_stop(self, wait_s: float = 90.0, force: bool = False) -> dict[str, Any]:
-        """Ask the ComfyUI that Avatar V2 started to exit.
+        """Ask the ComfyUI that Avatar V2 exclusively owns to exit.
 
-        A loaded engine can take a minute to release its models, so a slow exit is reported as
-        "still shutting down", not as an error. With ``force=True`` (used at app shutdown), the
-        app then kills its *own* engine process if it hasn't exited in time, so the GPU is free
-        for other programs. Force-kill is scoped to the pid this app started; it never touches
-        any other process.
+        Fail-closed process ownership (Astra RC-01):
+        - Verifies live OwnedProcessHandle (kernel pidfd) or OS start_ticks + boot_id + exe/cmdline
+          before sending ANY signal.
+        - NEVER signals a stale, reused, unrecognized, or externally managed/shared renderer PID.
+        - Repeated shutdown calls are idempotent and safe.
         """
         current = self.comfyui_status()
-        if not current["ready"] and not current["pid"]:
-            try:  # a stale pid file would otherwise look like a crashed engine on next start
-                COMFY_PID_PATH.unlink()
-            except FileNotFoundError:
-                pass
-            return {"ok": True, "state": "STOPPED", "message": "ComfyUI is not running."}
-        pid = current["pid"]
-        if not pid:
+        own_kind, record, own_reason = self._current_comfy_ownership()
+
+        if current["ownership"] == "shared_or_external":
+            # External/shared renderer: clean any stale leftover record but NEVER signal the process!
+            if own_kind == "stale_or_reused":
+                self._clear_comfy_ownership_files()
             return {
                 "ok": False,
+                "state": "READY",
+                "ownership": "shared_or_external",
+                "signalled": False,
                 "error": (
-                    "ComfyUI is running but was not started by Avatar V2. "
-                    "Stop it from its own terminal or use GPU Details for an explicit PID action."
+                    "ComfyUI is running as a shared or externally managed service not owned by Avatar V2 "
+                    f"({own_reason}). Refusing to signal it."
                 ),
             }
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            pass
+
+        if own_kind == "stale_or_reused":
+            # Stale or reused PID: NEVER signal! Remove stale ownership files safely.
+            self._clear_comfy_ownership_files()
+            return {
+                "ok": True,
+                "state": "STOPPED",
+                "ownership": "stale_or_reused",
+                "signalled": False,
+                "message": f"Cleared stale/unverified engine ownership record ({own_reason}) without signalling any process.",
+            }
+
+        if own_kind != "owned_private" or record is None:
+            self._clear_comfy_ownership_files()
+            return {"ok": True, "state": "STOPPED", "ownership": "stopped", "signalled": False, "message": "ComfyUI is not running."}
+
+        handle = getattr(self, "_owned_comfy_handle", None)
+        sent, sig_reason = send_signal_if_owned(record, signal.SIGTERM, handle=handle)
+        if not sent:
+            self._clear_comfy_ownership_files()
+            return {
+                "ok": True,
+                "state": "STOPPED",
+                "pid": record.pid,
+                "signalled": False,
+                "message": f"Owned ComfyUI process was no longer active ({sig_reason}).",
+            }
+
         deadline = time.monotonic() + max(float(wait_s), 0.0)
-        while time.monotonic() < deadline and _proc_alive(pid):
-            time.sleep(0.5)
-        if _proc_alive(pid):
+        while time.monotonic() < deadline:
+            still_owned, _ = verify_process_ownership(record)
+            if not still_owned:
+                break
+            time.sleep(0.2)
+
+        still_owned, _ = verify_process_ownership(record)
+        if still_owned:
             if force:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    pass
-                time.sleep(0.5)
-                try:
-                    COMFY_PID_PATH.unlink()
-                except FileNotFoundError:
-                    pass
-                if not _proc_alive(pid):
-                    return {"ok": True, "state": "STOPPED", "pid": pid,
-                            "message": "ComfyUI was force-stopped at shutdown so the GPU is free."}
-            return {"ok": True, "state": "STOPPING", "pid": pid,
-                    "message": "ComfyUI is still shutting down (releasing its models); it finishes on its own."}
-        try:
-            COMFY_PID_PATH.unlink()
-        except FileNotFoundError:
-            pass
-        return {"ok": True, "state": "STOPPED", "pid": pid}
+                # Re-verify ownership right before SIGKILL (atomic pidfd when handle active!).
+                send_signal_if_owned(record, signal.SIGKILL, handle=handle)
+                time.sleep(0.25)
+                still_after, _ = verify_process_ownership(record)
+                self._clear_comfy_ownership_files()
+                if not still_after:
+                    return {
+                        "ok": True,
+                        "state": "STOPPED",
+                        "pid": record.pid,
+                        "signalled": True,
+                        "message": "Owned ComfyUI process was force-stopped at shutdown so the GPU is free.",
+                    }
+            return {
+                "ok": True,
+                "state": "STOPPING",
+                "pid": record.pid,
+                "signalled": True,
+                "message": "Owned ComfyUI is still shutting down (releasing its models); it finishes on its own.",
+            }
+
+        self._clear_comfy_ownership_files()
+        return {"ok": True, "state": "STOPPED", "pid": record.pid, "signalled": True}
 
     def shutdown_engine(self) -> None:
-        """App close-down: stop queue work and make sure the GPU is fully released.
+        """App close-down: stop queue work and release GPU ONLY for an app-owned private engine.
 
-        Order matters: the queue stops picking new work, ComfyUI is asked to unload its models
-        (fast VRAM release through ``POST /free``), and the app's own engine process is stopped —
-        force-killed if it hasn't exited within the grace period — so closing the app always
-        frees the GPU for videos, games, or other GPU work.
+        Never calls ``POST /free`` or sends OS signals to a shared or externally managed renderer.
         """
         try:
             mgr = getattr(self, "_script_run_manager", None)
@@ -1998,11 +2097,15 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         except Exception:
             pass
         try:
-            ComfyUIProvider(self._provider_config({})).free_memory(unload_models=True, free_memory=True)
-        except Exception:
-            pass
-        try:
-            self.comfyui_stop(wait_s=10.0, force=True)
+            status = self.comfyui_status()
+            if status.get("ownership") == "owned_private":
+                try:
+                    ComfyUIProvider(self._provider_config({})).free_memory(unload_models=True, free_memory=True)
+                except Exception:
+                    pass
+                self.comfyui_stop(wait_s=10.0, force=True)
+            elif status.get("ownership") == "stale_or_reused":
+                self._clear_comfy_ownership_files()
         except Exception:
             pass
 

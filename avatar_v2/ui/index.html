@@ -771,7 +771,7 @@ function makeTile(path,kind,opts){
   return t;
 }
 function resultItems(filter){const out=[];(st.data.results||[]).forEach(r=>{if(r.status!=='done')return;if(filter&&r.action!==filter)return;r.outputs.forEach(o=>out.push({...o,result:r}))});return out}
-async function stDelete(path,tile){let r;try{r=await window.pywebview.api.studio_delete({path})}catch(e){r={ok:false,error:String(e)}}
+async function stDelete(path,tile,detachOnly){let r;try{r=await window.pywebview.api.studio_delete(detachOnly?{path,detach_only:true}:{path})}catch(e){r={ok:false,error:String(e)}}
   if(!r.ok){say(r.error||'Could not delete it.','err');return}
   say(`Deleted ${base(path)}`,'ok');if(tile)tile.remove();
   ['moveImage','sceneImage','actImage','anglesImage'].forEach(k=>{if(st[k]===path)st[k]=''});
@@ -820,7 +820,7 @@ function stRenderHer(){const d=st.data;const side=$('sideHer');
   if(d.master)stThumb($('sideHerImg'),d.master);
   $('startBanner').style.display=d.master?'none':'flex';
   const box=$('lookMaster');
-  if(d.master){box.innerHTML='';const row=document.createElement('div');row.className='row';row.appendChild(makeTile(d.master,'image',{badge:'her master photo',title:'Her master photo',onOpen:()=>viewerOpen(keptItems(),0),actions:[{label:'Remove',title:'Delete this photo and start from a blank slate',run:()=>stDelete(d.master)}]}));row.firstChild.style.width='170px';const txt=document.createElement('div');txt.className='tiny';txt.style.maxWidth='420px';txt.textContent='This is her. Every recipe uses this face. To change her, make new options below and pick one — or Remove it and pick a start photo per recipe.';row.appendChild(txt);box.appendChild(row)}
+  if(d.master){box.innerHTML='';const row=document.createElement('div');row.className='row';row.appendChild(makeTile(d.master,'image',{badge:'her master photo',title:'Her master photo',onOpen:()=>viewerOpen(keptItems(),0),actions:[{label:'Remove',title:'Detach her master photo reference (your original file stays untouched)',run:()=>stDelete(d.master,null,true)}]}));row.firstChild.style.width='170px';const txt=document.createElement('div');txt.className='tiny';txt.style.maxWidth='420px';txt.textContent='This is her. Every recipe uses this face. To change her, make new options below and pick one — or Remove it and pick a start photo per recipe.';row.appendChild(txt);box.appendChild(row)}
   else box.innerHTML='';
 }
 function keptItems(){const d=st.data;return [...(d.master?[{path:d.master,title:'Her master photo'}]:[]),...d.photos.map(p=>({path:p.path,title:p.label}))]}

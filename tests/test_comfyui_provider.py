@@ -65,7 +65,7 @@ def test_health_object_info_queue_interrupt_status_and_free(monkeypatch):
     assert provider.health() == {"system": "ok"}
     assert provider.object_info("Node") == {"Node": {}}
     assert provider.queue({"1": {}}) == "prompt-1"
-    provider.interrupt()
+    assert provider.interrupt(allow_global=True) is True
     assert provider.queue_status() == {"running": 1, "pending": 2, "busy": True}
     provider.free_memory(unload_models=False)
     assert calls[1][1].endswith("/object_info/Node")
