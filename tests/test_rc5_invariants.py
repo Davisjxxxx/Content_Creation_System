@@ -205,3 +205,16 @@ def test_output_changed_during_inspection_cannot_acquire_a_bound_pass(tmp_path, 
     monkeypatch.setattr(visual_inspector, "inspect_media_deterministic", replace_after_read)
     result = visual_inspector.VisualInspector().inspect_image(path, record, use_vlm=False)
     assert result.ui_status_label == "Not inspected"
+
+
+def test_uncertain_acknowledgement_cannot_be_used_for_cancellation(tmp_path):
+    from test_render_queue_lifecycle import _queue_shell
+
+    item = _item(tmp_path, status="running", phase="recovery_required", prompt_id="ambiguous")
+    queue = _queue_shell(tmp_path, [item])
+    provider = ComfyUIProvider(item.provider_config)
+    queue._active_id, queue._active_provider = item.id, provider
+    with patch.object(ComfyUIProvider, "interrupt", autospec=True) as interrupt:
+        assert queue.cancel(item.id) is False
+        interrupt.assert_not_called()
+    assert item.phase == "recovery_required"

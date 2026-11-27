@@ -542,17 +542,18 @@ class RenderQueue:
                     cancelled_queued_item = item
                     break
                 if item.status == "running":
+                    if item.phase == "recovery_required":
+                        return False
                     ev = self.get_cancel_event(item.id)
                     ev.set()
                     prev_phase = item.phase
                     item.runtime["cancelled_during_phase"] = prev_phase
-                    if self._active_id == item.id and self._active_provider is not None:
+                    if (prev_phase not in {"inspecting", "correcting", "persisting", "output_received"}
+                            and self._active_id == item.id and self._active_provider is not None):
                         try:
                             self._interrupt_provider(self._active_provider, item.prompt_id)
                         except Exception:
                             pass
-                    if item.phase == "recovery_required":
-                        return False
                     item.status = "cancelled"
                     item.phase = "cancelled"
                     item.state_revision += 1
@@ -1149,13 +1150,14 @@ class RenderQueue:
     def _record_local_submitted(self, item: QueuedRender, prompt_id: str) -> None:
         """Persist local ComfyUI prompt_id durably BEFORE waiting so crashes can reconcile safely (F08 / RC-10)."""
         with self._lock:
-            item.prompt_id = str(prompt_id)
             item.phase = "rendering"
             item.state_revision += 1
             try:
                 self._claim_prompt(item, prompt_id, "base")
+                item.prompt_id = str(prompt_id)
                 self._persist_item_durable(item)
             except OSError as exc:
+                item.runtime["unconfirmed_acknowledgement"] = str(prompt_id)
                 item.runtime["ack_persist_error"] = f"{type(exc).__name__}: {exc}"
                 item.phase = "recovery_required"
                 item.memory_events.append(
@@ -1698,12 +1700,11 @@ class RenderQueue:
                 with self._lock:
                     self._finish_execution(item, render_succeeded, cancel_event.is_set())
 
-                try:
-                    self._record_cloud_final(item)
-                except OSError as exc:
-                    item.memory_events.append({"reason": "cloud-ledger-write-failed", "error": f"{type(exc).__name__}: {exc}"})
+                    try:
+                        self._record_cloud_final(item)
+                    except OSError as exc:
+                        item.memory_events.append({"reason": "cloud-ledger-write-failed", "error": f"{type(exc).__name__}: {exc}"})
 
-                with self._lock:
                     item.finished_at = None if item.status == "queued" else time.time()
                     self._active_provider = None
                     self._active_id = None

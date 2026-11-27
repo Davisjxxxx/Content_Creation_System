@@ -5,15 +5,15 @@
     "........................................................................ [ 43%]",
     "........................................................................ [ 57%]",
     "........................................................................ [ 71%]",
-    ".....................s........................ss.....s.................. [ 86%]",
-    ".....................................................................    [100%]",
-    "496 passed, 5 skipped in 43.21s"
+    "......................s........................ss.....s................. [ 86%]",
+    "......................................................................   [100%]",
+    "497 passed, 5 skipped in 42.35s"
   ],
   "bubblewrap_host": [
     ".....                                                                    [100%]",
-    "5 passed in 4.30s"
+    "5 passed in 4.32s"
   ],
-  "distinct_cases": 501,
+  "distinct_cases": 502,
   "suite_command": "python -m pytest -q -o addopts= -p no:cacheprovider --tb=short tests",
   "host_tests": [
     "test_rc17_missing_prlimit_fails_closed_and_bounded_output_prevents_unbounded_ram",
@@ -21,5 +21,11 @@
     "test_live_bubblewrap_kills_runaway_script_cleanly",
     "test_journey_e_live_bwrap_sandbox_isolation_and_fail_closed",
     "test_phase_b_live_bwrap_cleans_up_spawned_child_processes"
-  ]
+  ],
+  "preliminary_regression": {
+    "commit": "957db52c6b3cb8b38b38f1cc1bd61defb85372a0",
+    "mock_interrupt_calls_for_ambiguous_ack": 1,
+    "final_expected": 0,
+    "test": "test_uncertain_acknowledgement_cannot_be_used_for_cancellation"
+  }
 }
