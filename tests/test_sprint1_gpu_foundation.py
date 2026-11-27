@@ -102,12 +102,15 @@ def test_render_queue_unloads_on_workflow_switch_and_error(tmp_path: Path, monke
         def stop_trace(self):
             return {}
 
+    still_png = tmp_path / "still.png"
+    still_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
     class FakeProv:
         def __init__(self, _cfg):
             pass
 
         def render(self, _wf, _job):
-            return {"prompt_id": "p1", "outputs": []}
+            return {"prompt_id": "p1", "outputs": [str(still_png)]}
 
     queue.memory_manager = FakeMem()
     monkeypatch.setattr(render_queue, "ComfyUIProvider", FakeProv)

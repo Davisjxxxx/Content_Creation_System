@@ -557,12 +557,15 @@ def test_cloud_jobs_route_to_runway_and_skip_local_gpu_cleanup(tmp_path, monkeyp
 
 
 def test_local_comfyui_jobs_keep_forced_preclean(tmp_path, monkeypatch):
+    out_mp4 = tmp_path / "out.mp4"
+    out_mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+
     class FakeComfy:
         def __init__(self, config):
             pass
 
         def render(self, workflow, job):
-            return {"prompt_id": "p", "outputs": []}
+            return {"prompt_id": "p", "outputs": [str(out_mp4)]}
 
     monkeypatch.setattr(render_queue, "ComfyUIProvider", FakeComfy)
     item = _cloud_item(tmp_path, profile="int8_12gb")

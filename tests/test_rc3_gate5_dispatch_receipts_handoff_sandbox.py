@@ -208,6 +208,8 @@ def test_rc13_resolved_graph_seed_still_frames_and_real_mp4_ffprobe(
     history_dir = tmp_path / "history"
     out_png = tmp_path / "still.png"
     Image.new("RGB", (512, 768), color=(80, 120, 160)).save(out_png, format="PNG")
+    out_mp4 = tmp_path / "wan_out.mp4"
+    out_mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
 
     class ResolvedGraphProvider:
         uses_local_gpu = True
@@ -222,21 +224,23 @@ def test_rc13_resolved_graph_seed_still_frames_and_real_mp4_ffprobe(
                     "5": {"class_type": "EmptyFlux2LatentImage", "inputs": {"width": 512, "height": 768}},
                     "6": {"class_type": "RandomNoise", "inputs": {"noise_seed": 999888777}},
                 }
+                outs = [str(out_png)]
             else:
                 resolved = {
                     "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": "Wan2.2-I2V-A14B-HighNoise-Q4_K_S.gguf"}},
                     "12": {"class_type": "WanImageToVideo", "inputs": {"width": 480, "height": 832, "length": 81}},
                     "13": {"class_type": "KSamplerAdvanced", "inputs": {"add_noise": "enable", "noise_seed": 1428693541, "steps": 4, "cfg": 1.0}},
                 }
+                outs = [str(out_mp4)]
             if on_resolved is not None:
                 on_resolved(resolved)
             if on_submitted is not None:
                 on_submitted("pid-rc13")
-            return {"prompt_id": "pid-rc13", "outputs": [str(out_png)]}
+            return {"prompt_id": "pid-rc13", "outputs": outs}
 
     monkeypatch.setattr(rq, "ComfyUIProvider", ResolvedGraphProvider)
     # Bypass Ollama HTTP check in unit test
-    monkeypatch.setattr(ollama_client, "_fetch_running_ollama_models_status", lambda *a, **k: (False, [], "offline"))
+    monkeypatch.setattr(ollama_client, "fetch_ollama_ps_state", lambda *a, **k: ("offline", [], "offline"))
 
     q = rq.RenderQueue(work_dir=work_dir, history_dir=history_dir, memory_manager=GPUMemoryManager(enabled=False))
     try:
@@ -305,8 +309,8 @@ def test_rc14_render_queue_blocks_comfyui_when_ollama_holds_vram(
     monkeypatch.setattr(rq, "ComfyUIProvider", SpyComfy)
     monkeypatch.setattr(
         ollama_client,
-        "_fetch_running_ollama_models_status",
-        lambda *a, **k: (True, [{"name": "qwen3-vl:8b", "size_vram": 5_500_000_000}], ""),
+        "fetch_ollama_ps_state",
+        lambda *a, **k: ("online", [{"name": "qwen3-vl:8b", "size_vram": 5_500_000_000}], ""),
     )
     monkeypatch.setattr(
         ollama_client,
@@ -489,7 +493,8 @@ def test_rc17_descendant_tree_tracks_setsid_children_and_aggregate_rss() -> None
         assert os.getpgid(c1_pid) != pgid
         assert os.getpgid(c2_pid) != pgid
 
-        pids, total_rss_kb = sr.ScriptRunManager._collect_descendant_tree_stats(proc.pid, pgid)
+        tel_ok, pids, total_rss_kb, tel_err = sr.ScriptRunManager._collect_descendant_tree_stats(proc.pid, pgid)
+        assert tel_ok is True, f"Telemetry failed unexpectedly: {tel_err}"
         assert {proc.pid, c1_pid, c2_pid}.issubset(pids), (
             f"setsid() descendants escaped process tree tracking! expected {proc.pid, c1_pid, c2_pid}, got {pids}"
         )
@@ -499,7 +504,7 @@ def test_rc17_descendant_tree_tracks_setsid_children_and_aggregate_rss() -> None
         sr.ScriptRunManager._terminate_process_group(proc, pgid=pgid)
         proc.wait(timeout=5.0)
         time.sleep(0.2)
-        rem_pids, _ = sr.ScriptRunManager._collect_descendant_tree_stats(proc.pid, pgid)
+        _tel_ok2, rem_pids, _rss2, _err2 = sr.ScriptRunManager._collect_descendant_tree_stats(proc.pid, pgid)
         assert c1_pid not in rem_pids and c2_pid not in rem_pids
     finally:
         if proc.poll() is None:

@@ -198,6 +198,7 @@ def test_inspection_contract_and_no_false_verification() -> None:
     a_pass = CriterionAssessment(
         criterion_id="c1", original_requirement="Three mugs", category="object_quantities",
         mandatory=True, inspection_method="local_vlm", status="passed", observed_evidence="3 mugs",
+        independent_corroboration=True,
     )
     a_unc = CriterionAssessment(
         criterion_id="c2", original_requirement="Rear hairstyle matches", category="multiview_reference",

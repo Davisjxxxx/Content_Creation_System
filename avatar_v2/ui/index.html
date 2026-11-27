@@ -791,20 +791,24 @@ function _resolveOutputInspection(r,path){
   const multiOut=!!(r&&Array.isArray(r.outputs)&&r.outputs.length>1);
   const perOut=(hasMap&&Object.prototype.hasOwnProperty.call(map,path))?map[path]:null;
   if(perOut){
-    const uninspected=perOut.inspected===false||perOut.decision==='uninspected';
+    const invalid=perOut.stale===true||perOut.inspected===false||perOut.decision==='uninspected'||perOut.decision==='stale';
     return {
       perOut,
       ins:perOut,
-      cor:uninspected?null:(r&&r.correction?r.correction:null),
-      statusLbl:perOut.ui_status_label||(uninspected?'Not inspected':'')
+      cor:invalid?null:(r&&r.correction?r.correction:null),
+      statusLbl:invalid?(perOut.ui_status_label||'Not inspected'):(perOut.ui_status_label||'')
     };
   }
-  // RC-09: NEVER fall back from a missing per-output entry to job-level verified status!
+  // F05 / RC-09: NEVER fall back from a missing per-output entry to job-level verified status!
   if(hasMap||multiOut){
     const un={ui_status:'generated',ui_status_label:'Not inspected',decision:'uninspected',inspected:false};
     return {perOut:null,ins:un,cor:null,statusLbl:'Not inspected'};
   }
   const ins=(r&&r.inspection)?r.inspection:null;
+  const insInvalid=!!(ins&&(ins.stale===true||ins.inspected===false||ins.decision==='stale'||ins.decision==='uninspected'));
+  if(insInvalid){
+    return {perOut:null,ins,cor:null,statusLbl:ins.ui_status_label||'Not inspected'};
+  }
   const cor=(r&&r.correction)?r.correction:null;
   return {perOut:null,ins,cor,statusLbl:(cor&&cor.ui_status_label)||(ins&&ins.ui_status_label)||''};
 }

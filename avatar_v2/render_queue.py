@@ -170,7 +170,7 @@ def _extract_resolved_workflow_params(resolved: dict[str, Any]) -> dict[str, Any
                 except (TypeError, ValueError):
                     pass
             out.setdefault("frames", 1)
-        elif ctype == "WanImageToVideo":
+        elif ctype in {"WanImageToVideo", "WanFirstLastFrameToVideo", "WanFunControlToVideo"}:
             for k_src, k_dst in (("width", "width"), ("height", "height"), ("length", "frames")):
                 if k_src in inputs:
                     try:
@@ -336,6 +336,7 @@ class QueuedRender:
     output_hashes: dict[str, str] = field(default_factory=dict)
     submitted_params: dict[str, Any] = field(default_factory=dict)
     observed_media: list[dict[str, Any]] = field(default_factory=list)
+    state_revision: int = 0
     queued_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -357,8 +358,10 @@ class QueuedRender:
             "cloud_receipt": self.cloud_receipt,
             "cloud_estimate": self.runtime.get("estimate_credits") if self.provider_config.provider != "comfyui" else None,
             "output_hashes": self.output_hashes,
+            "requested_params": self.runtime.get("requested_params") or {},
             "submitted_params": self.submitted_params,
             "observed_media": self.observed_media,
+            "state_revision": self.state_revision,
             "candidate_slot": self.runtime.get("candidate_slot"),
             "studio_action": self.runtime.get("studio_action"),
             "profile": self.profile,
@@ -459,16 +462,54 @@ class RenderQueue:
             return ev
 
     def add(self, item: QueuedRender) -> str:
+        # F06: Commit durable item checkpoint BEFORE making the item visible in memory or waking the worker!
+        # A failed persistence write leaves ZERO runnable jobs in memory or on disk.
+        items_dir = self.work_dir / "items"
         with self._lock:
+            items_dir.mkdir(parents=True, exist_ok=True)
+            item_path = items_dir / f"{item.id}.json"
+            item.state_revision += 1
+            write_durable(item_path, json.dumps(self._item_to_dict(item), indent=2))
             self._items.append(item)
-            self._persist()
+            try:
+                self._persist()
+            except OSError:
+                self._items.pop()
+                try:
+                    item_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
         self._wake.set()
         return item.id
 
     def add_many(self, items: list[QueuedRender]) -> list[str]:
+        if not items:
+            return []
+        items_dir = self.work_dir / "items"
+        written_paths: list[Path] = []
         with self._lock:
-            self._items.extend(items)
-            self._persist()
+            items_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                for item in items:
+                    item.state_revision += 1
+                    p = items_dir / f"{item.id}.json"
+                    write_durable(p, json.dumps(self._item_to_dict(item), indent=2))
+                    written_paths.append(p)
+                prev_len = len(self._items)
+                self._items.extend(items)
+                try:
+                    self._persist()
+                except OSError:
+                    del self._items[prev_len:]
+                    raise
+            except OSError:
+                for p in written_paths:
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise
         self._wake.set()
         return [item.id for item in items]
 
@@ -506,6 +547,7 @@ class RenderQueue:
         interrupt()
 
     def cancel(self, item_id: str) -> bool:
+        cancelled_queued_item: QueuedRender | None = None
         with self._lock:
             for item in self._items:
                 if item.id != item_id:
@@ -514,10 +556,12 @@ class RenderQueue:
                     self.get_cancel_event(item.id).set()
                     item.status = "cancelled"
                     item.phase = "cancelled"
+                    item.state_revision += 1
                     item.finished_at = time.time()
                     self._persist()
                     self._persist_history(item)
-                    return True
+                    cancelled_queued_item = item
+                    break
                 if item.status == "running":
                     ev = self.get_cancel_event(item.id)
                     ev.set()
@@ -530,6 +574,7 @@ class RenderQueue:
                             pass
                     item.status = "cancelled"
                     item.phase = "cancelled"
+                    item.state_revision += 1
                     item.finished_at = time.time()
                     try:
                         self._persist()
@@ -538,6 +583,15 @@ class RenderQueue:
                         pass
                     return True
                 return False
+        if cancelled_queued_item is not None:
+            # F13 / RC-19: Release staged reference pins on queued cancellation as well as worker finish!
+            on_finished = getattr(self, "_on_job_finished", None)
+            if callable(on_finished):
+                try:
+                    on_finished(cancelled_queued_item)
+                except Exception:
+                    pass
+            return True
         return False
 
     def _release_dir_lock(self) -> None:
@@ -576,7 +630,11 @@ class RenderQueue:
             "workflow": item.workflow,
             "provider_config": item.provider_config.model_dump(),
             "profile": item.profile,
-            "runtime": item.runtime,
+            "runtime": {
+                k: v
+                for k, v in (item.runtime or {}).items()
+                if not (str(k).startswith("_") and callable(v))
+            },
             "output_dir": item.output_dir,
             "archive_dir": item.archive_dir,
             "chain_from_previous": item.chain_from_previous,
@@ -596,6 +654,7 @@ class RenderQueue:
             "output_hashes": item.output_hashes,
             "submitted_params": item.submitted_params,
             "observed_media": item.observed_media,
+            "state_revision": item.state_revision,
             "queued_at": item.queued_at,
             "started_at": item.started_at,
             "finished_at": item.finished_at,
@@ -678,10 +737,25 @@ class RenderQueue:
             output_hashes=dict(data.get("output_hashes") or {}),
             submitted_params=dict(data.get("submitted_params") or {}),
             observed_media=list(data.get("observed_media") or []),
+            state_revision=int(data.get("state_revision") or 0),
             queued_at=float(data.get("queued_at") or time.time()),
             started_at=data.get("started_at"),
             finished_at=data.get("finished_at"),
         )
+
+    def _has_committed_terminal_history(self, item_id: str) -> dict[str, Any] | None:
+        """Return committed terminal history record for ``item_id`` if it already exists on disk (F07)."""
+        hist_path = self.history_dir / f"{item_id}.json"
+        if not hist_path.is_file():
+            return None
+        existing = read_json_safe(hist_path, None, quarantine=False, expected_type=dict)
+        if not isinstance(existing, dict):
+            return None
+        st = str(existing.get("status") or "")
+        ph = str(existing.get("phase") or "")
+        if st == "done" or (st in {"cancelled", "error"} and ph in {"complete", "cancelled", "failed", "recovery_required"}):
+            return existing
+        return None
 
     def _restore(self) -> None:
         items_dir = self.work_dir / "items"
@@ -691,6 +765,16 @@ class RenderQueue:
             data = read_json_safe(path, None, quarantine=True, expected_type=dict)
             if data is None:
                 continue
+            item_id = str(data.get("id") or path.stem)
+            # F07 / RC-10 / RC-18: Committed terminal history ALWAYS takes precedence over a stale active
+            # checkpoint left behind if the process crashed before retiring items/<id>.json!
+            committed = self._has_committed_terminal_history(item_id)
+            if committed is not None:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
             try:
                 was_running = data.get("status") == "running"
                 item = self._item_from_dict(data)
@@ -699,9 +783,10 @@ class RenderQueue:
             self._items.append(item)
             if was_running and item.status == "error":
                 if item.provider_config.provider == "comfyui" and item.phase != "recovery_required":
-                    # Only pre-submission local renders (no prompt_id yet) safely requeue for one fresh attempt.
+                    # Only pre-submission local renders (no prompt_id / submission_token yet) safely requeue.
                     item.status = "queued"
                     item.phase = "queued"
+                    item.state_revision += 1
                     item.error = ""
                     item.error_category = ""
                     item.error_message = ""
@@ -730,6 +815,11 @@ class RenderQueue:
 
     def _persist_history(self, item: QueuedRender) -> None:
         path = self.history_dir / f"{item.id}.json"
+        # F07: NEVER overwrite an already-committed done/complete history receipt with a non-done recovery record!
+        existing = self._has_committed_terminal_history(item.id)
+        if existing is not None and existing.get("status") == "done" and item.status != "done":
+            self._drop_item_file(item)
+            return
         write_durable(path, json.dumps(item.public(), indent=2))
         self._drop_item_file(item)
 
@@ -982,18 +1072,26 @@ class RenderQueue:
             item.runtime["submitted_params"] = merged
 
     def _ensure_ollama_vram_released_before_comfy(self, item: QueuedRender) -> None:
-        """Bidirectional VRAM handoff: refuse ComfyUI GPU dispatch if local Ollama still holds GPU weights (RC-14)."""
+        """Bidirectional VRAM handoff: refuse ComfyUI GPU dispatch if Ollama holds VRAM or state is unknown (F10 / RC-14)."""
         from .ollama_client import (
             DEFAULT_OLLAMA_URL,
             LocalOllamaClient,
-            _fetch_running_ollama_models_status,
+            fetch_ollama_ps_state,
             verify_ollama_vram_released,
         )
 
         ollama_url = str(item.runtime.get("ollama_url") or DEFAULT_OLLAMA_URL)
-        ok, running, _err = _fetch_running_ollama_models_status(ollama_url, timeout_s=1.5)
-        if not ok:
-            return  # Ollama is offline/not running on this host
+        ps_state, running, ps_err = fetch_ollama_ps_state(ollama_url, timeout_s=1.5)
+        if ps_state == "offline":
+            return  # Ollama daemon is explicitly not listening (ConnectionRefused/ConnectError)
+        if ps_state == "unknown":
+            # F10: Timeout, HTTP error, or malformed /api/ps means residency is UNKNOWN -> fail closed!
+            ev = {"reason": "pre-comfy-ollama-handoff", "released": False, "status": "unknown", "error": ps_err}
+            item.memory_events.append(ev)
+            raise RuntimeError(
+                f"Cannot verify local Ollama VRAM release (status=unknown: {ps_err}); "
+                "refusing ComfyUI launch to prevent VRAM contention."
+            )
         gpu_holders = [
             str(m.get("name") or m.get("model") or "")
             for m in running
@@ -1017,16 +1115,23 @@ class RenderQueue:
             )
 
     def _record_local_submitted(self, item: QueuedRender, prompt_id: str) -> None:
-        """Persist local ComfyUI prompt_id durably BEFORE waiting so crashes can reconcile safely."""
+        """Persist local ComfyUI prompt_id durably BEFORE waiting so crashes can reconcile safely (F08 / RC-10)."""
         with self._lock:
             item.prompt_id = str(prompt_id)
             item.phase = "rendering"
+            item.state_revision += 1
             try:
                 self._persist_item_durable(item)
             except OSError as exc:
+                item.runtime["ack_persist_error"] = f"{type(exc).__name__}: {exc}"
+                item.phase = "recovery_required"
                 item.memory_events.append(
                     {"reason": "local-submit-persist-failed", "error": f"{type(exc).__name__}: {exc}"}
                 )
+                # F08: Do NOT continue with a diverged in-memory prompt_id and stale on-disk checkpoint!
+                raise RuntimeError(
+                    f"Failed to durably persist acknowledged ComfyUI prompt_id '{prompt_id}': {exc}"
+                ) from exc
 
     @staticmethod
     def _call_provider_render(
@@ -1069,6 +1174,11 @@ class RenderQueue:
         classified = classify_exception(exc)
         partial_raw = list(getattr(exc, "partial_outputs", None) or [])
         with self._lock:
+            already_submitted = bool(
+                item.prompt_id
+                or item.phase in POST_SUBMIT_PHASES
+                or item.runtime.get("submission_token")
+            )
             receipt = getattr(exc, "receipt", None)
             if isinstance(receipt, dict) and receipt:
                 item.cloud_receipt = {**item.cloud_receipt, **dict(receipt)}
@@ -1079,17 +1189,28 @@ class RenderQueue:
                     item.partial_outputs = partial_raw
             if item.status != "cancelled":
                 item.status = "error"
-                item.phase = "failed"
+                # F06 / F08: Once a prompt was submitted/acknowledged (or timeout/ack-persist failed after submit),
+                # NEVER clear prompt_id or automatically schedule a duplicate fresh submission!
+                if already_submitted and (
+                    classified.category == "timeout"
+                    or item.runtime.get("ack_persist_error")
+                    or item.phase == "recovery_required"
+                ):
+                    item.phase = "recovery_required"
+                else:
+                    item.phase = "failed"
+                item.state_revision += 1
                 item.error = f"{type(exc).__name__}: {exc}"
                 item.error_category = classified.category
                 item.error_message = classified.message
-        # One automatic recovery for local renders when the engine died or CUDA broke:
-        # clean the GPU through the safe memory manager, restart our own ComfyUI, retry once.
+        # One automatic recovery for local renders ONLY when failure happened strictly BEFORE
+        # renderer submission/acknowledgement (never clearing an acknowledged prompt_id or replaying timeouts!).
         if (
             item.provider_config.provider == "comfyui"
             and item.status == "error"
+            and not already_submitted
             and int(item.runtime.get("recover_attempts") or 0) < 1
-            and item.error_category in {"comfyui_unavailable", "cuda_oom", "cuda_error_999", "timeout"}
+            and item.error_category in {"comfyui_unavailable", "cuda_oom", "cuda_error_999"}
         ):
             item.runtime["recover_attempts"] = int(item.runtime.get("recover_attempts") or 0) + 1
             item.memory_events.append({"reason": "engine-crash-recovery", "error": item.error})
@@ -1281,9 +1402,12 @@ class RenderQueue:
             cancel_event = self.get_cancel_event(item.id)
             try:
                 with self._lock:
-                    item.submitted_params = _snapshot_submitted_params(item, job)
+                    req_params = _snapshot_submitted_params(item, job)
+                    item.runtime["requested_params"] = dict(req_params)
+                    item.submitted_params = dict(req_params)
                     item.runtime["submitted_params"] = item.submitted_params
                     item.phase = "submitted"
+                    item.state_revision += 1
                     item.runtime["submission_token"] = uuid.uuid4().hex
                     # RC-10: Persist submission transition durably BEFORE contacting the renderer
                     # so a crash after ComfyUI accepts the prompt (before on_submitted runs) NEVER
@@ -1318,6 +1442,7 @@ class RenderQueue:
         with self._lock:
             item.prompt_id = result["prompt_id"]
             item.phase = "output_received"
+            item.state_revision += 1
         if result.get("cloud_receipt"):
             item.cloud_receipt = {**item.cloud_receipt, **dict(result["cloud_receipt"])}
         item.outputs = self._resolve_outputs(item, result["outputs"])
@@ -1326,6 +1451,32 @@ class RenderQueue:
         # F02 / RC-02: Never grant physical deletion authority to unarchived external provider paths!
         if item.runtime.get("extract_candidate_frame"):
             self._extract_candidate_frame(item)
+        # F11 / RC-16: Require at least one readable expected final artifact before declaring local render success!
+        if _uses_local_gpu(provider):
+            image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+            readable = [p for p in item.outputs if p and Path(p).is_file() and Path(p).stat().st_size > 0]
+            if not readable:
+                raise ComfyUIExecutionError(
+                    "ComfyUI reported completion without producing any readable final output artifact.",
+                    partial_outputs=list(item.outputs),
+                )
+            if _is_still_image_item(item) and not any(Path(p).suffix.lower() in image_exts for p in readable):
+                raise ComfyUIExecutionError(
+                    "ComfyUI image job completed without producing a readable final image file.",
+                    partial_outputs=list(item.outputs),
+                )
+            wf_lower = str(item.workflow or "").lower()
+            act_lower = str(item.runtime.get("studio_action") or "").lower()
+            expects_video = (
+                "wan22" in wf_lower
+                or act_lower in {"scene", "move", "forge_scene"}
+                or str(item.runtime.get("engine") or "").startswith("wan22_")
+            )
+            if expects_video and not any(Path(p).suffix.lower() in VIDEO_SUFFIXES for p in readable):
+                raise ComfyUIExecutionError(
+                    "ComfyUI video job completed without producing a readable final video file.",
+                    partial_outputs=list(item.outputs),
+                )
         item.output_hashes = hash_files(item.outputs)
         item.observed_media = _probe_output_media(item.outputs)
 

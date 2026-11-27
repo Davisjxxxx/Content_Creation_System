@@ -356,7 +356,11 @@ def compute_inspection_status(
     mandatory_uncertain = [a for a in mandatory if a.status in {"uncertain", "unverifiable", "pending"}]
     optional_failed = [a for a in assessments if not a.mandatory and a.status == "failed"]
     needs_human_corroboration = any(
-        a.verification_eligibility == "requires_human_review" and not a.independent_corroboration
+        (
+            a.verification_eligibility in {"requires_human_review", "hybrid_corroborated"}
+            and not a.independent_corroboration
+            and a.assessor not in {"human", "deterministic"}
+        )
         for a in mandatory
         if a.status == "passed"
     )

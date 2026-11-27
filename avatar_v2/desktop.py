@@ -1058,11 +1058,18 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         comfy_warm = bool(getattr(self.queue, "_last_local_model_id", None))
 
         def _cleanup_verified_released(ev: Any) -> bool:
+            # F10: Unified production GPUMemoryManager release-evidence contract.
             if not isinstance(ev, dict):
                 return False
-            if ev.get("error"):
+            if ev.get("error") or ev.get("ownership_denied") or ev.get("skipped"):
                 return False
-            return bool(ev.get("cleanup_performed") is True)
+            if ev.get("vram_released_verified") is True:
+                return True
+            if ev.get("cleanup_requested") is True and ev.get("effective") is True:
+                return True
+            if ev.get("cleanup_performed") is True and (ev.get("effective") is True or not ev.get("before")):
+                return True
+            return False
 
         if use_vlm and comfy_warm and item.provider_config.provider == "comfyui":
             try:
@@ -1121,6 +1128,27 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             }
         }
         correction_summary: dict[str, Any] | None = None
+        # F08: Persist initial inspection evidence durably BEFORE starting any dependent correction stage!
+        item.candidate_qa = {
+            "ok": True,
+            "decision": result.overall_decision,
+            "advisory": True,
+            "inspection": summary,
+            "output_inspections": dict(output_inspections),
+            "correction": None,
+        }
+        if hasattr(self, "queue") and self.queue is not None:
+            try:
+                item.state_revision += 1
+                self.queue._persist_item_durable(item)
+            except OSError as exc:
+                item.phase = "recovery_required"
+                item.memory_events.append({"reason": "inspection-checkpoint-persist-failed", "error": str(exc)})
+                return {
+                    **item.candidate_qa,
+                    "recovery_required": True,
+                    "error": f"Failed to persist initial inspection checkpoint: {exc}",
+                }
 
         # Optional host-bounded Sprint 8 automated correction when explicitly requested on local jobs.
         cancel_ev = (
@@ -1191,11 +1219,24 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                 raw_gen_hook = lambda step: self._execute_local_correction_step(item, step)
 
             def _persisting_gen_hook(step: Any) -> tuple[str, float]:
-                # RC-09: Persist generated candidate path onto item.outputs BEFORE reinspection runs,
-                # so cancellation or reinspection failure never orphans a generated candidate!
+                # F08 / RC-09: Durably persist generated candidate path & hash onto item checkpoint
+                # BEFORE reinspection runs, so a crash or reinspection failure never loses the candidate!
                 cpath, ms = raw_gen_hook(step)
-                if cpath and cpath not in item.outputs and Path(cpath).is_file():
-                    item.outputs.append(cpath)
+                if cpath and Path(cpath).is_file():
+                    if cpath not in item.outputs:
+                        item.outputs.append(cpath)
+                    csha = sha256_file(cpath)
+                    if csha:
+                        item.output_hashes[cpath] = csha
+                    if hasattr(self, "queue") and self.queue is not None:
+                        try:
+                            item.state_revision += 1
+                            self.queue._persist_item_durable(item)
+                        except OSError as exc:
+                            item.phase = "recovery_required"
+                            cancel_ev.set()
+                            item.memory_events.append({"reason": "candidate-checkpoint-persist-failed", "error": str(exc)})
+                            raise RuntimeError(f"Failed to persist corrective candidate checkpoint: {exc}") from exc
                 return cpath, ms
 
             coordinator = CorrectionCoordinator(planner=planner)
@@ -2425,6 +2466,15 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                         output: Path(output).expanduser().is_file()
                         for output in outputs
                         if isinstance(output, str)
+                    }
+                # F05 / RC-09: Revalidate saved inspection verdicts against live bytes on history reopen!
+                if isinstance(entry.get("candidate_qa"), dict):
+                    re_ins, re_map, re_cor = self._revalidate_item_inspections(entry)
+                    entry["candidate_qa"] = {
+                        **entry["candidate_qa"],
+                        "inspection": re_ins,
+                        "output_inspections": re_map,
+                        "correction": re_cor,
                     }
                 entries.append(entry)
             except (json.JSONDecodeError, OSError):

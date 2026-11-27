@@ -1785,10 +1785,29 @@ class StudioMixin:
                 action="forge_scene",
                 verbatim=True,
             )
-            end_image = str(spec.get("end_image") or "").strip()
-            if end_image and Path(end_image).expanduser().is_file() and items:
-                staged_end = self._stage_reference_if_external(end_image, workflow="image_to_video")
-                items[-1].job.asset_map["LAST_FRAME"] = staged_end
+            # F03: Require submit-time staged & fingerprinted end_image whenever an end picture was requested!
+            # NEVER silently drop LAST_FRAME if the original moved or the staged copy disappeared/changed.
+            req_end = str(spec.get("end_image") or "").strip()
+            staged_end = str(spec.get("staged_end_image") or "").strip()
+            expected_end_sha = str(spec.get("end_image_sha256") or "").strip()
+            if req_end or staged_end:
+                end_path = Path(staged_end or req_end).expanduser()
+                if not end_path.is_file():
+                    return {
+                        "ok": False,
+                        "scene": "not started: requested end picture is missing or no longer accessible.",
+                    }
+                if expected_end_sha:
+                    live_end_sha = sha256_file(end_path) or ""
+                    if live_end_sha != expected_end_sha:
+                        return {
+                            "ok": False,
+                            "scene": "not started: requested end picture changed on disk since submission.",
+                        }
+                if items:
+                    items[-1].job.asset_map["LAST_FRAME"] = str(end_path)
+                    # Pin staged end_image to the new Wan scene item before the starter photo unpins!
+                    self._reference_manager().pin_staged(str(end_path), items[-1].id)
             for it in items:
                 if spec.get("visual_inspection_vlm") is not None:
                     it.runtime["visual_inspection_vlm"] = bool(spec.get("visual_inspection_vlm"))
@@ -1796,7 +1815,7 @@ class StudioMixin:
                     it.runtime["auto_correct"] = bool(spec.get("auto_correct"))
                 if spec.get("verification_record") is not None:
                     it.runtime["verification_record"] = dict(spec["verification_record"])
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             return {"ok": False, "scene": f"not started: {exc}"}
         if not items:
             return {"ok": False, "scene": "not started: no shots"}
@@ -2104,8 +2123,14 @@ class StudioMixin:
                             frames=1,
                         )
                 end_image = str(options.get("end_image") or "").strip()
-                if end_image and not Path(end_image).expanduser().is_file():
-                    raise ValueError("That end picture isn't on this computer anymore.")
+                staged_end_submit = ""
+                end_image_sha = ""
+                if end_image:
+                    if not Path(end_image).expanduser().is_file():
+                        raise ValueError("That end picture isn't on this computer anymore.")
+                    # F03: Authorize, stage, and SHA-256 fingerprint end_image IMMEDIATELY during the bridge call!
+                    staged_end_submit = self._stage_reference_if_external(end_image, workflow="image_to_video")
+                    end_image_sha = sha256_file(staged_end_submit) or ""
                 settings_now = self._settings()
                 eff_vlm = (
                     bool(options["visual_inspection_vlm"])
@@ -2128,9 +2153,8 @@ class StudioMixin:
                         action="forge_scene",
                         verbatim=True,
                     )
-                    if end_image:
-                        staged_end = self._stage_reference_if_external(end_image, workflow="image_to_video")
-                        items[-1].job.asset_map["LAST_FRAME"] = staged_end
+                    if staged_end_submit:
+                        items[-1].job.asset_map["LAST_FRAME"] = staged_end_submit
                     vid_ver = None
                     try:
                         # RC-06: Direct Wan I2V graph conditions ONLY starter_image (and optional end_image),
@@ -2206,6 +2230,8 @@ class StudioMixin:
                                     "video_model": video_model,
                                     "vram_mode": vram_mode,
                                     "end_image": end_image,
+                                    "staged_end_image": staged_end_submit,
+                                    "end_image_sha256": end_image_sha,
                                     "visual_inspection_vlm": eff_vlm,
                                     "auto_correct": eff_ac,
                                     "verification_record": vid_ver_cont,
@@ -2216,13 +2242,16 @@ class StudioMixin:
                     ]
                     total_minutes = photo_minutes + len(shots) * local_engine.VIDEO_MODELS[video_model]["estimated_minutes"]
                     two_stage = True
-            # RC-19: Pin staged references for every queued item so LRU cache eviction never deletes active inputs!
+            # F13 / F03 / RC-19: Durably pin ALL staged references (including deferred end_image!) BEFORE queue admission!
             mgr_pin = self._reference_manager()
             for it in items:
                 for rk in ("INIT_IMAGE", "LAST_FRAME", "REF_IMAGE_1", "REF_IMAGE_2", "REF_IMAGE_3", "REF_IMAGE_4"):
                     rv = it.job.asset_map.get(rk)
                     if rv:
                         mgr_pin.pin_staged(str(rv), it.id)
+                deferred_end = str(((it.runtime.get("forge_scene") or {}).get("staged_end_image")) or "").strip()
+                if deferred_end:
+                    mgr_pin.pin_staged(deferred_end, it.id)
         except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
         queue_ids = self.queue.add_many(items)
@@ -2353,6 +2382,108 @@ class StudioMixin:
                               "local": result["local"], "source": result["source"]})
         return {"ok": True, "kind": kind, "items": tiles}
 
+    @staticmethod
+    def _revalidate_item_inspections(
+        item: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]] | None, dict[str, Any] | None]:
+        """Revalidate saved inspection verdicts against LIVE file bytes & requirement-set hash (F05 / RC-09).
+
+        Never certifies replaced/modified output bytes or mismatched requirement sets as 'Requirements verified'.
+        """
+        qa_data = item.get("candidate_qa") if isinstance(item.get("candidate_qa"), dict) else {}
+        inspection = dict(qa_data["inspection"]) if isinstance(qa_data.get("inspection"), dict) else None
+        raw_map = qa_data.get("output_inspections") if isinstance(qa_data.get("output_inspections"), dict) else None
+        correction = dict(qa_data["correction"]) if isinstance(qa_data.get("correction"), dict) else None
+
+        # Compute expected requirement-set hash from verification_record if present.
+        expected_req_hash = ""
+        vr = item.get("verification_record")
+        if isinstance(vr, dict):
+            try:
+                from .inspection_contract import GenerationVerificationRecord, compute_requirement_set_hash
+
+                expected_req_hash = compute_requirement_set_hash(GenerationVerificationRecord.model_validate(vr))
+            except Exception:
+                ins_res = vr.get("inspection_result")
+                if isinstance(ins_res, dict):
+                    expected_req_hash = str(ins_res.get("requirement_set_hash") or "")
+
+        def _stale_entry(path_str: str, reason: str, live_sha: str = "") -> dict[str, Any]:
+            return {
+                "output_path": path_str,
+                "output_sha256": live_sha,
+                "inspected": False,
+                "stale": True,
+                "stale_reason": reason,
+                "ui_status": "generated",
+                "ui_status_label": "Not inspected",
+                "decision": "stale",
+                "is_best": False,
+            }
+
+        def _check_entry(path_str: str, entry: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+            if entry.get("inspected") is False or entry.get("decision") in {"uninspected", "stale"}:
+                return dict(entry), False
+            p = Path(path_str).expanduser()
+            if not p.is_file():
+                return _stale_entry(path_str, "file_missing"), True
+            live_sha = sha256_file(p) or ""
+            recorded_sha = str(entry.get("output_sha256") or (item.get("output_hashes") or {}).get(path_str) or "").strip()
+            if not recorded_sha or live_sha != recorded_sha:
+                return _stale_entry(path_str, "output_bytes_changed", live_sha=live_sha), True
+            rec_req_hash = str(entry.get("requirement_set_hash") or "").strip()
+            if expected_req_hash and rec_req_hash and expected_req_hash != rec_req_hash:
+                # Allow prefix match when historic 16-char truncated digest matches full SHA-256 prefix
+                if not expected_req_hash.startswith(rec_req_hash):
+                    return _stale_entry(path_str, "requirement_set_changed", live_sha=live_sha), True
+            return dict(entry), False
+
+        revalidated_map: dict[str, dict[str, Any]] | None = None
+        any_stale = False
+        if raw_map is not None:
+            revalidated_map = {}
+            for out_path, raw_entry in raw_map.items():
+                if not isinstance(raw_entry, dict):
+                    continue
+                checked, is_stale = _check_entry(str(out_path), raw_entry)
+                revalidated_map[str(out_path)] = checked
+                if is_stale:
+                    any_stale = True
+            # Ensure EVERY present output on the item has an explicit per-output status.
+            for raw_out in item.get("outputs") or []:
+                op = str(raw_out)
+                if op not in revalidated_map:
+                    revalidated_map[op] = {
+                        "output_path": op,
+                        "output_sha256": sha256_file(op) or "" if Path(op).is_file() else "",
+                        "inspected": False,
+                        "ui_status": "generated",
+                        "ui_status_label": "Not inspected",
+                        "decision": "uninspected",
+                        "is_best": False,
+                    }
+            if any_stale:
+                # If the primary/best output became stale, invalidate job-level inspection & correction labels too!
+                best_still_valid = any(
+                    v.get("is_best") and v.get("inspected") is True and not v.get("stale")
+                    for v in revalidated_map.values()
+                )
+                if not best_still_valid:
+                    inspection = _stale_entry(
+                        str((item.get("outputs") or [""])[-1]),
+                        "output_bytes_changed",
+                    )
+                    correction = None
+        elif inspection is not None:
+            # Legacy single-output record without output_inspections map: validate against output_hashes / file!
+            outs = [str(o) for o in (item.get("outputs") or []) if isinstance(o, str)]
+            if outs:
+                checked, is_stale = _check_entry(outs[-1], inspection)
+                if is_stale:
+                    inspection = checked
+                    correction = None
+        return inspection, revalidated_map, correction
+
     def _studio_results(self, limit: int = 24, include_failures: bool = True) -> list[dict[str, Any]]:
         history_dir = _desktop().HISTORY_DIR
         try:
@@ -2386,12 +2517,7 @@ class StudioMixin:
             if not outputs and not failed:
                 continue
             receipt = item.get("cloud_receipt") or {}
-            qa_data = item.get("candidate_qa") if isinstance(item.get("candidate_qa"), dict) else {}
-            inspection = qa_data.get("inspection") if isinstance(qa_data.get("inspection"), dict) else None
-            output_inspections = (
-                qa_data.get("output_inspections") if isinstance(qa_data.get("output_inspections"), dict) else None
-            )
-            correction = qa_data.get("correction") if isinstance(qa_data.get("correction"), dict) else None
+            inspection, output_inspections, correction = self._revalidate_item_inspections(item)
             results.append(
                 {
                     "id": item.get("id"),

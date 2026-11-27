@@ -174,28 +174,45 @@ def inspect_local_ollama_models(base_url: str = DEFAULT_OLLAMA_URL, *, timeout_s
     return out
 
 
-def _fetch_running_ollama_models_status(
+def fetch_ollama_ps_state(
     base_url: str = DEFAULT_OLLAMA_URL,
     *,
     timeout_s: float = 3.0,
-) -> tuple[bool, list[dict[str, Any]], str]:
-    """Query loopback ``/api/ps`` distinguishing unreachable/error from reachable-empty (RC-14)."""
+) -> tuple[Literal["online", "offline", "unknown"], list[dict[str, Any]], str]:
+    """Query loopback ``/api/ps`` distinguishing genuinely offline daemon from unknown/timed-out residency (F10 / RC-14).
+
+    - ``"offline"``: explicit TCP connection refused / ConnectError (Ollama daemon is not listening).
+    - ``"unknown"``: timeout, HTTP error, or malformed JSON (service may hold VRAM; callers MUST fail closed!).
+    - ``"online"``: valid JSON response with parsed ``models`` list.
+    """
     url = _ensure_loopback_url(base_url)
     try:
         with httpx.Client(timeout=timeout_s) as client:
             resp = client.get(f"{url}/api/ps")
             resp.raise_for_status()
             payload = resp.json()
+    except (httpx.ConnectError, ConnectionRefusedError) as exc:
+        return "offline", [], f"{type(exc).__name__}: {exc}"
     except Exception as exc:
-        return False, [], f"{type(exc).__name__}: {exc}"
+        return "unknown", [], f"{type(exc).__name__}: {exc}"
     if not isinstance(payload, dict):
-        return False, [], "Malformed /api/ps payload"
+        return "unknown", [], "Malformed /api/ps payload"
     models = payload.get("models")
     if models is None:
-        return True, [], ""
+        return "online", [], ""
     if not isinstance(models, list):
-        return False, [], "Malformed /api/ps models list"
-    return True, [m for m in models if isinstance(m, dict)], ""
+        return "unknown", [], "Malformed /api/ps models list"
+    return "online", [m for m in models if isinstance(m, dict)], ""
+
+
+def _fetch_running_ollama_models_status(
+    base_url: str = DEFAULT_OLLAMA_URL,
+    *,
+    timeout_s: float = 3.0,
+) -> tuple[bool, list[dict[str, Any]], str]:
+    """Query loopback ``/api/ps`` distinguishing unreachable/error from reachable-empty (RC-14)."""
+    state, models, err = fetch_ollama_ps_state(base_url, timeout_s=timeout_s)
+    return (state == "online"), models, err
 
 
 def list_running_ollama_models(base_url: str = DEFAULT_OLLAMA_URL, *, timeout_s: float = 3.0) -> list[dict[str, Any]]:

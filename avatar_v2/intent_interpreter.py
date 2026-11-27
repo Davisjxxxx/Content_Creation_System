@@ -107,9 +107,16 @@ _COUNT_RE = re.compile(
     re.IGNORECASE,
 )
 _OBJECT_STATE_RE = re.compile(
+    r"(?:"
     r"\b(?:keep|kept|leave|leaving|make|ensure|must\s+be|stays?|remains?|with)\s+"
     r"((?:the|a|an|both|all|her|his|their)\s+[a-z0-9][a-z0-9\s-]{1,35}?)\s+"
-    r"(closed|open|opened|shut|sealed|empty|full|lit|unlit|turned\s+on|turned\s+off|folded|unfolded|intact|broken|locked|unlocked|clean|dry|wet)\b",
+    r"(closed|open|opened|shut|sealed|empty|full|lit|unlit|turned\s+on|turned\s+off|folded|unfolded|intact|broken|locked|unlocked|clean|dry|wet)\b"
+    r"|"
+    r"\b((?:the|a|an|both|all|her|his|their)\s+[a-z0-9][a-z0-9\s-]{1,35}?)\s+"
+    r"(?:must|should|needs?\s+to|has\s+to|is|are|stays?|remains?)\s+"
+    r"(?:be\s+|remain\s+|stay\s+)?"
+    r"(closed|open|opened|shut|sealed|empty|full|lit|unlit|turned\s+on|turned\s+off|folded|unfolded|intact|broken|locked|unlocked|clean|dry|wet)\b"
+    r")",
     re.IGNORECASE,
 )
 _SPATIAL_REL_RE = re.compile(
@@ -416,10 +423,11 @@ def interpret_natural_language(
             matched_spans.append((m.start(), m.end()))
 
     for m in _OBJECT_STATE_RE.finditer(clean_prompt):
-        target_obj = " ".join(m.group(1).split())
-        state_word = " ".join(m.group(2).split()).lower()
-        _add_req("object_states", f"Object state: {target_obj} {state_word}")
-        matched_spans.append((m.start(), m.end()))
+        target_obj = " ".join((m.group(1) or m.group(3) or "").split())
+        state_word = " ".join((m.group(2) or m.group(4) or "").split()).lower()
+        if target_obj and state_word:
+            _add_req("object_states", f"Object state: {target_obj} {state_word}")
+            matched_spans.append((m.start(), m.end()))
 
     spatial_added = False
     for m in _SPATIAL_REL_RE.finditer(clean_prompt):
@@ -453,8 +461,12 @@ def interpret_natural_language(
             matched_spans.append((m.start(), m.end()))
     base_spec.excluded_attributes = exclusions
 
-    # RC-07: Check per-sentence coverage so multi-sentence prompts NEVER drop an uncovered sentence
-    # (e.g. "Two ceramic cups. Keep the wooden box closed." preserves BOTH sentences!).
+    # F04 / RC-07: Check per-clause & per-sentence coverage so compound sentences like
+    # "Exactly two cups and the wooden box must remain closed." NEVER drop an uncovered clause!
+    _CLAUSE_CONSTRAINT_RE = re.compile(
+        r"\b(must|should|keep|remain|remains|stay|stays|closed|open|empty|full|lit|unlit|without|avoid|never|only|exact|exactly|holding|wearing|facing)\b",
+        re.IGNORECASE,
+    )
     if clean_prompt:
         for sm in re.finditer(r"[^.!?;]+[.!?;]?", clean_prompt):
             sent = sm.group(0).strip(" .!?;")
@@ -464,6 +476,22 @@ def interpret_natural_language(
             covered = any(not (end <= s_start or start >= s_end) for start, end in matched_spans)
             if not covered:
                 _add_req("complex_nl", f"Explicit prompt fidelity: {sent[:220]}")
+                continue
+            # Even when an earlier token in the sentence matched (e.g. a count), inspect
+            # coordinated sub-clauses so mandatory state/constraint clauses are never hidden!
+            sub_cursor = s_start
+            for part in re.split(r"(?:,\s*|\s+(?:and|but|while)\s+)", sm.group(0)):
+                p_clean = part.strip(" .!?;,")
+                idx = clean_prompt.find(p_clean, sub_cursor)
+                if idx < 0:
+                    continue
+                p_end = idx + len(p_clean)
+                sub_cursor = p_end
+                if len(p_clean.split()) < 3:
+                    continue
+                clause_covered = any(not (end <= idx or start >= p_end) for start, end in matched_spans)
+                if not clause_covered and _CLAUSE_CONSTRAINT_RE.search(p_clean):
+                    _add_req("complex_nl", f"Explicit requirement: {p_clean[:220]}")
     if clean_prompt and not reqs:
         _add_req("complex_nl", f"Explicit prompt fidelity: {clean_prompt[:220]}")
 

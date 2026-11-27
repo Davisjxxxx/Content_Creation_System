@@ -333,12 +333,18 @@ def test_image_jobs_keep_models_loaded_for_fast_replay(tmp_path: Path, monkeypat
         def stop_trace(self):
             return {}
 
+    stub_png = tmp_path / "stub_out.png"
+    stub_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    stub_mp4 = tmp_path / "stub_clip.mp4"
+    stub_mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+
     class Provider:
         def __init__(self, config):
             self.config = config
 
         def render(self, workflow, job):
-            return {"prompt_id": "p1", "outputs": ["clip.mp4"]}
+            out = stub_png if workflow == "builtin:flux2_txt2img" else stub_mp4
+            return {"prompt_id": "p1", "outputs": [str(out)]}
 
     queue = _queue_shell(tmp_path, [image_item])
     queue.memory_manager = Memory()
@@ -382,6 +388,9 @@ def test_execute_chaining_rebinds_primary_h3_picture(tmp_path: Path, monkeypatch
         def stop_trace(self):
             return {}
 
+    chained_mp4 = tmp_path / "chained.mp4"
+    chained_mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+
     class Provider:
         def __init__(self, _config):
             pass
@@ -389,7 +398,7 @@ def test_execute_chaining_rebinds_primary_h3_picture(tmp_path: Path, monkeypatch
         def render(self, _workflow, job):
             assert job.asset_map["INIT_IMAGE"] == str(frame)
             assert job.asset_map["H3_PICTURE_1"] == str(frame)
-            return {"prompt_id": "p2", "outputs": []}
+            return {"prompt_id": "p2", "outputs": [str(chained_mp4)]}
 
     queue.memory_manager = Memory()
     monkeypatch.setattr(render_queue, "ComfyUIProvider", Provider)

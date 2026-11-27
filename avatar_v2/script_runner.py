@@ -737,16 +737,20 @@ class ScriptRunManager:
                 self._persist_record_locked(record, broker.snapshot_status())
 
     @staticmethod
-    def _collect_descendant_tree_stats(root_pid: int, root_pgid: int) -> tuple[set[int], int]:
+    def _collect_descendant_tree_stats(root_pid: int, root_pgid: int) -> tuple[bool, set[int], int, str]:
         """Collect ALL live recursive descendants of ``root_pid`` (even across os.setsid()) + ``root_pgid``
-        and their aggregate VmRSS in KiB via Linux /proc (RC-17)."""
+        and their aggregate VmRSS in KiB via Linux /proc (F12 / RC-17).
+
+        Fail-closed: returns ``telemetry_ok=False`` if /proc cannot be scanned or VmRSS is unreadable
+        for the live root process, so missing monitoring NEVER masquerades as zero usage!
+        """
         children_by_ppid: dict[int, list[int]] = {}
         live_pids: set[int] = set()
         pgid_pids: set[int] = set()
         try:
             entries = os.listdir("/proc")
-        except OSError:
-            return set(), 0
+        except OSError as exc:
+            return False, set(), 0, f"proc_list_unreadable:{exc}"
         for entry in entries:
             if not entry.isdigit():
                 continue
@@ -768,6 +772,10 @@ class ScriptRunManager:
             except (OSError, ValueError, IndexError):
                 continue
 
+        if root_pid > 0 and root_pid not in live_pids and not pgid_pids:
+            # Process may have just exited; caller checks proc.poll() to distinguish exit vs lost telemetry.
+            return False, set(), 0, "root_pid_missing_from_proc"
+
         tree: set[int] = set(pgid_pids)
         queue: list[int] = [root_pid, *pgid_pids]
         while queue:
@@ -780,6 +788,7 @@ class ScriptRunManager:
                     queue.append(child)
 
         total_rss_kb = 0
+        readable_rss = 0
         for pid in tree:
             try:
                 status_txt = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
@@ -788,15 +797,18 @@ class ScriptRunManager:
                         toks = line.split()
                         if len(toks) >= 2 and toks[1].isdigit():
                             total_rss_kb += int(toks[1])
+                            readable_rss += 1
                         break
             except (OSError, ValueError):
                 continue
-        return tree, total_rss_kb
+        if tree and readable_rss == 0:
+            return False, tree, 0, "proc_status_vmrss_unreadable"
+        return True, tree, total_rss_kb, "ok"
 
     @staticmethod
     def _count_pgid_processes(pgid: int) -> int:
         """Count live processes belonging to process group ``pgid`` via Linux /proc (RC-17)."""
-        pids, _rss = ScriptRunManager._collect_descendant_tree_stats(pgid, pgid)
+        _ok, pids, _rss, _err = ScriptRunManager._collect_descendant_tree_stats(pgid, pgid)
         return len(pids)
 
     @staticmethod
@@ -844,6 +856,7 @@ class ScriptRunManager:
         timed_out = False
         proc_limit_hit = False
         mem_limit_hit = False
+        telemetry_lost_err = ""
         observed_rss_mb = 0.0
         try:
             pgid = os.getpgid(proc.pid)
@@ -853,11 +866,21 @@ class ScriptRunManager:
             while proc.poll() is None:
                 if time.monotonic() > deadline:
                     timed_out = True
+                    broker.stop(cancel_pending=True)
                     self._terminate_process_group(proc, pgid=pgid)
                     break
-                pids, total_rss_kb = self._collect_descendant_tree_stats(proc.pid, pgid)
+                tel_ok, pids, total_rss_kb, tel_err = self._collect_descendant_tree_stats(proc.pid, pgid)
+                if not tel_ok:
+                    if proc.poll() is not None:
+                        break  # process exited cleanly while sampling
+                    # F12 / RC-17: Loss of required containment telemetry MUST fail closed!
+                    telemetry_lost_err = tel_err or "process_telemetry_unavailable"
+                    broker.stop(cancel_pending=True)
+                    self._terminate_process_group(proc, pgid=pgid)
+                    break
                 if max_processes > 0 and len(pids) > max_processes + 2:
                     proc_limit_hit = True
+                    broker.stop(cancel_pending=True)
                     self._terminate_process_group(proc, pgid=pgid)
                     break
                 rss_mb = total_rss_kb / 1024.0
@@ -865,6 +888,7 @@ class ScriptRunManager:
                     observed_rss_mb = rss_mb
                 if memory_limit_mb > 0 and rss_mb > float(memory_limit_mb):
                     mem_limit_hit = True
+                    broker.stop(cancel_pending=True)
                     self._terminate_process_group(proc, pgid=pgid)
                     break
                 time.sleep(0.05)
@@ -884,6 +908,13 @@ class ScriptRunManager:
             if timed_out:
                 record.status = "error"
                 record.error = f"Script exceeded wall-clock timeout ({wall_timeout_s:g}s) and was terminated."
+                broker.stop(cancel_pending=True)
+            elif telemetry_lost_err:
+                record.status = "error"
+                record.error = (
+                    f"Lost required sandbox process telemetry ({telemetry_lost_err}); "
+                    "stopped admission and terminated run fail-closed."
+                )
                 broker.stop(cancel_pending=True)
             elif proc_limit_hit:
                 record.status = "error"
@@ -914,6 +945,33 @@ class ScriptRunManager:
             shutil.rmtree(temp_root, ignore_errors=True)
 
     @staticmethod
+    def _signal_pid_via_pidfd_if_member(pid: int, root_pid: int, root_pgid: int, sig: int) -> None:
+        """Signal a descendant PID strictly via kernel pidfd after verifying tree membership (F12)."""
+        if pid <= 1 or pid == os.getpid():
+            return
+        if hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"):
+            try:
+                pfd = os.pidfd_open(pid, 0)
+            except OSError:
+                return
+            try:
+                _ok, cur_pids, _rss, _err = ScriptRunManager._collect_descendant_tree_stats(root_pid, root_pgid)
+                if pid in cur_pids:
+                    signal.pidfd_send_signal(pfd, sig)
+            except OSError:
+                pass
+            finally:
+                try:
+                    os.close(pfd)
+                except OSError:
+                    pass
+            return
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            pass
+
+    @staticmethod
     def _terminate_process_group(proc: subprocess.Popen[str], *, pgid: int | None = None) -> None:
         eff_pgid = pgid if pgid is not None else proc.pid
         if proc.poll() is None:
@@ -921,15 +979,23 @@ class ScriptRunManager:
                 eff_pgid = os.getpgid(proc.pid)
             except OSError:
                 pass
-        pids, _ = ScriptRunManager._collect_descendant_tree_stats(proc.pid, eff_pgid)
+        _ok, pids, _rss, _err = ScriptRunManager._collect_descendant_tree_stats(proc.pid, eff_pgid)
         for sig in (signal.SIGTERM, signal.SIGKILL):
-            for pid in sorted(pids, reverse=True):
-                if pid <= 1 or pid == os.getpid():
-                    continue
+            # 1. Signal the bwrap root process via pidfd (with --die-with-parent + --unshare-pid,
+            # killing the namespace root tears down the entire sandbox PID namespace at kernel level!).
+            if hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal") and proc.poll() is None:
                 try:
-                    os.kill(pid, sig)
+                    root_fd = os.pidfd_open(proc.pid, 0)
+                    try:
+                        if proc.poll() is None:
+                            signal.pidfd_send_signal(root_fd, sig)
+                    finally:
+                        os.close(root_fd)
                 except OSError:
                     pass
+            # 2. Signal verified descendant PIDs via kernel pidfd (handles non-bwrap setsid() trees safely too).
+            for pid in sorted(pids, reverse=True):
+                ScriptRunManager._signal_pid_via_pidfd_if_member(pid, proc.pid, eff_pgid, sig)
             try:
                 os.killpg(eff_pgid, sig)
             except OSError:
@@ -943,11 +1009,11 @@ class ScriptRunManager:
             if sig == signal.SIGTERM:
                 deadline = time.monotonic() + 2.0
                 while time.monotonic() < deadline:
-                    rem, _ = ScriptRunManager._collect_descendant_tree_stats(proc.pid, eff_pgid)
+                    _ok2, rem, _rss2, _err2 = ScriptRunManager._collect_descendant_tree_stats(proc.pid, eff_pgid)
                     if proc.poll() is not None and not rem:
                         return
                     time.sleep(0.05)
-                pids, _ = ScriptRunManager._collect_descendant_tree_stats(proc.pid, eff_pgid)
+                _ok, pids, _rss, _err = ScriptRunManager._collect_descendant_tree_stats(proc.pid, eff_pgid)
 
     def pause(self) -> dict[str, Any]:
         with self._lock:

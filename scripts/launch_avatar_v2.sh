@@ -23,6 +23,14 @@ if [ -n "${AVATAR_V2_CANDIDATE_DIR:-}" ]; then
     fi
     exec "$AVATAR_V2_CANDIDATE_DIR/AvatarV2" "$@"
 fi
+if [ "${AVATAR_V2_RC4:-0}" = "1" ]; then
+    RC4_BUILD="$APP_DIR/dist/AvatarV2.rc4"
+    if [ ! -x "$RC4_BUILD/AvatarV2" ]; then
+        echo "RC4 bundle not found at $RC4_BUILD/AvatarV2" >&2
+        exit 1
+    fi
+    exec "$RC4_BUILD/AvatarV2" "$@"
+fi
 if [ "${AVATAR_V2_RC3:-0}" = "1" ]; then
     RC3_BUILD="$APP_DIR/dist/AvatarV2.rc3"
     if [ ! -x "$RC3_BUILD/AvatarV2" ]; then
