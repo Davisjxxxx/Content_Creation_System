@@ -43,6 +43,7 @@ def _isolate_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(desktop, "COMFY_PID_PATH", app_home / "comfyui.pid")
     monkeypatch.setattr(desktop, "COMFY_OWNER_PATH", app_home / "comfyui_owner.json")
     monkeypatch.setattr(desktop, "COMFY_LOG_PATH", app_home / "logs" / "comfyui.log")
+    monkeypatch.setattr(desktop, "MANAGED_ASSETS_PATH", app_home / "managed_assets.json")
     monkeypatch.setattr(desktop, "RUNWAY_AVATARS_PATH", app_home / "runway_avatars.json")
     monkeypatch.setattr(desktop, "CLOUD_LEDGER_PATH", app_home / "cloud_ledger.jsonl")
     monkeypatch.setattr(desktop, "VOICEOVER_DIR", app_home / "voiceover")
@@ -195,6 +196,28 @@ def test_p0a_rc01_shared_external_renderer_never_freed_or_stopped_on_shutdown(
     assert free_calls == [], f"shutdown_engine disrupted a shared external renderer: {free_calls}"
 
 
+def _spawn_listening_child() -> tuple[subprocess.Popen[str], int]:
+    """Spawn a real child process bound to an ephemeral loopback TCP port."""
+    script = (
+        "import socket, sys, time; "
+        "s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); "
+        "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); "
+        "s.bind(('127.0.0.1', 0)); "
+        "s.listen(5); "
+        "print(s.getsockname()[1], flush=True); "
+        "time.sleep(60)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    assert proc.stdout is not None
+    port = int(proc.stdout.readline().strip())
+    return proc, port
+
+
 def test_p0a_rc01_owned_child_lifecycle_exit_race_repeated_shutdown_and_restart_recovery(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -214,10 +237,14 @@ def test_p0a_rc01_owned_child_lifecycle_exit_race_repeated_shutdown_and_restart_
     monkeypatch.setattr(desktop, "ComfyUIProvider", OwnedComfyStub)
 
     # 1. Owned child stopped cleanly via OwnedProcessHandle (pidfd) + repeated shutdown idempotent
-    child1 = _spawn_harmless_sleeper()
+    child1, port1 = _spawn_listening_child()
     try:
+        (app_home / "desktop.json").write_text(
+            json.dumps({"comfyui_url": f"http://127.0.0.1:{port1}"}),
+            encoding="utf-8",
+        )
         api = desktop.DesktopAPI()
-        rec1 = ownership.ProcessOwnershipRecord.capture_for_pid(child1.pid, port=18991)
+        rec1 = ownership.ProcessOwnershipRecord.capture_for_pid(child1.pid, port=port1)
         api._owned_comfy_handle = ownership.OwnedProcessHandle(child1, rec1)
         ownership.save_ownership_record(app_home / "comfyui_owner.json", rec1)
         assert api.comfyui_status()["ownership"] == "owned_private"
@@ -237,9 +264,13 @@ def test_p0a_rc01_owned_child_lifecycle_exit_race_repeated_shutdown_and_restart_
             child1.wait(timeout=5)
 
     # 2. Crash recovery across restart: new DesktopAPI instance stops owned child via verified OS record
-    child2 = _spawn_harmless_sleeper()
+    child2, port2 = _spawn_listening_child()
     try:
-        rec2 = ownership.ProcessOwnershipRecord.capture_for_pid(child2.pid, port=18991)
+        (app_home / "desktop.json").write_text(
+            json.dumps({"comfyui_url": f"http://127.0.0.1:{port2}"}),
+            encoding="utf-8",
+        )
+        rec2 = ownership.ProcessOwnershipRecord.capture_for_pid(child2.pid, port=port2)
         ownership.save_ownership_record(app_home / "comfyui_owner.json", rec2)
         api2 = desktop.DesktopAPI()
         try:
@@ -385,7 +416,10 @@ def test_p0b_rc02_external_original_master_and_links_never_unlinked(
         hard_path.unlink()  # clean up test hardlink
 
         # 5. Verified managed archive output: failed unlink leaves history intact (no orphaning!)
+        from avatar_v2.ownership import register_managed_asset
+
         managed_img = _make_png(app_home / "runs" / "outputs" / "job_own" / "gen_001.png", (60, 160, 90))
+        register_managed_asset(desktop.MANAGED_ASSETS_PATH, managed_img, origin="managed_archive_copy", job_id="job_own")
         hist_file = app_home / "history" / "job_own.json"
         hist_file.write_text(
             json.dumps({"id": "job_own", "status": "done", "outputs": [str(managed_img)]}), encoding="utf-8"

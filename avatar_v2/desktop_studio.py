@@ -35,7 +35,13 @@ from .composer import build_job
 from .integrity import sha256_file
 from .js_bridge import in_js_bridge
 from .library import AvatarProfile
-from .ownership import classify_media_ownership, write_json_atomic
+from .ownership import (
+    classify_media_ownership,
+    register_managed_asset,
+    unregister_managed_asset,
+    verify_managed_asset_ownership,
+    write_json_atomic,
+)
 from .policy import depicts_minor
 from .presenter import MOTION_REALISM, NO_TEXT, compile_presenter_prompt
 from .prompt_compilers import compile_prompt_for_model
@@ -1323,6 +1329,7 @@ class StudioMixin:
             return {"ok": False, "voiceover": f"not added: {exc}"}
         item.outputs.insert(0, str(voiced))
         item.output_hashes[str(voiced)] = sha256_file(voiced)
+        register_managed_asset(_desktop().MANAGED_ASSETS_PATH, voiced, origin="generated_output", job_id=item.id)
         return {"ok": True, "voiceover": "added", "file": voiced.name}
 
     def _shot_video(self, queue_id: str, current: Any) -> Path | None:
@@ -1371,6 +1378,7 @@ class StudioMixin:
             item.outputs.insert(1, str(target))  # the silent version is kept too
         for output in {final, target}:
             item.output_hashes[str(output)] = sha256_file(output)
+            register_managed_asset(_desktop().MANAGED_ASSETS_PATH, output, origin="generated_output", job_id=item.id)
         return {"ok": True, "scene": "joined", "shots": len(videos), "file": final.name}
 
     def studio_avatars(self) -> dict[str, Any]:
@@ -1414,14 +1422,16 @@ class StudioMixin:
         return output_roots, import_roots, staging_roots
 
     def studio_delete(self, options: dict[str, Any]) -> dict[str, Any]:
-        """Detach a reference or delete ONE app-owned managed output from My stuff (Astra RC-02).
+        """Detach a reference or delete ONE verified app-owned managed asset from My stuff (RC-02 Gate 1).
 
-        Strict media-ownership invariants:
-        - External original files, symlinks, and hard-linked files are NEVER unlinked on disk.
-        - Removing an externally backed presenter master detaches the reference cleanly while
-          preserving the original bytes untouched.
-        - For verified app-owned managed files, physical unlink runs BEFORE history mutation so a
-          filesystem error (permission denied / busy / read-only) never orphans the file from history.
+        Strict durable media-ownership invariants:
+        - Directory membership (including preferred_output_dir), filename, history presence, master
+          status, and file extension NEVER independently authorize physical deletion.
+        - Physical unlink requires an exact verified ManagedAssetRegistry record matching canonical
+          path, device, inode, size, and SHA-256 (and never symlinks or hardlinks).
+        - Unowned / externally supplied presenter masters (even inside preferred_output_dir) are
+          cleanly DETACHED without unlinking any bytes on disk!
+        - Physical unlink runs BEFORE history mutation so filesystem errors never orphan files.
         """
         opts = dict(options or {})
         path = str(opts.get("path") or "").strip()
@@ -1454,16 +1464,12 @@ class StudioMixin:
         if _kind(str(target)) == "file":
             return {"ok": False, "deleted_file": False, "error": "Only media files can be managed through My stuff."}
 
-        out_roots, imp_roots, stg_roots = self._managed_media_roots()
-        ownership = classify_media_ownership(
-            target,
-            managed_output_roots=out_roots,
-            managed_import_roots=imp_roots,
-            staging_roots=stg_roots,
-        )
+        reg_path = _desktop().MANAGED_ASSETS_PATH
+        owned_ok, ownership = verify_managed_asset_ownership(reg_path, target)
 
-        # External original / symlink / hardlink: NEVER unlink! If it was the presenter master, detach safely.
-        if not ownership.deletable and ownership.classification != "missing":
+        # Unowned / external / replaced / symlink / hardlink: NEVER unlink!
+        # Even if located inside preferred_output_dir or set as presenter master -> detach only!
+        if not owned_ok and ownership.classification != "missing":
             if was_master:
                 self._clear_master_refs()
                 return {
@@ -1473,7 +1479,7 @@ class StudioMixin:
                     "deleted": target.name,
                     "records_updated": 0,
                     "ownership": ownership.classification,
-                    "message": "Detached presenter master reference; external original file was preserved untouched.",
+                    "message": "Detached presenter master reference; unowned original file was preserved untouched.",
                 }
             return {
                 "ok": False,
@@ -1508,12 +1514,13 @@ class StudioMixin:
         if not matching_records and not was_master:
             return {"ok": False, "deleted_file": False, "error": "That file isn't in My stuff."}
 
-        # Perform physical unlink BEFORE mutating history so a failed unlink never orphans the file!
+        # Perform physical unlink ONLY for verified app-owned assets and BEFORE mutating history!
         deleted_file = False
-        if ownership.deletable and target.exists():
+        if owned_ok and ownership.deletable and target.exists():
             try:
                 target.unlink()
                 deleted_file = True
+                unregister_managed_asset(reg_path, target)
             except OSError as exc:
                 return {
                     "ok": False,
@@ -1570,6 +1577,11 @@ class StudioMixin:
         source = Path(path).expanduser()
         if _kind(str(source)) != "image" or not source.is_file():
             return {"ok": False, "error": "That isn't a picture."}
+        if in_js_bridge() and not self._is_bridge_authorized_candidate_path(source.resolve()):
+            return {
+                "ok": False,
+                "error": "That image path was not generated by Avatar V2 or selected through the file picker.",
+            }
         library = self._library_or_none()
         if library is None or library.get_avatar(bi.PROFILE_ID) is None:
             self.brand_instructor_install()

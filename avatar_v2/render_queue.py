@@ -18,7 +18,7 @@ from .errors import classify_exception
 from .gpu_memory import GPUMemoryManager
 from .integrity import hash_files, sha256_file
 from .models import ProviderConfig, RenderJob
-from .ownership import DirectoryWriterLock, read_json_safe
+from .ownership import DirectoryWriterLock, read_json_safe, register_managed_asset
 from .providers import ComfyUIProvider, RunwayProvider
 from .providers.comfyui import ComfyUICancelledError, ComfyUIExecutionError
 from .resource_monitor import check_storage_for_job, estimate_job_storage_bytes
@@ -295,6 +295,8 @@ class RenderQueue:
         candidate_qa_runner: Callable[[QueuedRender], dict[str, Any]] | None = None,
         ledger_path: Path | None = None,
         engine_restart: Callable[[], Any] | None = None,
+        managed_assets_path: Path | None = None,
+        on_job_finished: Callable[[QueuedRender], None] | None = None,
         *,
         acquire_lock: bool = True,
     ):
@@ -305,6 +307,10 @@ class RenderQueue:
             self._dir_lock = DirectoryWriterLock(self.work_dir / ".queue.lock")
             self._dir_lock.acquire()
         self._ledger_path = Path(ledger_path) if ledger_path else self.work_dir.parent / "cloud_ledger.jsonl"
+        self._managed_assets_path = (
+            Path(managed_assets_path) if managed_assets_path else self.work_dir.parent / "managed_assets.json"
+        )
+        self._on_job_finished = on_job_finished
         self.history_dir = Path(history_dir) if history_dir else self.work_dir / "history"
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.memory_manager = memory_manager or GPUMemoryManager.from_environment()
@@ -715,6 +721,22 @@ class RenderQueue:
             resolved.append(str(path))
         return resolved
 
+    def _register_managed_outputs(
+        self,
+        item: QueuedRender,
+        paths: list[str],
+        *,
+        origin: Literal["generated_output", "managed_archive_copy"] = "generated_output",
+    ) -> None:
+        reg_path = getattr(self, "_managed_assets_path", None)
+        if reg_path is None:
+            return
+        for out_p in paths:
+            try:
+                register_managed_asset(reg_path, out_p, origin=origin, job_id=item.id)
+            except OSError:
+                pass
+
     def _archive_outputs(self, item: QueuedRender) -> list[str]:
         target = Path(item.archive_dir).expanduser() / item.id
         target.mkdir(parents=True, exist_ok=True)
@@ -728,6 +750,7 @@ class RenderQueue:
                 dest = target / src.name
                 shutil.copy2(src, dest)
                 archived.append(str(dest))
+                self._register_managed_outputs(item, [str(dest)], origin="managed_archive_copy")
             except OSError:
                 archived.append(output)
         return archived
@@ -747,6 +770,7 @@ class RenderQueue:
         target = video.with_name(f"{video.stem}_candidate.png")
         frame = self._extract_last_frame(str(video), target)
         item.outputs.append(str(frame))
+        self._register_managed_outputs(item, [str(frame)], origin="generated_output")
 
     def _persist_item_durable(self, item: QueuedRender) -> None:
         """Durably write one item's record. Raises on failure, so callers can stop safely."""
@@ -1113,6 +1137,8 @@ class RenderQueue:
         item.outputs = self._resolve_outputs(item, result["outputs"])
         if item.archive_dir:
             item.outputs = self._archive_outputs(item)
+        else:
+            self._register_managed_outputs(item, item.outputs, origin="generated_output")
         if item.runtime.get("extract_candidate_frame"):
             self._extract_candidate_frame(item)
         item.output_hashes = hash_files(item.outputs)

@@ -51,6 +51,7 @@ def home(tmp_path, monkeypatch):
         "CLOUD_LEDGER_PATH": tmp_path / "cloud_ledger.jsonl",
         "VOICEOVER_DIR": tmp_path / "voiceover",
         "LESSONS_PATH": tmp_path / "lessons.json",
+        "MANAGED_ASSETS_PATH": tmp_path / "managed_assets.json",
     }.items():
         monkeypatch.setattr(desktop, name, value)
     (tmp_path / "history").mkdir()
@@ -435,7 +436,10 @@ def test_long_talking_scripts_become_parts(api, home, monkeypatch):
 
 
 def test_delete_removes_a_file_from_the_library_and_its_records(api, home):
+    from avatar_v2.ownership import register_managed_asset
+
     still = _png(home / "toss.png", size=(300, 400))
+    register_managed_asset(desktop.MANAGED_ASSETS_PATH, still, origin="generated_output", job_id="x")
     now = __import__("time").time()
     records = {
         "x": {"id": "x", "status": "done", "label": "Old render", "outputs": [str(still)], "finished_at": now},
@@ -456,9 +460,12 @@ def test_delete_removes_a_file_from_the_library_and_its_records(api, home):
 
 
 def test_delete_of_the_master_photo_goes_back_to_a_blank_slate(api, home):
+    # Unregistered master photo is DETACHED safely without deleting the original bytes (RC-02 Gate 1)!
     master = _pick_master(api, home)
-    assert api.studio_delete({"path": str(master)})["ok"] is True
-    assert not master.is_file()
+    res = api.studio_delete({"path": str(master)})
+    assert res["ok"] is True
+    assert res["detached"] is True and res["deleted_file"] is False
+    assert master.is_file()
     assert api._studio_master() == (None, None)  # the app asks which photo to start from now
     profile = api._library_or_none().get_avatar(bi.PROFILE_ID)
     assert "front" not in profile["identity_refs"] and "front" not in profile["reference_hashes"]
@@ -491,8 +498,11 @@ def test_any_picture_can_be_added_to_presenter_options(api, home):
 
 
 def test_delete_keeps_a_record_when_other_outputs_remain(api, home):
+    from avatar_v2.ownership import register_managed_asset
+
     first = _png(home / "keep.png", size=(300, 400))
     second = _png(home / "toss.png", size=(300, 400))
+    register_managed_asset(desktop.MANAGED_ASSETS_PATH, second, origin="generated_output", job_id="z")
     now = __import__("time").time()
     (home / "history" / "z.json").write_text(json.dumps(
         {"id": "z", "status": "done", "label": "Pair", "outputs": [str(first), str(second)], "finished_at": now}))

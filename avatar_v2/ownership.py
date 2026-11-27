@@ -11,6 +11,7 @@ Provides fail-closed ownership verification so Avatar V2:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -21,10 +22,14 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 EngineOwnership = Literal["owned_private", "shared_or_external", "stale_or_reused", "stopped"]
 MediaOwnershipClass = Literal[
+    "generated_output",
+    "managed_archive_copy",
     "managed_output",
+    "managed_import_copy",
     "managed_import",
     "ephemeral_staging",
     "external_original",
@@ -357,17 +362,138 @@ class OwnedProcessHandle:
             self._pidfd = None
 
 
+_LOOPBACK_ENDPOINT_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def parse_endpoint_host_port(base_url: str) -> tuple[str, int] | None:
+    """Parse (host, port) from an HTTP(S) renderer URL; returns None if malformed."""
+    raw = str(base_url or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw if "://" in raw else f"http://{raw}")
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    return parsed.hostname.lower(), int(port)
+
+
+def pid_listens_on_port(pid: int, port: int) -> bool | None:
+    """Return True if ``pid`` owns a listening TCP socket on ``port``, False if verified not, None if unreadable."""
+    if pid <= 0 or port <= 0:
+        return False
+    fd_dir = Path(f"/proc/{pid}/fd")
+    if not fd_dir.is_dir():
+        return None
+    socket_inodes: set[str] = set()
+    try:
+        for entry in fd_dir.iterdir():
+            try:
+                target = os.readlink(entry)
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target.endswith("]"):
+                socket_inodes.add(target[8:-1])
+    except OSError:
+        return None
+
+    listening_inodes: set[str] = set()
+    any_proc_net = False
+    port_hex = f"{int(port):04X}"
+    for net_path in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+        try:
+            lines = net_path.read_text(encoding="utf-8").splitlines()[1:]
+            any_proc_net = True
+        except OSError:
+            continue
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 10:
+                continue
+            local_addr, state, inode = parts[1], parts[3], parts[9]
+            # 0A == TCP_LISTEN
+            if state != "0A":
+                continue
+            _, _, lport = local_addr.rpartition(":")
+            if lport.upper() == port_hex:
+                listening_inodes.add(inode)
+    if not any_proc_net:
+        return None
+    return bool(socket_inodes & listening_inodes)
+
+
+def verify_endpoint_ownership(
+    record: ProcessOwnershipRecord | None,
+    base_url: str,
+    *,
+    require_listening: bool = False,
+) -> tuple[bool, str]:
+    """Fail-closed binding between an owned ComfyUI process record and a target HTTP endpoint (RC-01)."""
+    ok, reason = verify_process_ownership(record)
+    if not ok or record is None:
+        return False, reason
+    parsed = parse_endpoint_host_port(base_url)
+    if parsed is None:
+        return False, "invalid_endpoint_url"
+    host, port = parsed
+    if host not in _LOOPBACK_ENDPOINT_HOSTS:
+        return False, f"non_loopback_endpoint:{host}"
+    if record.port is None:
+        return False, "record_missing_port"
+    if int(record.port) != int(port):
+        return False, f"endpoint_port_mismatch:owned_{record.port}_vs_target_{port}"
+    if require_listening:
+        listening = pid_listens_on_port(record.pid, port)
+        if listening is False:
+            return False, f"owned_pid_not_listening_on_port:{port}"
+    return True, "verified_owned_endpoint"
+
+
 def send_signal_if_owned(
     record: ProcessOwnershipRecord | None,
     sig: int,
     *,
     handle: OwnedProcessHandle | None = None,
 ) -> tuple[bool, str]:
-    """Signal a process ONLY if ownership is verified via live handle or OS identity check."""
+    """Signal a process ONLY if ownership is verified via atomic kernel pidfd (zero PID-reuse TOCTOU!)."""
     if handle is not None and record is not None and handle.pid == record.pid:
         return handle.send_signal(sig)
+    if record is None or record.pid <= 0:
+        return False, "no_ownership_record"
+
+    # RC-01 Gate 2: On Linux with pidfd_open + pidfd_send_signal, pin the kernel task FIRST,
+    # THEN verify OS start_ticks/boot_id/exe/cmdline/port while holding pidfd open, THEN signal pidfd!
+    # Eliminates verify-then-numeric-kill PID reuse TOCTOU after application restart.
+    if hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"):
+        try:
+            pidfd = os.pidfd_open(record.pid, 0)
+        except ProcessLookupError:
+            return False, "process_exited"
+        except OSError as exc:
+            return False, f"pidfd_open_error:{exc}"
+        try:
+            ok, reason = verify_process_ownership(record)
+            if not ok:
+                return False, reason
+            try:
+                signal.pidfd_send_signal(pidfd, sig)
+                return True, "signalled_via_reopened_pidfd"
+            except ProcessLookupError:
+                return False, "process_exited"
+            except OSError as exc:
+                return False, f"pidfd_signal_error:{exc}"
+        finally:
+            try:
+                os.close(pidfd)
+            except OSError:
+                pass
+
     ok, reason = verify_process_ownership(record)
-    if not ok or record is None:
+    if not ok:
         return False, reason
     try:
         os.kill(record.pid, sig)
@@ -490,4 +616,221 @@ def classify_media_ownership(
         False,
         str(canonical),
         "File resides outside Avatar V2 managed directories and is externally owned; refusing physical deletion.",
+    )
+
+
+# --------------------------------------------------------------------------- Gate 1 (RC-02): Durable Explicit Managed Asset Registry
+
+_MANAGED_ASSET_ORIGINS = frozenset(
+    {"generated_output", "managed_archive_copy", "managed_import_copy", "ephemeral_staging"}
+)
+
+
+def _sha256_file_bytes(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+@dataclass(frozen=True)
+class ManagedAssetRecord:
+    """Explicit durable proof that Avatar V2 created or copied this exact asset on disk."""
+
+    canonical_path: str
+    sha256: str
+    size_bytes: int
+    inode: int
+    device: int
+    origin: Literal["generated_output", "managed_archive_copy", "managed_import_copy", "ephemeral_staging"]
+    job_id: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> ManagedAssetRecord | None:
+        if not isinstance(raw, dict):
+            return None
+        origin = str(raw.get("origin") or "")
+        if origin not in _MANAGED_ASSET_ORIGINS:
+            return None
+        cpath = str(raw.get("canonical_path") or "").strip()
+        digest = str(raw.get("sha256") or "").strip()
+        if not cpath or len(digest) != 64:
+            return None
+        try:
+            size_b = int(raw["size_bytes"])
+            ino = int(raw["inode"])
+            dev = int(raw["device"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return cls(
+            canonical_path=cpath,
+            sha256=digest,
+            size_bytes=size_b,
+            inode=ino,
+            device=dev,
+            origin=origin,  # type: ignore[arg-type]
+            job_id=str(raw.get("job_id") or ""),
+            created_at=str(raw.get("created_at") or ""),
+        )
+
+
+def _load_managed_asset_map(registry_path: Path) -> dict[str, dict[str, Any]]:
+    data = read_json_safe(Path(registry_path), {}, quarantine=True, expected_type=dict)
+    return data if isinstance(data, dict) else {}
+
+
+def register_managed_asset(
+    registry_path: Path,
+    file_path: str | Path,
+    *,
+    origin: Literal["generated_output", "managed_archive_copy", "managed_import_copy", "ephemeral_staging"],
+    job_id: str = "",
+) -> ManagedAssetRecord | None:
+    """Durably register an asset generated or copied by Avatar V2. Refuses symlinks & hardlinks."""
+    if origin not in _MANAGED_ASSET_ORIGINS:
+        raise ValueError(f"Unsupported managed asset origin: {origin!r}")
+    candidate = Path(str(file_path)).expanduser()
+    try:
+        lst = os.lstat(candidate)
+    except OSError:
+        return None
+    if candidate.is_symlink() or not candidate.is_file() or lst.st_nlink > 1:
+        return None
+    canonical = str(Path(os.path.realpath(candidate)))
+    try:
+        digest = _sha256_file_bytes(Path(canonical))
+    except OSError:
+        return None
+    rec = ManagedAssetRecord(
+        canonical_path=canonical,
+        sha256=digest,
+        size_bytes=int(lst.st_size),
+        inode=int(lst.st_ino),
+        device=int(lst.st_dev),
+        origin=origin,
+        job_id=str(job_id or ""),
+    )
+    reg = Path(registry_path)
+    lock = DirectoryWriterLock(reg.with_name(f".{reg.name}.lock"))
+    try:
+        lock.acquire()
+    except Exception:
+        lock = None  # fallback if lock dir is read-only; atomic write still runs
+    try:
+        mapping = _load_managed_asset_map(reg)
+        mapping[canonical] = rec.to_dict()
+        write_json_atomic(reg, mapping)
+    finally:
+        if lock is not None:
+            lock.release()
+    return rec
+
+
+def unregister_managed_asset(registry_path: Path, raw_path: str | Path) -> bool:
+    """Remove a managed asset record after verified deletion."""
+    reg = Path(registry_path)
+    if not reg.is_file():
+        return False
+    canonical = str(Path(os.path.realpath(Path(str(raw_path)).expanduser())))
+    lock = DirectoryWriterLock(reg.with_name(f".{reg.name}.lock"))
+    try:
+        lock.acquire()
+    except Exception:
+        lock = None
+    try:
+        mapping = _load_managed_asset_map(reg)
+        removed = mapping.pop(canonical, None) is not None
+        if removed:
+            write_json_atomic(reg, mapping)
+        return removed
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+def verify_managed_asset_ownership(
+    registry_path: Path,
+    raw_path: str | Path,
+) -> tuple[bool, MediaOwnershipResult]:
+    """Fail-closed proof that Avatar V2 owns the exact file on disk (RC-02 Gate 1).
+
+    Directory membership, filename, history presence, master status, and file extension
+    NEVER authorize physical deletion without a matching durable ownership record whose
+    canonical path, device, inode, size, and SHA-256 all match the live file!
+    """
+    text = str(raw_path or "").strip()
+    if not text:
+        return False, MediaOwnershipResult("missing", False, "", "Empty file path.")
+    candidate = Path(text).expanduser()
+    try:
+        lst = os.lstat(candidate)
+    except FileNotFoundError:
+        return False, MediaOwnershipResult("missing", False, str(candidate), "File does not exist.")
+    except OSError as exc:
+        return False, MediaOwnershipResult("external_original", False, str(candidate), f"Cannot stat path: {exc}")
+
+    canonical = str(Path(os.path.realpath(candidate)))
+    if candidate.is_symlink():
+        return False, MediaOwnershipResult(
+            "external_symlink",
+            False,
+            canonical,
+            "Symlinks are detached rather than unlinked to protect source targets.",
+        )
+    if not candidate.is_file():
+        return False, MediaOwnershipResult("external_original", False, canonical, "Target is not a regular file.")
+    if lst.st_nlink > 1:
+        return False, MediaOwnershipResult(
+            "hardlinked_shared",
+            False,
+            canonical,
+            f"File has multiple hard links (nlink={lst.st_nlink}); refusing physical deletion.",
+        )
+
+    mapping = _load_managed_asset_map(Path(registry_path))
+    rec = ManagedAssetRecord.from_dict(mapping.get(canonical))
+    if rec is None:
+        return False, MediaOwnershipResult(
+            "external_original",
+            False,
+            canonical,
+            "No verified Avatar V2 managed-asset ownership record exists for this file; refusing physical deletion.",
+        )
+
+    if int(lst.st_dev) != rec.device or int(lst.st_ino) != rec.inode:
+        return False, MediaOwnershipResult(
+            "external_original",
+            False,
+            canonical,
+            "File inode/device no longer matches Avatar V2's managed-asset record (replaced or moved); refusing deletion.",
+        )
+    if int(lst.st_size) != rec.size_bytes:
+        return False, MediaOwnershipResult(
+            "external_original",
+            False,
+            canonical,
+            "File size no longer matches Avatar V2's managed-asset record; refusing deletion.",
+        )
+    try:
+        live_sha = _sha256_file_bytes(Path(canonical))
+    except OSError as exc:
+        return False, MediaOwnershipResult("external_original", False, canonical, f"Cannot hash file: {exc}")
+    if live_sha != rec.sha256:
+        return False, MediaOwnershipResult(
+            "external_original",
+            False,
+            canonical,
+            "File SHA-256 content no longer matches Avatar V2's managed-asset record; refusing deletion.",
+        )
+
+    return True, MediaOwnershipResult(
+        rec.origin,
+        True,
+        canonical,
+        f"Verified Avatar V2 managed asset ({rec.origin}, job={rec.job_id or 'managed'}).",
     )
