@@ -428,6 +428,11 @@ class RenderQueue:
                 return False
         return False
 
+    def _release_dir_lock(self) -> None:
+        lock = getattr(self, "_dir_lock", None)
+        if lock is not None:
+            lock.release()
+
     def shutdown(self) -> None:
         self._stop.set()
         self._wake.set()
@@ -435,9 +440,10 @@ class RenderQueue:
         thread = getattr(self, "_thread", None)
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=2.0)
-        lock = getattr(self, "_dir_lock", None)
-        if lock is not None:
-            lock.release()
+        # RC-18: NEVER release the single-writer directory lock while the worker thread
+        # is still alive (e.g. finishing QA/persistence); _worker's outer finally releases it.
+        if thread is None or not thread.is_alive():
+            self._release_dir_lock()
 
     def _persist(self) -> None:
         path = self.work_dir / "queue_state.json"
@@ -867,6 +873,7 @@ class RenderQueue:
         workflow: str,
         job: RenderJob,
         *,
+        on_resolved: Callable[[dict[str, Any]], None] | None = None,
         on_submitted: Callable[[str], None] | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
@@ -874,6 +881,8 @@ class RenderQueue:
         kwargs: dict[str, Any] = {}
         try:
             params = inspect.signature(render_fn).parameters
+            if "on_resolved" in params and on_resolved is not None:
+                kwargs["on_resolved"] = on_resolved
             if "on_submitted" in params and on_submitted is not None:
                 kwargs["on_submitted"] = on_submitted
             if "cancel_event" in params and cancel_event is not None:
@@ -1104,6 +1113,11 @@ class RenderQueue:
                     item.submitted_params = _snapshot_submitted_params(item, job)
                     item.runtime["submitted_params"] = item.submitted_params
                     item.phase = "submitted"
+                    item.runtime["submission_token"] = uuid.uuid4().hex
+                    # RC-10: Persist submission transition durably BEFORE contacting the renderer
+                    # so a crash after ComfyUI accepts the prompt (before on_submitted runs) NEVER
+                    # replays accepted work on restart, and durability failure refuses dispatch.
+                    self._persist_item_durable(item)
                 result = self._call_provider_render(
                     provider,
                     item.workflow,
@@ -1234,6 +1248,12 @@ class RenderQueue:
         return self.memory_manager.maybe_cleanup(provider, **cleanup_kwargs)
 
     def _worker(self) -> None:
+        try:
+            self._worker_loop()
+        finally:
+            self._release_dir_lock()
+
+    def _worker_loop(self) -> None:
         while not self._stop.is_set():
             item = self._next()
             if item is None:
@@ -1326,3 +1346,9 @@ class RenderQueue:
                             {"reason": "queue-persist-failed", "error": f"{type(exc).__name__}: {exc}"}
                         )
                     self._cancel_events.pop(item.id, None)
+                on_finished = getattr(self, "_on_job_finished", None)
+                if callable(on_finished):
+                    try:
+                        on_finished(item)
+                    except Exception:
+                        pass

@@ -356,10 +356,11 @@ class ComfyUIProvider:
                             f"ComfyUI job {prompt_id} was interrupted",
                             partial_outputs=self.output_files(item),
                         )
-                    status = item.get("status", {})
-                    if status.get("completed") is True or (
-                        status.get("completed") is not False and item.get("outputs")
-                    ):
+                    status = item.get("status") if isinstance(item.get("status"), dict) else {}
+                    status_str = str(status.get("status_str") or "").strip().lower()
+                    # RC-16: Require explicit terminal completion from ComfyUI; never promote
+                    # intermediate/preview outputs while status has no terminal marker.
+                    if status.get("completed") is True or status_str == "success":
                         return item
                 if cancel_event is not None:
                     if cancel_event.wait(timeout=1.5):
@@ -396,12 +397,15 @@ class ComfyUIProvider:
         workflow_path: str | Path,
         job: RenderJob,
         *,
+        on_resolved: Callable[[dict[str, Any]], None] | None = None,
         on_submitted: Callable[[str], None] | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         if cancel_event is not None and cancel_event.is_set():
             raise ComfyUICancelledError("ComfyUI job was cancelled before submission")
         workflow = self.resolve_workflow(workflow_path, job, stage_assets=True)
+        if on_resolved is not None:
+            on_resolved(workflow)
         if cancel_event is not None and cancel_event.is_set():
             raise ComfyUICancelledError("ComfyUI job was cancelled before submission")
         prompt_id = self.queue(workflow)

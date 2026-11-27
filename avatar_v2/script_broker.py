@@ -16,6 +16,7 @@ Host-enforced invariants (cannot be bypassed by concurrent script threads or sub
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 import secrets
@@ -24,7 +25,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Iterator, Literal
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    _fcntl = None
 
 from .model_registry import DEFAULT_REGISTRY, ModelRegistry
 from .ownership import write_json_atomic
@@ -49,6 +55,27 @@ EXECUTABLE_SCRIPT_MODELS: frozenset[str] = frozenset({"flux2_4b", "flux2_9b", "w
 _BUDGET_FILE_LOCK = threading.RLock()
 
 
+@contextmanager
+def _budget_exclusive_lock(budget_path: Path | None) -> Iterator[None]:
+    """Serialize live broker and detached budget ledger updates across threads and processes (RC-11)."""
+    with _BUDGET_FILE_LOCK:
+        if budget_path is None or _fcntl is None:
+            yield
+            return
+        lock_path = budget_path.with_suffix(budget_path.suffix + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                _fcntl.flock(fd, _fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
+
+
 def charge_durable_script_budget(
     runs_dir: Path,
     run_id: str,
@@ -58,31 +85,43 @@ def charge_durable_script_budget(
 ) -> tuple[bool, str]:
     """Fail-closed durable run-budget charge surviving broker detach or app restart (Astra RC-11)."""
     budget_path = Path(runs_dir) / f"{run_id}.budget.json"
-    with _BUDGET_FILE_LOCK:
-        if not budget_path.is_file():
-            return False, (
-                f"Durable script run budget ledger missing for run '{run_id}'; "
-                f"refusing detached corrective generation for {parent_job_id} (fail-closed)."
-            )
-        try:
-            data = json.loads(budget_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            return False, f"Unreadable script budget ledger for '{run_id}': {exc}"
-        if str(data.get("state") or "") in {"stopping", "stopped"}:
-            return False, f"Script run '{run_id}' was stopped; refusing corrective generation."
-        used = int(data.get("submitted", 0))
-        limit = int(data.get("max_items", 0))
-        if limit <= 0 or used >= limit:
-            return False, (
-                f"Durable script run budget exhausted ({used}/{limit}); "
-                f"refusing corrective attempt for {parent_job_id}."
-            )
-        data["submitted"] = used + 1
-        charges = list(data.get("corrective_charges") or [])
-        charges.append({"parent_job_id": parent_job_id, "note": note, "at": time.time()})
-        data["corrective_charges"] = charges[-50:]
-        write_json_atomic(budget_path, data)
-        return True, f"Charged durable script budget ({used + 1}/{limit}) {note}".strip()
+    try:
+        lock_ctx = _budget_exclusive_lock(budget_path)
+    except OSError as exc:
+        return False, f"Failed to lock script budget ledger for '{run_id}': {exc}"
+    try:
+        with lock_ctx:
+            if not budget_path.is_file():
+                return False, (
+                    f"Durable script run budget ledger missing for run '{run_id}'; "
+                    f"refusing detached corrective generation for {parent_job_id} (fail-closed)."
+                )
+            try:
+                data = json.loads(budget_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                return False, f"Unreadable script budget ledger for '{run_id}': {exc}"
+            if not isinstance(data, dict):
+                return False, f"Corrupt script budget ledger for '{run_id}' (expected JSON object)."
+            if str(data.get("state") or "") in {"stopping", "stopped"}:
+                return False, f"Script run '{run_id}' was stopped; refusing corrective generation."
+            used = int(data.get("submitted", 0))
+            limit = int(data.get("max_items", 0))
+            if limit <= 0 or used >= limit:
+                return False, (
+                    f"Durable script run budget exhausted ({used}/{limit}); "
+                    f"refusing corrective attempt for {parent_job_id}."
+                )
+            data["submitted"] = used + 1
+            charges = list(data.get("corrective_charges") or [])
+            charges.append({"parent_job_id": parent_job_id, "note": note, "at": time.time()})
+            data["corrective_charges"] = charges[-50:]
+            try:
+                write_json_atomic(budget_path, data)
+            except OSError as exc:
+                return False, f"Durable script budget write failed for '{run_id}': {exc}"
+            return True, f"Charged durable script budget ({used + 1}/{limit}) {note}".strip()
+    except OSError as exc:
+        return False, f"Durable script budget lock failed for '{run_id}': {exc}"
 
 
 @dataclass
@@ -185,28 +224,53 @@ class GenerationBroker:
         self._server_sock: socket.socket | None = None
         self._server_thread: threading.Thread | None = None
         self._serving = False
-        self._sync_budget_file_locked()
+        self._sync_budget_file_locked(strict=False)
 
-    def _sync_budget_file_locked(self) -> None:
+    def _read_budget_locked(self) -> dict[str, Any]:
+        """Read existing durable budget file under _budget_exclusive_lock."""
+        if self._budget_path is None or not self._budget_path.is_file():
+            return {}
+        data = json.loads(self._budget_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Budget ledger JSON root is not an object")
+        return data
+
+    def _sync_budget_file_locked(
+        self,
+        *,
+        strict: bool = False,
+        submitted_override: int | None = None,
+        extra_charge: dict[str, Any] | None = None,
+    ) -> None:
         if self._budget_path is None:
+            if submitted_override is not None:
+                self._submitted_count = submitted_override
             return
-        with _BUDGET_FILE_LOCK:
-            try:
-                existing = json.loads(self._budget_path.read_text(encoding="utf-8")) if self._budget_path.is_file() else {}
-            except (OSError, json.JSONDecodeError):
-                existing = {}
-            payload = {
-                "run_id": self.run_id,
-                "state": self._state,
-                "submitted": max(self._submitted_count, int(existing.get("submitted") or 0)),
-                "max_items": self.max_items,
-                "corrective_charges": list(existing.get("corrective_charges") or []),
-            }
-            self._submitted_count = payload["submitted"]
-            try:
+        try:
+            with _budget_exclusive_lock(self._budget_path):
+                existing = self._read_budget_locked()
+                disk_submitted = int(existing.get("submitted") or 0)
+                base_submitted = max(self._submitted_count, disk_submitted)
+                target_submitted = (
+                    max(base_submitted, submitted_override)
+                    if submitted_override is not None
+                    else base_submitted
+                )
+                charges = list(existing.get("corrective_charges") or [])
+                if extra_charge is not None:
+                    charges.append(extra_charge)
+                payload = {
+                    "run_id": self.run_id,
+                    "state": self._state,
+                    "submitted": target_submitted,
+                    "max_items": self.max_items,
+                    "corrective_charges": charges[-50:],
+                }
                 write_json_atomic(self._budget_path, payload)
-            except OSError:
-                pass
+                self._submitted_count = target_submitted
+        except (OSError, json.JSONDecodeError, ValueError):
+            if strict:
+                raise
 
     # ------------------------------------------------------------------ lifecycle & control
 
@@ -255,20 +319,50 @@ class GenerationBroker:
                 self._cond.notify_all()
 
     def charge_corrective_attempt(self, parent_job_id: str, *, note: str = "") -> tuple[bool, str]:
-        """Charge a corrective generation attempt against the SAME host-enforced run budget."""
+        """Charge a corrective generation attempt against the SAME host-enforced run budget (RC-11 fail-closed)."""
         with self._lock:
-            self._sync_budget_file_locked()
             if self._state in {"stopping", "stopped"}:
                 return False, "Script run was stopped; refusing additional corrective generation."
-            if self._submitted_count >= self.max_items:
+            if self._budget_path is None:
+                if self._submitted_count >= self.max_items:
+                    return False, (
+                        f"Shared script run budget exhausted ({self._submitted_count}/{self.max_items}); "
+                        f"cannot start corrective attempt for {parent_job_id}."
+                    )
+                self._submitted_count += 1
+                return True, f"Charged corrective attempt ({self._submitted_count}/{self.max_items}) {note}".strip()
+            try:
+                with _budget_exclusive_lock(self._budget_path):
+                    existing = self._read_budget_locked()
+                    if str(existing.get("state") or "") in {"stopping", "stopped"}:
+                        self._state = "stopped"
+                        return False, "Script run was stopped; refusing additional corrective generation."
+                    used = max(self._submitted_count, int(existing.get("submitted") or 0))
+                    if used >= self.max_items:
+                        self._submitted_count = used
+                        return False, (
+                            f"Shared script run budget exhausted ({used}/{self.max_items}); "
+                            f"cannot start corrective attempt for {parent_job_id}."
+                        )
+                    next_count = used + 1
+                    charges = list(existing.get("corrective_charges") or [])
+                    charges.append({"parent_job_id": parent_job_id, "note": note, "at": time.time()})
+                    payload = {
+                        "run_id": self.run_id,
+                        "state": self._state,
+                        "submitted": next_count,
+                        "max_items": self.max_items,
+                        "corrective_charges": charges[-50:],
+                    }
+                    # RC-11: Commit durable ledger FIRST; never authorize or mutate in-memory count on write failure.
+                    write_json_atomic(self._budget_path, payload)
+                    self._submitted_count = next_count
+                    return True, f"Charged corrective attempt ({next_count}/{self.max_items}) {note}".strip()
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
                 return False, (
-                    f"Shared script run budget exhausted ({self._submitted_count}/{self.max_items}); "
-                    f"cannot start corrective attempt for {parent_job_id}."
+                    f"Durable script budget commit failed for run '{self.run_id}'; "
+                    f"refusing corrective attempt for {parent_job_id}: {exc}"
                 )
-            self._submitted_count += 1
-            self._sync_budget_file_locked()
-            self._sync_budget_file_locked()
-            return True, f"Charged corrective attempt ({self._submitted_count}/{self.max_items}) {note}".strip()
 
     def snapshot_status(self) -> dict[str, Any]:
         with self._lock:
@@ -654,7 +748,19 @@ class GenerationBroker:
 
         # 8. Atomic reservation under lock (prevents concurrent-request race bypassing max_items / max_concurrent).
         with self._cond:
-            self._sync_budget_file_locked()
+            if self._budget_path is not None:
+                try:
+                    with _budget_exclusive_lock(self._budget_path):
+                        existing = self._read_budget_locked()
+                        if str(existing.get("state") or "") in {"stopping", "stopped"}:
+                            self._state = "stopped"
+                        self._submitted_count = max(self._submitted_count, int(existing.get("submitted") or 0))
+                except (OSError, json.JSONDecodeError, ValueError) as exc:
+                    return {
+                        "ok": False,
+                        "code": "budget_persist_failed",
+                        "error": f"Durable script budget ledger unreadable: {exc}",
+                    }
             if self._state in {"stopped", "stopping", "error"}:
                 return {"ok": False, "code": "run_stopped", "error": "Script run has been stopped."}
             self._refresh_jobs_locked()
@@ -672,6 +778,35 @@ class GenerationBroker:
                     "error": f"Concurrent job limit reached ({active_count}/{self.max_concurrent} active).",
                 }
             item_index = self._submitted_count + 1
+            # RC-11: Durably commit the incremented budget BEFORE submitting to the queue.
+            # If the durable write fails, refuse submission instead of running untracked work.
+            if self._budget_path is not None:
+                try:
+                    with _budget_exclusive_lock(self._budget_path):
+                        existing = self._read_budget_locked()
+                        disk_used = max(self._submitted_count, int(existing.get("submitted") or 0))
+                        if disk_used >= self.max_items:
+                            self._submitted_count = disk_used
+                            return {
+                                "ok": False,
+                                "code": "run_limit_reached",
+                                "error": f"Host-enforced generation limit reached ({disk_used}/{self.max_items} items).",
+                            }
+                        item_index = disk_used + 1
+                        payload_budget = {
+                            "run_id": self.run_id,
+                            "state": self._state,
+                            "submitted": item_index,
+                            "max_items": self.max_items,
+                            "corrective_charges": list(existing.get("corrective_charges") or []),
+                        }
+                        write_json_atomic(self._budget_path, payload_budget)
+                except (OSError, json.JSONDecodeError, ValueError) as exc:
+                    return {
+                        "ok": False,
+                        "code": "budget_persist_failed",
+                        "error": f"Durable script budget write failed: {exc}",
+                    }
             label = str(payload.get("label") or "").strip() or f"Script item {item_index} of {self.max_items} · {model_spec.label}"
             ctx = BrokerSubmitContext(
                 run_id=self.run_id,
@@ -688,10 +823,19 @@ class GenerationBroker:
             try:
                 job_id = str(self._submit_fn(ctx))
             except Exception as exc:
+                # Roll back durable reservation if queue submission itself failed.
+                if self._budget_path is not None:
+                    try:
+                        with _budget_exclusive_lock(self._budget_path):
+                            existing = self._read_budget_locked()
+                            rolled = max(0, int(existing.get("submitted") or item_index) - 1)
+                            existing["submitted"] = rolled
+                            write_json_atomic(self._budget_path, existing)
+                    except (OSError, json.JSONDecodeError, ValueError):
+                        pass
                 return {"ok": False, "code": "submit_failed", "error": str(exc)}
 
-            self._submitted_count += 1
-            self._sync_budget_file_locked()
+            self._submitted_count = item_index
             rec = BrokerJobRecord(
                 job_id=job_id,
                 model_id=model_spec.model_id,

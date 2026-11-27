@@ -178,7 +178,10 @@ def test_wait_handles_completion_node_error_and_timeout(monkeypatch):
     monkeypatch.setattr(
         comfyui.httpx,
         "Client",
-        lambda **_kwargs: FakeClient([{"p": {"outputs": {"1": {"images": []}}}}], calls),
+        lambda **_kwargs: FakeClient(
+            [{"p": {"status": {"completed": True, "status_str": "success"}, "outputs": {"1": {"images": []}}}}],
+            calls,
+        ),
     )
     assert _provider(timeout_s=30).wait("p")["outputs"]
 

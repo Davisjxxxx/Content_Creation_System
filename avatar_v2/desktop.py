@@ -191,7 +191,8 @@ MAX_DESIGNER_BODY_REFS = 8  # H3 accepts nine pictures; reserve one for primary 
 
 
 def _read_json(path: Path, default: Any) -> Any:
-    return read_json_safe(path, default, quarantine=True)
+    expected = type(default) if isinstance(default, (dict, list)) else None
+    return read_json_safe(path, default, quarantine=True, expected_type=expected)
 
 
 def _write_json(path: Path, data: Any) -> None:
