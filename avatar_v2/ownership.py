@@ -12,17 +12,28 @@ Provides fail-closed ownership verification so Avatar V2:
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
 import signal
+import socket
+import stat
 import subprocess
+import sys
+import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    _fcntl = None
 
 EngineOwnership = Literal["owned_private", "shared_or_external", "stale_or_reused", "stopped"]
 MediaOwnershipClass = Literal[
@@ -276,7 +287,7 @@ class ProcessOwnershipRecord:
 
 
 def verify_process_ownership(record: ProcessOwnershipRecord | None) -> tuple[bool, str]:
-    """Fail-closed verification that ``record`` still identifies the exact app-owned OS process."""
+    """Fail-closed verification that ``record`` still identifies the exact app-owned OS process (F01 / RC-01)."""
     if record is None:
         return False, "no_ownership_record"
     if not record.owned_by_app:
@@ -286,11 +297,20 @@ def verify_process_ownership(record: ProcessOwnershipRecord | None) -> tuple[boo
     if record.start_ticks is None:
         # Never trust a PID without start-time identity (eliminates bare-PID reuse risk!).
         return False, "missing_start_ticks"
+    if sys.platform.startswith("linux") and not str(record.boot_id or "").strip():
+        # F01: Missing boot identity on Linux MUST fail closed!
+        return False, "missing_record_boot_id"
 
     live = inspect_process_identity(record.pid)
     if live is None:
         return False, "process_exited"
-    if record.boot_id and live["boot_id"] and record.boot_id != live["boot_id"]:
+    if sys.platform.startswith("linux"):
+        live_boot = str(live.get("boot_id") or "").strip()
+        if not live_boot:
+            return False, "missing_live_boot_id"
+        if str(record.boot_id).strip() != live_boot:
+            return False, "boot_id_mismatch"
+    elif record.boot_id and live["boot_id"] and record.boot_id != live["boot_id"]:
         return False, "boot_id_mismatch"
     if live["start_ticks"] != record.start_ticks:
         return False, "pid_reused"
@@ -331,7 +351,7 @@ class OwnedProcessHandle:
         return ok
 
     def send_signal(self, sig: int) -> tuple[bool, str]:
-        """Deliver a signal strictly to this owned child (kernel pidfd_send_signal prevents PID-reuse races)."""
+        """Deliver a signal strictly to this owned child via kernel pidfd (zero PID-reuse race)."""
         if self.proc.poll() is not None:
             return False, "process_exited"
         if self._pidfd is not None and hasattr(signal, "pidfd_send_signal"):
@@ -342,6 +362,9 @@ class OwnedProcessHandle:
                 return False, "process_exited"
             except OSError as exc:
                 return False, f"pidfd_error:{exc}"
+        if sys.platform.startswith("linux"):
+            # F01: On Linux, require a stable kernel pidfd handle rather than falling back to numeric os.kill.
+            return send_signal_if_owned(self.record, sig, handle=None)
         ok, reason = verify_process_ownership(self.record)
         if not ok:
             return False, reason
@@ -367,11 +390,25 @@ _LOOPBACK_ENDPOINT_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 def parse_endpoint_host_port(base_url: str) -> tuple[str, int] | None:
     """Parse (host, port) from an HTTP(S) renderer URL; returns None if malformed."""
+    ident = parse_endpoint_identity(base_url)
+    if ident is None:
+        return None
+    _scheme, host, port, _family = ident
+    return host, port
+
+
+def parse_endpoint_identity(base_url: str) -> tuple[str, str, int, int] | None:
+    """Parse strict (scheme, host_literal, port, af_family_or_0) without DNS normalization (F01 / RC-01).
+
+    Rejects credentials, query/fragment, non-http(s) schemes, and non-loopback hosts.
+    """
     raw = str(base_url or "").strip()
     if not raw:
         return None
     parsed = urlparse(raw if "://" in raw else f"http://{raw}")
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
         return None
     try:
         port = parsed.port
@@ -379,35 +416,64 @@ def parse_endpoint_host_port(base_url: str) -> tuple[str, int] | None:
         return None
     if port is None:
         port = 443 if parsed.scheme == "https" else 80
-    return parsed.hostname.lower(), int(port)
-
-
-def pid_listens_on_port(pid: int, port: int) -> bool | None:
-    """Return True if ``pid`` owns a listening TCP socket on ``port``, False if verified not, None if unreadable."""
-    if pid <= 0 or port <= 0:
-        return False
-    fd_dir = Path(f"/proc/{pid}/fd")
-    if not fd_dir.is_dir():
+    if port <= 0 or port > 65535:
         return None
-    socket_inodes: set[str] = set()
+    host = parsed.hostname.lower()
+    if host == "127.0.0.1":
+        return parsed.scheme, "127.0.0.1", int(port), int(socket.AF_INET)
+    if host == "::1":
+        return parsed.scheme, "::1", int(port), int(socket.AF_INET6)
+    if host == "localhost":
+        return parsed.scheme, "localhost", int(port), 0
+    return parsed.scheme, host, int(port), -1
+
+
+def _parse_proc_net_ip(hex_ip: str, *, is_v6: bool) -> str | None:
+    """Decode Linux /proc/net/tcp or /proc/net/tcp6 local IP hex string into canonical IP literal."""
     try:
-        for entry in fd_dir.iterdir():
-            try:
-                target = os.readlink(entry)
-            except OSError:
-                continue
-            if target.startswith("socket:[") and target.endswith("]"):
-                socket_inodes.add(target[8:-1])
-    except OSError:
+        if not is_v6:
+            if len(hex_ip) != 8:
+                return None
+            raw = int(hex_ip, 16).to_bytes(4, "little")
+            return str(ipaddress.IPv4Address(raw))
+        if len(hex_ip) != 32:
+            return None
+        chunks = [int(hex_ip[i : i + 8], 16).to_bytes(4, "little") for i in range(0, 32, 8)]
+        return str(ipaddress.IPv6Address(b"".join(chunks)))
+    except ValueError:
         return None
 
-    listening_inodes: set[str] = set()
-    any_proc_net = False
-    port_hex = f"{int(port):04X}"
-    for net_path in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+
+def pid_listening_endpoints(pid: int) -> tuple[bool, set[tuple[int, str, int]], str]:
+    """Return (telemetry_ok, {(af_family, ip_str, port)}, error) for TCP_LISTEN sockets owned by ``pid``.
+
+    Strictly fail-closed (F01 / RC-01): unreadable /proc/<pid>/fd or /proc/net/tcp returns telemetry_ok=False.
+    """
+    if pid <= 0:
+        return False, set(), "invalid_pid"
+    fd_dir = Path(f"/proc/{pid}/fd")
+    try:
+        entries = list(fd_dir.iterdir())
+    except OSError as exc:
+        return False, set(), f"unreadable_proc_fd:{exc}"
+    socket_inodes: set[str] = set()
+    for entry in entries:
+        try:
+            target = os.readlink(entry)
+        except OSError:
+            continue
+        if target.startswith("socket:[") and target.endswith("]"):
+            socket_inodes.add(target[8:-1])
+
+    endpoints: set[tuple[int, str, int]] = set()
+    readable_tables = 0
+    for net_path, is_v6, family in (
+        (Path("/proc/net/tcp"), False, int(socket.AF_INET)),
+        (Path("/proc/net/tcp6"), True, int(socket.AF_INET6)),
+    ):
         try:
             lines = net_path.read_text(encoding="utf-8").splitlines()[1:]
-            any_proc_net = True
+            readable_tables += 1
         except OSError:
             continue
         for line in lines:
@@ -415,15 +481,90 @@ def pid_listens_on_port(pid: int, port: int) -> bool | None:
             if len(parts) < 10:
                 continue
             local_addr, state, inode = parts[1], parts[3], parts[9]
-            # 0A == TCP_LISTEN
-            if state != "0A":
+            if state != "0A" or inode not in socket_inodes:
                 continue
-            _, _, lport = local_addr.rpartition(":")
-            if lport.upper() == port_hex:
-                listening_inodes.add(inode)
-    if not any_proc_net:
-        return None
-    return bool(socket_inodes & listening_inodes)
+            hex_ip, _, lport_hex = local_addr.rpartition(":")
+            ip_str = _parse_proc_net_ip(hex_ip, is_v6=is_v6)
+            if ip_str is None:
+                continue
+            try:
+                lport = int(lport_hex, 16)
+            except ValueError:
+                continue
+            endpoints.add((family, ip_str, lport))
+    if readable_tables == 0:
+        return False, set(), "unreadable_proc_net_tcp"
+    return True, endpoints, "ok"
+
+
+def pid_listens_on_port(pid: int, port: int) -> bool:
+    """Fail-closed check whether ``pid`` owns ANY TCP_LISTEN socket on ``port`` (unreadable telemetry -> False)."""
+    if pid <= 0 or port <= 0:
+        return False
+    ok, endpoints, _err = pid_listening_endpoints(pid)
+    if not ok:
+        return False
+    return any(p == int(port) for _fam, _ip, p in endpoints)
+
+
+def authorize_owned_endpoint(
+    record: ProcessOwnershipRecord | None,
+    base_url: str,
+    *,
+    require_listening: bool = True,
+) -> tuple[bool, str, str]:
+    """Fail-closed binding between an owned process record and an exact concrete loopback endpoint (F01 / RC-01).
+
+    Returns ``(allowed, pinned_concrete_url, reason)``:
+    - Enforces exact address family (IPv4 listener NEVER authorizes IPv6 ``[::1]`` and vice versa).
+    - Fails closed on missing boot_id or unreadable ``/proc`` listener evidence.
+    - Resolves ``localhost`` ONLY to the exact bound IP literal of the proven listener (zero DNS ambiguity).
+    """
+    ok, reason = verify_process_ownership(record)
+    if not ok or record is None:
+        return False, "", reason
+    ident = parse_endpoint_identity(base_url)
+    if ident is None:
+        return False, "", "invalid_endpoint_url"
+    scheme, host, port, family = ident
+    if host not in _LOOPBACK_ENDPOINT_HOSTS or family < 0:
+        return False, "", f"non_loopback_endpoint:{host}"
+    if record.port is None:
+        return False, "", "record_missing_port"
+    if int(record.port) != int(port):
+        return False, "", f"endpoint_port_mismatch:owned_{record.port}_vs_target_{port}"
+
+    if require_listening:
+        tel_ok, endpoints, tel_err = pid_listening_endpoints(record.pid)
+        if not tel_ok:
+            return False, "", f"unreadable_listener_telemetry:{tel_err}"
+        v4_match = any(
+            fam == int(socket.AF_INET) and p == port and ip in {"127.0.0.1", "0.0.0.0"}
+            for fam, ip, p in endpoints
+        )
+        v6_match = any(
+            fam == int(socket.AF_INET6) and p == port and ip in {"::1", "::"}
+            for fam, ip, p in endpoints
+        )
+        if family == int(socket.AF_INET):
+            if not v4_match:
+                return False, "", f"ipv4_listener_not_owned_on_port:{port}"
+            return True, f"{scheme}://127.0.0.1:{port}", "verified_owned_ipv4_endpoint"
+        if family == int(socket.AF_INET6):
+            if not v6_match:
+                return False, "", f"ipv6_listener_not_owned_on_port:{port}"
+            return True, f"{scheme}://[::1]:{port}", "verified_owned_ipv6_endpoint"
+        # host == "localhost": pin strictly to the concrete family actually bound by the owned PID.
+        if v4_match and not v6_match:
+            return True, f"{scheme}://127.0.0.1:{port}", "verified_owned_localhost_pinned_ipv4"
+        if v6_match and not v4_match:
+            return True, f"{scheme}://[::1]:{port}", "verified_owned_localhost_pinned_ipv6"
+        if v4_match and v6_match:
+            return True, f"{scheme}://127.0.0.1:{port}", "verified_owned_localhost_dualstack_pinned_ipv4"
+        return False, "", f"owned_pid_not_listening_on_port:{port}"
+
+    concrete = "[::1]" if host == "::1" else ("127.0.0.1" if host == "localhost" else host)
+    return True, f"{scheme}://{concrete}:{port}", "verified_owned_starting_endpoint"
 
 
 def verify_endpoint_ownership(
@@ -432,25 +573,9 @@ def verify_endpoint_ownership(
     *,
     require_listening: bool = False,
 ) -> tuple[bool, str]:
-    """Fail-closed binding between an owned ComfyUI process record and a target HTTP endpoint (RC-01)."""
-    ok, reason = verify_process_ownership(record)
-    if not ok or record is None:
-        return False, reason
-    parsed = parse_endpoint_host_port(base_url)
-    if parsed is None:
-        return False, "invalid_endpoint_url"
-    host, port = parsed
-    if host not in _LOOPBACK_ENDPOINT_HOSTS:
-        return False, f"non_loopback_endpoint:{host}"
-    if record.port is None:
-        return False, "record_missing_port"
-    if int(record.port) != int(port):
-        return False, f"endpoint_port_mismatch:owned_{record.port}_vs_target_{port}"
-    if require_listening:
-        listening = pid_listens_on_port(record.pid, port)
-        if listening is False:
-            return False, f"owned_pid_not_listening_on_port:{port}"
-    return True, "verified_owned_endpoint"
+    """Fail-closed binding between an owned ComfyUI process record and a target HTTP endpoint (F01 / RC-01)."""
+    ok, _pinned, reason = authorize_owned_endpoint(record, base_url, require_listening=require_listening)
+    return ok, reason
 
 
 def send_signal_if_owned(
@@ -465,9 +590,8 @@ def send_signal_if_owned(
     if record is None or record.pid <= 0:
         return False, "no_ownership_record"
 
-    # RC-01 Gate 2: On Linux with pidfd_open + pidfd_send_signal, pin the kernel task FIRST,
-    # THEN verify OS start_ticks/boot_id/exe/cmdline/port while holding pidfd open, THEN signal pidfd!
-    # Eliminates verify-then-numeric-kill PID reuse TOCTOU after application restart.
+    # F01 / RC-01: On Linux, pin the kernel task via pidfd_open FIRST, verify full OS identity
+    # (start_ticks + boot_id + exe + cmdline + port) while holding pidfd open, then deliver signal via pidfd.
     if hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"):
         try:
             pidfd = os.pidfd_open(record.pid, 0)
@@ -491,6 +615,9 @@ def send_signal_if_owned(
                 os.close(pidfd)
             except OSError:
                 pass
+
+    if sys.platform.startswith("linux"):
+        return False, "pidfd_unavailable_fail_closed"
 
     ok, reason = verify_process_ownership(record)
     if not ok:
@@ -634,6 +761,177 @@ def _sha256_file_bytes(path: Path) -> str:
     return h.hexdigest()
 
 
+class RegistryLockError(OSError):
+    """Raised when the managed-asset registry exclusive transaction lock cannot be acquired (F02 / RC-02)."""
+
+
+_REGISTRY_THREAD_LOCKS_GUARD = threading.Lock()
+_REGISTRY_THREAD_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _thread_lock_for(lock_path: Path) -> threading.RLock:
+    key = str(lock_path.resolve(strict=False))
+    with _REGISTRY_THREAD_LOCKS_GUARD:
+        lk = _REGISTRY_THREAD_LOCKS.get(key)
+        if lk is None:
+            lk = threading.RLock()
+            _REGISTRY_THREAD_LOCKS[key] = lk
+        return lk
+
+
+class _RegistryTransactionLock:
+    """Fail-closed thread + cross-process exclusive lock covering an entire registry transaction (F02 / RC-02)."""
+
+    def __init__(self, registry_path: Path, *, timeout_s: float = 2.0) -> None:
+        reg = Path(registry_path)
+        self.lock_path = reg.with_name(f".{reg.name}.lock")
+        self.timeout_s = max(0.0, float(timeout_s))
+        self._tlock = _thread_lock_for(self.lock_path)
+        self._fd: int | None = None
+
+    def __enter__(self) -> _RegistryTransactionLock:
+        deadline = time.monotonic() + self.timeout_s
+        if not self._tlock.acquire(timeout=max(0.01, self.timeout_s)):
+            raise RegistryLockError(f"Timed out acquiring in-process lock for {self.lock_path}")
+        try:
+            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+            while True:
+                try:
+                    if _fcntl is not None:
+                        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                    self._fd = fd
+                    return self
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        os.close(fd)
+                        raise RegistryLockError(f"Managed-asset registry lock is held by another writer: {self.lock_path}")
+                    time.sleep(0.01)
+                except BaseException:
+                    os.close(fd)
+                    raise
+        except BaseException:
+            self._tlock.release()
+            raise
+
+    def __exit__(self, *args: Any) -> None:
+        fd = self._fd
+        self._fd = None
+        if fd is not None:
+            try:
+                if _fcntl is not None:
+                    _fcntl.flock(fd, _fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._tlock.release()
+
+
+def _sha256_fd(fd: int) -> str:
+    h = hashlib.sha256()
+    os.lseek(fd, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(fd, 1 << 20)
+        if not chunk:
+            break
+        h.update(chunk)
+    return h.hexdigest()
+
+
+def allocate_exclusive_path(dest_dir: Path, filename: str) -> tuple[int, Path]:
+    """Exclusively create a brand-new file inside ``dest_dir`` using O_CREAT|O_EXCL|O_NOFOLLOW (F02 / RC-02).
+
+    NEVER overwrites, truncates, or replaces any pre-existing file or symlink.
+    If ``dest_dir / filename`` already exists, allocates a collision-free sibling name instead.
+    """
+    target_dir = Path(dest_dir).expanduser()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = Path(str(filename or "output.bin")).name
+    if not safe_name or safe_name in {".", ".."}:
+        safe_name = "output.bin"
+    base = Path(safe_name)
+    stem, suffix = base.stem or "output", base.suffix
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+
+    for attempt in range(64):
+        name = safe_name if attempt == 0 else f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+        candidate = target_dir / name
+        try:
+            fd = os.open(str(candidate), flags, 0o644)
+            return fd, candidate
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"Could not allocate exclusive destination in {target_dir} for {safe_name}")
+
+
+def reserve_fresh_output_path(dest_dir: Path, filename: str) -> Path:
+    """Return a non-existing path inside ``dest_dir`` without overwriting any pre-existing file (F02 / RC-02)."""
+    target_dir = Path(dest_dir).expanduser()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = Path(str(filename or "output.bin")).name
+    if not safe_name or safe_name in {".", ".."}:
+        safe_name = "output.bin"
+    base = Path(safe_name)
+    stem, suffix = base.stem or "output", base.suffix
+    for attempt in range(64):
+        name = safe_name if attempt == 0 else f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+        candidate = target_dir / name
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    raise FileExistsError(f"Could not reserve fresh output path in {target_dir} for {safe_name}")
+
+
+def copy_file_exclusive(src: Path, dest_dir: Path, filename: str | None = None) -> Path:
+    """Copy ``src`` into a freshly created exclusive destination in ``dest_dir`` and verify SHA-256 (F02 / RC-02).
+
+    - NEVER overwrites an existing file at ``dest_dir / filename``.
+    - On interrupted write or hash mismatch, removes ONLY the newly created destination and raises.
+    """
+    source = Path(src).expanduser()
+    src_hash = hashlib.sha256()
+    fd, dest = allocate_exclusive_path(dest_dir, filename or source.name)
+    created_ok = False
+    try:
+        with source.open("rb") as reader:
+            while True:
+                chunk = reader.read(1 << 20)
+                if not chunk:
+                    break
+                src_hash.update(chunk)
+                view = memoryview(chunk)
+                written = 0
+                while written < len(view):
+                    n = os.write(fd, view[written:])
+                    if n <= 0:
+                        raise OSError("Short write during exclusive archive copy")
+                    written += n
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        # Verify written destination bytes match source exactly.
+        dest_sha = _sha256_file_bytes(dest)
+        if dest_sha != src_hash.hexdigest():
+            raise OSError("Exclusive copy SHA-256 verification failed")
+        created_ok = True
+        return dest
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not created_ok:
+            try:
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 @dataclass(frozen=True)
 class ManagedAssetRecord:
     """Explicit durable proof that Avatar V2 created or copied this exact asset on disk."""
@@ -659,7 +957,8 @@ class ManagedAssetRecord:
             return None
         cpath = str(raw.get("canonical_path") or "").strip()
         digest = str(raw.get("sha256") or "").strip()
-        if not cpath or len(digest) != 64:
+        job_id = str(raw.get("job_id") or "").strip()
+        if not cpath or len(digest) != 64 or not job_id:
             return None
         try:
             size_b = int(raw["size_bytes"])
@@ -674,7 +973,7 @@ class ManagedAssetRecord:
             inode=ino,
             device=dev,
             origin=origin,  # type: ignore[arg-type]
-            job_id=str(raw.get("job_id") or ""),
+            job_id=job_id,
             created_at=str(raw.get("created_at") or ""),
         )
 
@@ -690,67 +989,207 @@ def register_managed_asset(
     *,
     origin: Literal["generated_output", "managed_archive_copy", "managed_import_copy", "ephemeral_staging"],
     job_id: str = "",
+    allowed_roots: tuple[Path, ...] | list[Path] | None = None,
+    lock_timeout_s: float = 2.0,
 ) -> ManagedAssetRecord | None:
-    """Durably register an asset generated or copied by Avatar V2. Refuses symlinks & hardlinks."""
+    """Durably register an asset exclusively created/acquired by Avatar V2 under a fail-closed exclusive lock (F02).
+
+    - Rejects empty ``job_id``, symlinks, hardlinks (nlink > 1), non-regular files, and paths outside ``allowed_roots``.
+    - Raises ``RegistryLockError`` if the registry lock cannot be acquired (NEVER mutates unlocked!).
+    """
     if origin not in _MANAGED_ASSET_ORIGINS:
         raise ValueError(f"Unsupported managed asset origin: {origin!r}")
+    clean_job_id = str(job_id or "").strip()
+    if not clean_job_id:
+        raise ValueError("register_managed_asset requires a non-empty producing job_id")
+
     candidate = Path(str(file_path)).expanduser()
-    try:
-        lst = os.lstat(candidate)
-    except OSError:
-        return None
-    if candidate.is_symlink() or not candidate.is_file() or lst.st_nlink > 1:
-        return None
-    canonical = str(Path(os.path.realpath(candidate)))
-    try:
-        digest = _sha256_file_bytes(Path(canonical))
-    except OSError:
-        return None
-    rec = ManagedAssetRecord(
-        canonical_path=canonical,
-        sha256=digest,
-        size_bytes=int(lst.st_size),
-        inode=int(lst.st_ino),
-        device=int(lst.st_dev),
-        origin=origin,
-        job_id=str(job_id or ""),
-    )
     reg = Path(registry_path)
-    lock = DirectoryWriterLock(reg.with_name(f".{reg.name}.lock"))
-    try:
-        lock.acquire()
-    except Exception:
-        lock = None  # fallback if lock dir is read-only; atomic write still runs
-    try:
+
+    with _RegistryTransactionLock(reg, timeout_s=lock_timeout_s):
+        flags = os.O_RDONLY | (getattr(os, "O_NOFOLLOW", 0))
+        try:
+            fd = os.open(str(candidate), flags)
+        except OSError:
+            return None
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:
+                return None
+            canonical = str(Path(os.path.realpath(candidate)))
+            if allowed_roots is not None:
+                canon_p = Path(canonical)
+                in_root = False
+                for r in allowed_roots:
+                    try:
+                        canon_p.relative_to(Path(r).expanduser().resolve())
+                        in_root = True
+                        break
+                    except ValueError:
+                        continue
+                if not in_root:
+                    return None
+            digest = _sha256_fd(fd)
+        finally:
+            os.close(fd)
+
+        rec = ManagedAssetRecord(
+            canonical_path=canonical,
+            sha256=digest,
+            size_bytes=int(st.st_size),
+            inode=int(st.st_ino),
+            device=int(st.st_dev),
+            origin=origin,
+            job_id=clean_job_id,
+        )
         mapping = _load_managed_asset_map(reg)
         mapping[canonical] = rec.to_dict()
         write_json_atomic(reg, mapping)
-    finally:
-        if lock is not None:
-            lock.release()
-    return rec
+        return rec
 
 
-def unregister_managed_asset(registry_path: Path, raw_path: str | Path) -> bool:
-    """Remove a managed asset record after verified deletion."""
+def unregister_managed_asset(
+    registry_path: Path,
+    raw_path: str | Path,
+    *,
+    lock_timeout_s: float = 2.0,
+) -> bool:
+    """Remove a managed asset record under the fail-closed exclusive registry lock (F02 / RC-02)."""
     reg = Path(registry_path)
     if not reg.is_file():
         return False
     canonical = str(Path(os.path.realpath(Path(str(raw_path)).expanduser())))
-    lock = DirectoryWriterLock(reg.with_name(f".{reg.name}.lock"))
-    try:
-        lock.acquire()
-    except Exception:
-        lock = None
-    try:
+    with _RegistryTransactionLock(reg, timeout_s=lock_timeout_s):
         mapping = _load_managed_asset_map(reg)
         removed = mapping.pop(canonical, None) is not None
         if removed:
             write_json_atomic(reg, mapping)
         return removed
-    finally:
-        if lock is not None:
-            lock.release()
+
+
+def delete_managed_asset_if_owned(
+    registry_path: Path,
+    raw_path: str | Path,
+    *,
+    lock_timeout_s: float = 2.0,
+) -> tuple[bool, MediaOwnershipResult]:
+    """Atomically verify ownership via open fd + dir_fd, unlink, and remove registry entry under one lock (F02 / RC-02).
+
+    Eliminates check-then-unlink pathname replacement races and concurrent register/delete conflicts.
+    """
+    text = str(raw_path or "").strip()
+    if not text:
+        return False, MediaOwnershipResult("missing", False, "", "Empty file path.")
+    candidate = Path(text).expanduser()
+    reg = Path(registry_path)
+
+    with _RegistryTransactionLock(reg, timeout_s=lock_timeout_s):
+        try:
+            lst = os.lstat(candidate)
+        except FileNotFoundError:
+            return False, MediaOwnershipResult("missing", False, str(candidate), "File does not exist.")
+        except OSError as exc:
+            return False, MediaOwnershipResult("external_original", False, str(candidate), f"Cannot stat path: {exc}")
+
+        canonical = str(Path(os.path.realpath(candidate)))
+        if stat.S_ISLNK(lst.st_mode):
+            return False, MediaOwnershipResult(
+                "external_symlink",
+                False,
+                canonical,
+                "Symlinks are detached rather than unlinked to protect source targets.",
+            )
+        if not stat.S_ISREG(lst.st_mode):
+            return False, MediaOwnershipResult("external_original", False, canonical, "Target is not a regular file.")
+        if lst.st_nlink > 1:
+            return False, MediaOwnershipResult(
+                "hardlinked_shared",
+                False,
+                canonical,
+                f"File has multiple hard links (nlink={lst.st_nlink}); refusing physical deletion.",
+            )
+
+        mapping = _load_managed_asset_map(reg)
+        rec = ManagedAssetRecord.from_dict(mapping.get(canonical))
+        if rec is None:
+            return False, MediaOwnershipResult(
+                "external_original",
+                False,
+                canonical,
+                "No verified Avatar V2 managed-asset ownership record exists for this file; refusing physical deletion.",
+            )
+
+        canon_path = Path(canonical)
+        dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        try:
+            dir_fd = os.open(str(canon_path.parent), dir_flags)
+        except OSError as exc:
+            return False, MediaOwnershipResult("external_original", False, canonical, f"Cannot open parent dir: {exc}")
+        try:
+            file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                file_fd = os.open(canon_path.name, file_flags, dir_fd=dir_fd)
+            except OSError as exc:
+                return False, MediaOwnershipResult("external_original", False, canonical, f"Cannot open file safely: {exc}")
+            try:
+                fst = os.fstat(file_fd)
+                if not stat.S_ISREG(fst.st_mode) or fst.st_nlink > 1:
+                    return False, MediaOwnershipResult(
+                        "hardlinked_shared" if fst.st_nlink > 1 else "external_original",
+                        False,
+                        canonical,
+                        "File type or link count changed; refusing physical deletion.",
+                    )
+                if int(fst.st_dev) != rec.device or int(fst.st_ino) != rec.inode:
+                    return False, MediaOwnershipResult(
+                        "external_original",
+                        False,
+                        canonical,
+                        "File inode/device no longer matches Avatar V2's managed-asset record (replaced or moved); refusing deletion.",
+                    )
+                if int(fst.st_size) != rec.size_bytes:
+                    return False, MediaOwnershipResult(
+                        "external_original",
+                        False,
+                        canonical,
+                        "File size no longer matches Avatar V2's managed-asset record; refusing deletion.",
+                    )
+                live_sha = _sha256_fd(file_fd)
+                if live_sha != rec.sha256:
+                    return False, MediaOwnershipResult(
+                        "external_original",
+                        False,
+                        canonical,
+                        "File SHA-256 content no longer matches Avatar V2's managed-asset record; refusing deletion.",
+                    )
+                # Final dir_fd lstat identity check immediately before dir_fd unlink!
+                pre_unlink = os.lstat(canon_path.name, dir_fd=dir_fd)
+                if (
+                    stat.S_ISLNK(pre_unlink.st_mode)
+                    or int(pre_unlink.st_dev) != rec.device
+                    or int(pre_unlink.st_ino) != rec.inode
+                    or pre_unlink.st_nlink > 1
+                ):
+                    return False, MediaOwnershipResult(
+                        "external_original",
+                        False,
+                        canonical,
+                        "File identity changed immediately before unlink; refusing deletion.",
+                    )
+                os.unlink(canon_path.name, dir_fd=dir_fd)
+            finally:
+                os.close(file_fd)
+        finally:
+            os.close(dir_fd)
+
+        mapping.pop(canonical, None)
+        write_json_atomic(reg, mapping)
+        return True, MediaOwnershipResult(
+            rec.origin,
+            True,
+            canonical,
+            f"Verified and deleted Avatar V2 managed asset ({rec.origin}, job={rec.job_id}).",
+        )
 
 
 def verify_managed_asset_ownership(

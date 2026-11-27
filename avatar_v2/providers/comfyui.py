@@ -42,6 +42,10 @@ class ComfyUINotReadyError(RuntimeError):
     """ComfyUI is unreachable at the configured base URL."""
 
 
+class RendererOwnershipError(PermissionError):
+    """Raised when a global renderer operation (/free or global /interrupt) lacks proven ownership (F01 / RC-01)."""
+
+
 def replace_placeholders(value: Any, mapping: dict[str, Any]) -> Any:
     if isinstance(value, dict):
         return {k: replace_placeholders(v, mapping) for k, v in value.items()}
@@ -89,9 +93,26 @@ def _combo_options(spec: Any) -> list[str]:
 
 
 class ComfyUIProvider:
-    def __init__(self, config: ProviderConfig):
+    def __init__(
+        self,
+        config: ProviderConfig,
+        *,
+        ownership_authorizer: Callable[[str, str], tuple[bool, str, str]] | None = None,
+    ):
         self.config = config
         self.base_url = config.base_url.rstrip("/")
+        self._ownership_authorizer = ownership_authorizer
+
+    def _authorize_global_target(self, operation: str) -> str:
+        """Authorize a global renderer operation and return the concrete pinned base URL (F01 / RC-01)."""
+        if self._ownership_authorizer is None:
+            return self.base_url
+        ok, pinned_url, reason = self._ownership_authorizer(self.base_url, operation)
+        if not ok or not str(pinned_url or "").strip():
+            raise RendererOwnershipError(
+                f"Refusing {operation} on unverified/unowned renderer {self.base_url} ({reason})."
+            )
+        return str(pinned_url).rstrip("/")
 
     def health(self) -> dict[str, Any]:
         with httpx.Client(timeout=10) as client:
@@ -162,15 +183,18 @@ class ComfyUIProvider:
         return str(Path(returned_subfolder) / name) if returned_subfolder else str(name)
 
     def _copy_to_input(self, src: Path, job_id: str, key: str) -> str:
+        from ..ownership import copy_file_exclusive
+
         if not self.config.input_dir:
             raise RuntimeError("input_dir not configured")
         input_dir = Path(self.config.input_dir).expanduser().resolve()
         input_dir.mkdir(parents=True, exist_ok=True)
         dest_name = f"avatar_v2_{job_id}_{key.lower()}_{src.name}"
         dest = input_dir / dest_name
-        if src != dest:
-            shutil.copy2(src, dest)
-        return dest_name
+        if src == dest:
+            return dest_name
+        created = copy_file_exclusive(src, input_dir, dest_name)
+        return created.name
 
     def _stage_assets(self, job: RenderJob) -> dict[str, Any]:
         mapping = dict(job.asset_map)
@@ -238,10 +262,11 @@ class ComfyUIProvider:
 
         - If ``prompt_id`` is provided, removes it from ComfyUI's pending queue first; only sends
           a prompt-scoped ``POST /interrupt`` if ``prompt_id`` is currently running.
-        - Refuses unscoped global ``POST /interrupt`` unless ``allow_global=True`` (owned private engine).
+        - Refuses unscoped global ``POST /interrupt`` unless ``allow_global=True`` AND ownership is proven (F01).
+        - Disables HTTP redirects on all ownership-sensitive cancellation requests.
         """
         pid = str(prompt_id or "").strip()
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=10, follow_redirects=False) as client:
             if pid:
                 try:
                     q_resp = client.get(f"{self.base_url}/queue")
@@ -255,24 +280,33 @@ class ComfyUIProvider:
                 running_ids = {str(entry[1]) for entry in running if isinstance(entry, list) and len(entry) >= 2}
                 if pid in pending_ids:
                     resp = client.post(f"{self.base_url}/queue", json={"delete": [pid]})
+                    if 300 <= getattr(resp, "status_code", 200) < 400:
+                        raise RendererOwnershipError(f"Refusing HTTP redirect ({resp.status_code}) on /queue delete")
                     resp.raise_for_status()
                     return True
                 if pid in running_ids:
                     resp = client.post(f"{self.base_url}/interrupt", json={"prompt_id": pid})
+                    if 300 <= getattr(resp, "status_code", 200) < 400:
+                        raise RendererOwnershipError(f"Refusing HTTP redirect ({resp.status_code}) on /interrupt")
                     resp.raise_for_status()
                     return True
                 if not allow_global:
                     return False
             if not allow_global:
                 return False
-            response = client.post(f"{self.base_url}/interrupt", json={})
+            target_url = self._authorize_global_target("global_interrupt")
+            response = client.post(f"{target_url}/interrupt", json={})
+            if 300 <= getattr(response, "status_code", 200) < 400:
+                raise RendererOwnershipError(f"Refusing HTTP redirect ({response.status_code}) on global /interrupt")
             response.raise_for_status()
             return True
 
     def queue_status(self) -> dict[str, Any]:
         """Return queue occupancy so cache cleanup can stay idle-only."""
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=10, follow_redirects=False) as client:
             response = client.get(f"{self.base_url}/queue")
+            if 300 <= getattr(response, "status_code", 200) < 400:
+                raise RendererOwnershipError(f"Refusing HTTP redirect ({response.status_code}) on /queue")
             response.raise_for_status()
             data = response.json()
         running = len(data.get("queue_running") or [])
@@ -280,12 +314,19 @@ class ComfyUIProvider:
         return {"running": running, "pending": pending, "busy": bool(running or pending)}
 
     def free_memory(self, *, unload_models: bool = True, free_memory: bool = True) -> None:
-        """Ask ComfyUI to unload models and release allocator/cache memory when idle."""
-        with httpx.Client(timeout=10) as client:
+        """Ask an owned ComfyUI endpoint to unload models and release allocator/cache memory (F01 / RC-01).
+
+        Enforces centralized ownership authorization, pins the concrete verified IP-literal endpoint,
+        and disables HTTP redirects so transport behavior cannot redirect cleanup to an unrelated service.
+        """
+        target_url = self._authorize_global_target("free_memory")
+        with httpx.Client(timeout=10, follow_redirects=False) as client:
             response = client.post(
-                f"{self.base_url}/free",
+                f"{target_url}/free",
                 json={"unload_models": bool(unload_models), "free_memory": bool(free_memory)},
             )
+            if 300 <= getattr(response, "status_code", 200) < 400:
+                raise RendererOwnershipError(f"Refusing HTTP redirect ({response.status_code}) on global /free")
             response.raise_for_status()
 
     def get_history_item(self, prompt_id: str) -> dict[str, Any] | None:

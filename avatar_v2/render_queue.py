@@ -18,7 +18,13 @@ from .errors import classify_exception
 from .gpu_memory import GPUMemoryManager
 from .integrity import hash_files, sha256_file
 from .models import ProviderConfig, RenderJob
-from .ownership import DirectoryWriterLock, read_json_safe, register_managed_asset
+from .ownership import (
+    DirectoryWriterLock,
+    copy_file_exclusive,
+    read_json_safe,
+    register_managed_asset,
+    reserve_fresh_output_path,
+)
 from .providers import ComfyUIProvider, RunwayProvider
 from .providers.comfyui import ComfyUICancelledError, ComfyUIExecutionError
 from .resource_monitor import check_storage_for_job, estimate_job_storage_bytes
@@ -401,6 +407,7 @@ class RenderQueue:
         engine_restart: Callable[[], Any] | None = None,
         managed_assets_path: Path | None = None,
         on_job_finished: Callable[[QueuedRender], None] | None = None,
+        comfy_ownership_authorizer: Any = None,
         *,
         acquire_lock: bool = True,
     ):
@@ -415,6 +422,7 @@ class RenderQueue:
             Path(managed_assets_path) if managed_assets_path else self.work_dir.parent / "managed_assets.json"
         )
         self._on_job_finished = on_job_finished
+        self._comfy_ownership_authorizer = comfy_ownership_authorizer
         self.history_dir = Path(history_dir) if history_dir else self.work_dir / "history"
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.memory_manager = memory_manager or GPUMemoryManager.from_environment()
@@ -857,11 +865,13 @@ class RenderQueue:
                 archived.append(output)
                 continue
             try:
-                dest = target / src.name
-                shutil.copy2(src, dest)
+                # F02 / RC-02: Exclusively create a brand-new archive file (O_CREAT|O_EXCL|O_NOFOLLOW).
+                # NEVER overwrite a pre-existing unregistered file at target / src.name!
+                dest = copy_file_exclusive(src, target, src.name)
                 archived.append(str(dest))
                 self._register_managed_outputs(item, [str(dest)], origin="managed_archive_copy")
             except OSError:
+                # Preserve external reference on copy/lock failure without registering or overwriting.
                 archived.append(output)
         return archived
 
@@ -877,7 +887,7 @@ class RenderQueue:
         )
         if video is None or not video.is_file():
             raise RuntimeError("H3 Avatar Designer completed without a readable video output")
-        target = video.with_name(f"{video.stem}_candidate.png")
+        target = reserve_fresh_output_path(video.parent, f"{video.stem}_candidate.png")
         frame = self._extract_last_frame(str(video), target)
         item.outputs.append(str(frame))
         self._register_managed_outputs(item, [str(frame)], origin="generated_output")
@@ -1134,6 +1144,13 @@ class RenderQueue:
         # Resolve the module-level provider names at call time so tests can substitute fakes.
         if config.provider == "runway":
             return RunwayProvider(config)
+        authorizer = getattr(self, "_comfy_ownership_authorizer", None)
+        if authorizer is not None:
+            try:
+                if "ownership_authorizer" in inspect.signature(ComfyUIProvider.__init__).parameters:
+                    return ComfyUIProvider(config, ownership_authorizer=authorizer)
+            except (TypeError, ValueError):
+                pass
         return ComfyUIProvider(config)
 
     def _execute(self, item: QueuedRender) -> None:
@@ -1306,8 +1323,7 @@ class RenderQueue:
         item.outputs = self._resolve_outputs(item, result["outputs"])
         if item.archive_dir:
             item.outputs = self._archive_outputs(item)
-        else:
-            self._register_managed_outputs(item, item.outputs, origin="generated_output")
+        # F02 / RC-02: Never grant physical deletion authority to unarchived external provider paths!
         if item.runtime.get("extract_candidate_frame"):
             self._extract_candidate_frame(item)
         item.output_hashes = hash_files(item.outputs)

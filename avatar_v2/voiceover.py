@@ -151,7 +151,9 @@ class VoiceoverStore:
         self.files_dir.mkdir(parents=True, exist_ok=True)
         stored = self.files_dir / f"{digest[:16]}{suffix}"
         if not stored.exists():
-            shutil.copy2(path, stored)
+            from .ownership import copy_file_exclusive
+
+            stored = copy_file_exclusive(path, self.files_dir, stored.name)
         record_id = f"vo_{uuid.uuid4().hex[:10]}"
         record = {
             "id": record_id,

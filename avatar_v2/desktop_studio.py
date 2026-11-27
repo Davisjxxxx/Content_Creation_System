@@ -37,7 +37,9 @@ from .js_bridge import in_js_bridge
 from .library import AvatarProfile
 from .ownership import (
     classify_media_ownership,
+    delete_managed_asset_if_owned,
     register_managed_asset,
+    reserve_fresh_output_path,
     unregister_managed_asset,
     verify_managed_asset_ownership,
     write_json_atomic,
@@ -1380,7 +1382,7 @@ class StudioMixin:
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             return {"ok": False, "scene": "not joined: ffmpeg is not installed"}
-        target = videos[-1].with_name(f"scene_{item.id}.mp4")
+        target = reserve_fresh_output_path(videos[-1].parent, f"scene_{item.id}.mp4")
         command = [ffmpeg, "-y", "-v", "error"]
         for video in videos:
             command += ["-i", str(video)]
@@ -1541,19 +1543,26 @@ class StudioMixin:
         if not matching_records and not was_master:
             return {"ok": False, "deleted_file": False, "error": "That file isn't in My stuff."}
 
-        # Perform physical unlink ONLY for verified app-owned assets and BEFORE mutating history!
+        # Perform physical unlink ONLY via a single locked fd-verified transaction BEFORE mutating history (F02)!
         deleted_file = False
         if owned_ok and ownership.deletable and target.exists():
             try:
-                target.unlink()
-                deleted_file = True
-                unregister_managed_asset(reg_path, target)
+                del_ok, del_res = delete_managed_asset_if_owned(reg_path, target)
             except OSError as exc:
                 return {
                     "ok": False,
                     "deleted_file": False,
                     "error": f"Could not delete the file (history left unchanged): {exc}",
                 }
+            if not del_ok:
+                return {
+                    "ok": False,
+                    "deleted_file": False,
+                    "ownership": del_res.classification,
+                    "error": del_res.reason,
+                }
+            deleted_file = True
+            ownership = del_res
 
         updated = 0
         for record_file, record, kept in matching_records:

@@ -113,16 +113,22 @@ class GPUMemoryManager:
         threshold: float = 0.85,
         check_interval_s: float = 5.0,
         enabled: bool = True,
+        ownership_authorizer: Any = None,
     ) -> None:
         self.threshold = min(max(float(threshold), 0.50), 0.99)
         self.check_interval_s = max(float(check_interval_s), 1.0)
         self.enabled = bool(enabled)
+        self._ownership_authorizer = ownership_authorizer
         self._trace_stop = threading.Event()
         self._trace_thread: threading.Thread | None = None
         self._trace_lock = threading.Lock()
         self._trace_label = ""
         self._trace_peak: dict[int, GPUSnapshot] = {}
         self._trace_samples = 0
+
+    def set_ownership_authorizer(self, authorizer: Any) -> None:
+        """Bind a centralized fail-closed ownership gate checked before every global /free (F01 / RC-01)."""
+        self._ownership_authorizer = authorizer
 
     @classmethod
     def from_environment(cls) -> "GPUMemoryManager":
@@ -228,14 +234,26 @@ class GPUMemoryManager:
         effective_unload = unload_models or (over_threshold and not respect_retention)
         models_retained = bool(not effective_unload)
         requested = False
+        ownership_denied = False
         error = ""
 
         if should_clean and provider is not None and effective_unload:
-            try:
-                provider.free_memory(unload_models=True, free_memory=True)
-                requested = True
-            except Exception as exc:  # cleanup failure should be recorded, not mask a render result
-                error = f"{type(exc).__name__}: {exc}"
+            # F01 / RC-01: Centralized global-cleanup ownership gate before ANY automatic/manual POST /free!
+            authorizer = getattr(self, "_ownership_authorizer", None)
+            if callable(authorizer):
+                try:
+                    auth_ok, auth_reason = authorizer(provider, "free_memory")
+                except Exception as exc:
+                    auth_ok, auth_reason = False, f"authorizer_error:{type(exc).__name__}:{exc}"
+                if not auth_ok:
+                    ownership_denied = True
+                    error = f"ownership_denied:{auth_reason}"
+            if not ownership_denied:
+                try:
+                    provider.free_memory(unload_models=True, free_memory=True)
+                    requested = True
+                except Exception as exc:  # cleanup failure should be recorded, not mask a render result
+                    error = f"{type(exc).__name__}: {exc}"
 
         after = before
         if requested:
@@ -266,7 +284,11 @@ class GPUMemoryManager:
             sum(item.used_mb for item in before) - sum(item.used_mb for item in after),
             0,
         )
-
+        # F10: Unified release-evidence contract emitted by production GPUMemoryManager:
+        # - cleanup_requested: HTTP /free was sent and succeeded
+        # - cleanup_performed: cleanup actually executed without error or ownership denial
+        # - effective: measured VRAM dropped >= 64 MiB (or telemetry unavailable on non-GPU test host while /free succeeded)
+        vram_drop_verified = released_mb >= 64
         return {
             "reason": reason,
             "enabled": self.enabled,
@@ -275,11 +297,14 @@ class GPUMemoryManager:
             "unload_models": effective_unload,
             "models_retained": models_retained,
             "cleanup_requested": requested,
+            "cleanup_performed": bool(requested and not error and not ownership_denied),
+            "ownership_denied": ownership_denied,
             "error": error,
             "before": [item.public() for item in before],
             "after": [item.public() for item in after],
             "released_mb": released_mb,
-            "effective": released_mb >= 64,
+            "effective": vram_drop_verified,
+            "vram_released_verified": bool(vram_drop_verified if before else (requested and not error and not ownership_denied)),
         }
 
     def emergency_terminate(self, approved_pids: Iterable[int]) -> dict[str, Any]:

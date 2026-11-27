@@ -29,7 +29,10 @@ from .js_bridge import in_js_bridge
 from .ownership import (
     OwnedProcessHandle,
     ProcessOwnershipRecord,
+    authorize_owned_endpoint,
     classify_media_ownership,
+    copy_file_exclusive,
+    delete_managed_asset_if_owned,
     inspect_process_identity,
     load_ownership_record,
     read_json_safe,
@@ -290,7 +293,9 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             engine_restart=self._engine_restart_hook,
             managed_assets_path=MANAGED_ASSETS_PATH,
             on_job_finished=self._release_job_staged_pins,
+            comfy_ownership_authorizer=self._authorize_comfy_global_op,
         )
+        self.queue.memory_manager.set_ownership_authorizer(self._authorize_provider_cleanup)
         settings = self._settings()
         # RC-20: Environment overrides (AVATAR_V2_GPU_AUTOCLEAN / THRESHOLD / CHECK_INTERVAL)
         # MUST always take precedence over desktop.json / DEFAULT_SETTINGS!
@@ -954,7 +959,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                 f"(status={rel.get('status', 'unknown')}, detail={rel.get('error') or rel.get('active_vram_models')})."
             )
 
-        provider = ComfyUIProvider(item.provider_config)
+        provider = self._build_comfy_provider(item.provider_config)
         asset_map = dict(item.job.asset_map or {})
         workflow_target = str(step.workflow or "")
         if step.strategy == "video_regeneration" or workflow_target.endswith(".json"):
@@ -1019,15 +1024,12 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         if item.archive_dir:
             try:
                 target_dir = Path(item.archive_dir).expanduser() / item.id
-                target_dir.mkdir(parents=True, exist_ok=True)
-                dest = target_dir / Path(out_path).name
-                shutil.copy2(out_path, dest)
+                dest = copy_file_exclusive(Path(out_path), target_dir, Path(out_path).name)
                 out_path = str(dest)
                 register_managed_asset(MANAGED_ASSETS_PATH, out_path, origin="managed_archive_copy", job_id=item.id)
             except OSError:
                 pass
-        else:
-            register_managed_asset(MANAGED_ASSETS_PATH, out_path, origin="generated_output", job_id=item.id)
+        # F02: Do NOT register unarchived external provider output paths as app-deletable!
         return out_path, elapsed_ms
 
     def _run_visual_inspection(self, item: QueuedRender) -> dict[str, Any]:
@@ -1066,7 +1068,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             try:
                 # RC-14: Only clear comfy_warm when GPUMemoryManager actually verified ComfyUI VRAM release!
                 ev = self.queue.memory_manager.maybe_cleanup(
-                    ComfyUIProvider(item.provider_config),
+                    self._build_comfy_provider(item.provider_config),
                     reason="pre-vlm-unload",
                     force=True,
                     unload_models=True,
@@ -1151,7 +1153,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                 if use_vlm:
                     try:
                         ev = self.queue.memory_manager.maybe_cleanup(
-                            ComfyUIProvider(item.provider_config),
+                            self._build_comfy_provider(item.provider_config),
                             reason="pre-vlm-reinspect-unload",
                             force=True,
                             unload_models=True,
@@ -1948,16 +1950,46 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             peak = self.queue.memory_manager.current_trace_peak()
         return {"ok": True, "manager": status, "active_render": active, "peak": peak}
 
+    def _authorize_comfy_global_op(self, base_url: str, operation: str = "free_memory") -> tuple[bool, str, str]:
+        """Centralized fail-closed authorization gate for ALL global ComfyUI operations (F01 / RC-01).
+
+        Verifies live process ownership (PID + start_ticks + boot_id + exe/cmdline), exact address family,
+        exact IP address, exact port, and live TCP_LISTEN socket, returning a concrete pinned loopback URL.
+        """
+        own_kind, record, own_reason = self._current_comfy_ownership()
+        if own_kind != "owned_private" or record is None:
+            return False, "", own_reason
+        return authorize_owned_endpoint(record, base_url, require_listening=True)
+
+    def _authorize_provider_cleanup(self, provider: Any, operation: str = "free_memory") -> tuple[bool, str]:
+        """GPUMemoryManager ownership hook guarding automatic pre-render, post-render, retry & pre-VLM /free (F01)."""
+        base_url = str(getattr(provider, "base_url", "") or "").strip()
+        if not base_url:
+            cfg = getattr(provider, "config", None)
+            base_url = str(getattr(cfg, "base_url", "") or "").strip()
+        if not base_url:
+            return False, "provider_missing_base_url"
+        ok, _pinned, reason = self._authorize_comfy_global_op(base_url, operation)
+        return ok, reason
+
+    def _build_comfy_provider(self, cfg: ProviderConfig | None = None) -> ComfyUIProvider:
+        """Construct a ComfyUIProvider bound to one immutable ProviderConfig snapshot & centralized ownership gate."""
+        snap = cfg if cfg is not None else self._provider_config({})
+        try:
+            import inspect as _inspect
+
+            params = _inspect.signature(ComfyUIProvider.__init__).parameters
+            if "ownership_authorizer" in params:
+                return ComfyUIProvider(snap, ownership_authorizer=self._authorize_comfy_global_op)
+        except (TypeError, ValueError):
+            pass
+        return ComfyUIProvider(snap)
+
     def gpu_free(self) -> dict[str, Any]:
         try:
-            # RC-01 Gate 2: Refuse sending global POST /free to a shared, external, or redirected renderer!
-            own_kind, record, own_reason = self._current_comfy_ownership()
-            base_url = self._provider_config({}).base_url
-            ep_ok, ep_reason = (
-                verify_endpoint_ownership(record, base_url, require_listening=True)
-                if own_kind == "owned_private" and record is not None
-                else (False, own_reason)
-            )
+            # F01 / RC-01: Capture ONE immutable ProviderConfig snapshot and bind authorization to the exact request!
+            cfg = self._provider_config({})
+            ep_ok, pinned_url, ep_reason = self._authorize_comfy_global_op(cfg.base_url, "free_memory")
             if not ep_ok:
                 return {
                     "ok": False,
@@ -1966,7 +1998,8 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                         f"({ep_reason})."
                     ),
                 }
-            provider = ComfyUIProvider(self._provider_config({}))
+            pinned_cfg = cfg.model_copy(update={"base_url": pinned_url})
+            provider = self._build_comfy_provider(pinned_cfg)
             queue_status = provider.queue_status()
             if queue_status["busy"]:
                 return {
@@ -2351,18 +2384,20 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         except Exception:
             pass
         try:
+            # F01 / RC-01: Snapshot ONE immutable ProviderConfig and bind cleanup to its verified concrete URL!
+            cfg = self._provider_config({})
             status = self.comfyui_status()
             own_kind, record, _own_reason = self._current_comfy_ownership()
-            base_url = self._provider_config({}).base_url
             if (
                 status.get("ownership") == "owned_private"
                 and own_kind == "owned_private"
                 and record is not None
             ):
-                ep_ok, _ = verify_endpoint_ownership(record, base_url, require_listening=True)
-                if ep_ok:
+                ep_ok, pinned_url, _ = self._authorize_comfy_global_op(cfg.base_url, "shutdown_free")
+                if ep_ok and pinned_url:
                     try:
-                        ComfyUIProvider(self._provider_config({})).free_memory(unload_models=True, free_memory=True)
+                        pinned_cfg = cfg.model_copy(update={"base_url": pinned_url})
+                        self._build_comfy_provider(pinned_cfg).free_memory(unload_models=True, free_memory=True)
                     except Exception:
                         pass
                 self.comfyui_stop(wait_s=10.0, force=True)

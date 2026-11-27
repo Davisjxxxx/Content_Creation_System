@@ -425,21 +425,21 @@ def test_p0b_rc02_external_original_master_and_links_never_unlinked(
             json.dumps({"id": "job_own", "status": "done", "outputs": [str(managed_img)]}), encoding="utf-8"
         )
 
-        orig_unlink = Path.unlink
+        orig_os_unlink = os.unlink
 
-        def _fail_unlink(self: Path, *a: Any, **kw: Any) -> None:
-            if self == managed_img:
+        def _fail_os_unlink(path: Any, *a: Any, **kw: Any) -> None:
+            if str(path) == managed_img.name or str(path) == str(managed_img):
                 raise PermissionError("simulated read-only filesystem")
-            return orig_unlink(self, *a, **kw)
+            return orig_os_unlink(path, *a, **kw)
 
-        monkeypatch.setattr(Path, "unlink", _fail_unlink)
+        monkeypatch.setattr(os, "unlink", _fail_os_unlink)
         res_fail = api.studio_delete({"path": str(managed_img)})
         assert res_fail["ok"] is False
         assert hist_file.is_file(), "History was mutated despite failed unlink!"
         assert managed_img.is_file()
 
         # 6. Restore unlink: managed archive output is cleanly deleted & history removed!
-        monkeypatch.setattr(Path, "unlink", orig_unlink)
+        monkeypatch.setattr(os, "unlink", orig_os_unlink)
         res_ok = api.studio_delete({"path": str(managed_img)})
         assert res_ok["ok"] is True
         assert res_ok["deleted_file"] is True

@@ -102,7 +102,10 @@ def import_images(
         sidecar = stored.with_suffix(stored.suffix + ".json")
         duplicate = stored.exists()
         if not duplicate:
-            shutil.copy2(path, stored)  # bytes unchanged, so the hash stays valid
+            from .ownership import copy_file_exclusive
+
+            stored = copy_file_exclusive(path, target_dir, stored.name)
+            sidecar = stored.with_suffix(stored.suffix + ".json")
         provenance = {
             "sha256": digest,
             "source": source,
