@@ -15,7 +15,22 @@ else
     PYTHON_BIN="$APP_DIR/.venv/bin/python"
 fi
 
-# Isolated release-candidate launch: run dist/AvatarV2.next without touching production dist/AvatarV2!
+# Isolated release-candidate launch: run an explicit candidate dir or dist/AvatarV2.rc2 / .next without touching production dist/AvatarV2!
+if [ -n "${AVATAR_V2_CANDIDATE_DIR:-}" ]; then
+    if [ ! -x "$AVATAR_V2_CANDIDATE_DIR/AvatarV2" ]; then
+        echo "Release candidate not found at $AVATAR_V2_CANDIDATE_DIR/AvatarV2" >&2
+        exit 1
+    fi
+    exec "$AVATAR_V2_CANDIDATE_DIR/AvatarV2" "$@"
+fi
+if [ "${AVATAR_V2_RC2:-0}" = "1" ]; then
+    RC2_BUILD="$APP_DIR/dist/AvatarV2.rc2"
+    if [ ! -x "$RC2_BUILD/AvatarV2" ]; then
+        echo "RC2 bundle not found at $RC2_BUILD/AvatarV2" >&2
+        exit 1
+    fi
+    exec "$RC2_BUILD/AvatarV2" "$@"
+fi
 NEXT_BUILD="$APP_DIR/dist/AvatarV2.next"
 if [ "${AVATAR_V2_CANDIDATE:-0}" = "1" ]; then
     if [ ! -x "$NEXT_BUILD/AvatarV2" ]; then
