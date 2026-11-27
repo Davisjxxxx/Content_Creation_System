@@ -688,7 +688,7 @@ def test_journey_f_production_desktop_correction_coordinator_end_to_end(
         vr = done["verification_record"]
         cs = vr["correction_session"]
         assert cs["attempts_executed"] == 1
-        assert cs["ui_status"] in {"requirements_verified", "correction_complete", "some_uncertain"}
+        assert cs["ui_status"] in {"review_recommended", "requirements_verified", "correction_complete", "some_uncertain"}
         assert done["candidate_qa"]["correction"]["attempts_executed"] == 1
     finally:
         api.queue.shutdown()

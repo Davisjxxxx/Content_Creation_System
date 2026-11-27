@@ -36,7 +36,10 @@ from .inspection_contract import (
     GenerationVerificationRecord,
     VisualInspectionResult,
     compute_inspection_status,
+    compute_requirement_set_hash,
+    get_verification_eligibility,
 )
+from .integrity import sha256_file
 from .ollama_client import (
     DEFAULT_OLLAMA_URL,
     LLMExecutionSchedule,
@@ -651,11 +654,14 @@ class VideoInspector:
                             lim = sanitize_untrusted_text(str(entry.get("confidence_limitations") or ""))
                             fail_d = sanitize_untrusted_text(str(entry.get("failure_description") or ""))
                             injection_warnings.extend(detect_image_prompt_injection(obs))
+                            elig = get_verification_eligibility(c.category)
                             assessments_by_id[c.criterion_id] = CriterionAssessment(
                                 criterion_id=c.criterion_id,
                                 original_requirement=c.description,
                                 category=c.category,
                                 mandatory=c.mandatory,
+                                verification_eligibility=elig,
+                                independent_corroboration=False,
                                 inspection_method="local_vlm",
                                 assessor="local_vlm",
                                 observed_evidence=obs,
@@ -739,7 +745,17 @@ class VideoInspector:
             decision, ui_status, ui_label, human_req = compute_inspection_status(
                 final_assessments, detected_defects=detected_defects
             )
+            ref_fps = {
+                r.asset_id or r.role: (r.asset_fingerprint or (sha256_file(r.path) or ""))
+                for r in record.reference_requirements
+                if r.path
+            }
             return VisualInspectionResult(
+                candidate_id=p.stem,
+                output_path=str(p),
+                output_sha256=sha256_file(p) or "",
+                requirement_set_hash=compute_requirement_set_hash(record),
+                reference_fingerprints=ref_fps,
                 inspector_model=inspector_model,
                 execution_mode=execution_mode,
                 overall_decision=decision,

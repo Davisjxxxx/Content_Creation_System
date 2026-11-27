@@ -9,13 +9,15 @@ ranking, and enforces host-side retry and local-only budgets.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import secrets
 from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-VERIFICATION_CONTRACT_VERSION = "1.2"
+VERIFICATION_CONTRACT_VERSION = "1.3"
 
 InspectionMethod = Literal[
     "pending",
@@ -233,6 +235,12 @@ class VisualInspectionResult(BaseModel):
     """Contract interface populated by Sprint 7/8 local image/video quality inspection."""
 
     inspected_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    inspection_version: str = VERIFICATION_CONTRACT_VERSION
+    candidate_id: str = ""
+    output_path: str = ""
+    output_sha256: str = ""
+    requirement_set_hash: str = ""
+    reference_fingerprints: dict[str, str] = Field(default_factory=dict)
     inspector_model: str = ""
     execution_mode: str = "deterministic_only"
     overall_decision: Literal["pending", "pass", "warn", "needs_correction", "unavailable"] = "pending"
@@ -261,6 +269,13 @@ class VisualInspectionResult(BaseModel):
             1 for c in self.criterion_assessments if c.status in {"uncertain", "unverifiable", "pending"}
         )
         return {
+            "candidate_id": self.candidate_id,
+            "output_path": self.output_path,
+            "output_sha256": self.output_sha256,
+            "requirement_set_hash": self.requirement_set_hash,
+            "reference_fingerprints": dict(self.reference_fingerprints),
+            "inspection_version": self.inspection_version,
+            "inspected_at": self.inspected_at,
             "ui_status": self.ui_status,
             "ui_status_label": self.ui_status_label,
             "overall_decision": self.overall_decision,
@@ -300,6 +315,25 @@ class VisualInspectionResult(BaseModel):
                 for r in self.correction_recommendations[:6]
             ],
         }
+
+
+def compute_requirement_set_hash(record: "GenerationVerificationRecord") -> str:
+    """Stable SHA-256 digest binding an inspection result to the exact original requirements."""
+    payload = {
+        "original_prompt": record.original_prompt,
+        "criteria": [
+            {
+                "id": c.criterion_id,
+                "category": c.category,
+                "description": c.description,
+                "mandatory": c.mandatory,
+                "locked": c.locked,
+            }
+            for c in record.mandatory_acceptance_criteria
+        ],
+        "expected": record.expected_output.model_dump(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def compute_inspection_status(

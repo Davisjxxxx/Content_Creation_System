@@ -130,6 +130,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "adult_prompt_custom": {},
     "vision_classifier_url": "http://127.0.0.1:11434",
     "vision_classifier_model": "qwen3-vl:8b-instruct",
+    "local_vlm_inspection": False,
+    "local_auto_correct": False,
     # Runway cloud provider: ready as soon as an API key is saved. Spending limits are optional
     # and off by default (0 = no limit); they only apply when the owner sets one.
     "runway_default_image_model": "gen4_image",
@@ -926,6 +928,7 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                 "FORGE_TEXT_ENCODER": photo_cfg["text_encoder"],
                 "FORGE_VAE": ob.SHARED_MODELS["FORGE_VAE"][1],
                 "PROMPT": step.revised_prompt,
+                "NEGATIVE_PROMPT": ob.photo_negative_for_prompt(step.revised_prompt),
                 "WIDTH": int(step.generation_settings.get("width") or item.job.asset_map.get("WIDTH") or item.job.shot.width or 896),
                 "HEIGHT": int(step.generation_settings.get("height") or item.job.asset_map.get("HEIGHT") or item.job.shot.height or 1280),
                 "STEPS": int(photo_cfg["steps"]),
@@ -1017,6 +1020,9 @@ class DesktopAPI(StudioMixin, PresenterMixin):
 
         item.runtime["verification_record"]["inspection_result"] = result.model_dump()
         summary = result.compact_ui_summary()
+        output_inspections: dict[str, dict[str, Any]] = {
+            str(target): {**summary, "candidate_role": "original", "is_best": True}
+        }
         correction_summary: dict[str, Any] | None = None
 
         # Optional host-bounded Sprint 8 automated correction when explicitly requested on local jobs.
@@ -1062,16 +1068,25 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                     p_cand, ver_rec, use_vlm=use_vlm, preferred_model=preferred_model, comfy_models_warm=False, allow_sequential_gpu=bool(use_vlm)
                 )
 
-            gen_hook = item.runtime.get("_corrective_generate_hook")
-            if not callable(gen_hook):
-                gen_hook = lambda step: self._execute_local_correction_step(item, step)
+            raw_gen_hook = item.runtime.get("_corrective_generate_hook")
+            if not callable(raw_gen_hook):
+                raw_gen_hook = lambda step: self._execute_local_correction_step(item, step)
+
+            def _persisting_gen_hook(step: Any) -> tuple[str, float]:
+                # RC-09: Persist generated candidate path onto item.outputs BEFORE reinspection runs,
+                # so cancellation or reinspection failure never orphans a generated candidate!
+                cpath, ms = raw_gen_hook(step)
+                if cpath and cpath not in item.outputs and Path(cpath).is_file():
+                    item.outputs.append(cpath)
+                return cpath, ms
+
             coordinator = CorrectionCoordinator(planner=planner)
             session = coordinator.run_bounded_correction(
                 record=record,
                 original_output_id=item.id,
                 original_output_path=str(target),
                 initial_inspection=result,
-                generate_fn=gen_hook,
+                generate_fn=_persisting_gen_hook,
                 inspect_fn=_re_inspect,
                 cancel_event=cancel_ev,
                 status_callback=_status_cb,
@@ -1080,15 +1095,35 @@ class DesktopAPI(StudioMixin, PresenterMixin):
             for cpath in session.all_candidate_paths:
                 if cpath and cpath not in item.outputs and Path(cpath).is_file():
                     item.outputs.append(cpath)
+            # RC-09: Bind each candidate output to its OWN inspection verdict (never smear one verdict across all outputs!).
+            output_inspections[str(target)]["is_best"] = bool(session.best_candidate_path == str(target))
+            for att in session.attempts:
+                if att.candidate_output_path and att.actual_inspection_result is not None:
+                    cand_sum = att.actual_inspection_result.compact_ui_summary()
+                    output_inspections[att.candidate_output_path] = {
+                        **cand_sum,
+                        "candidate_role": f"correction_attempt_{att.attempt_number}",
+                        "disposition": att.final_disposition,
+                        "is_best": bool(session.best_candidate_path == att.candidate_output_path),
+                    }
             correction_summary = session.compact_ui_summary()
-            summary["ui_status"] = session.ui_status
-            summary["ui_status_label"] = session.ui_status_label
+            best_summary = output_inspections.get(session.best_candidate_path)
+            if isinstance(best_summary, dict):
+                summary = {
+                    **best_summary,
+                    "ui_status": session.ui_status,
+                    "ui_status_label": session.ui_status_label,
+                }
+            else:
+                summary["ui_status"] = session.ui_status
+                summary["ui_status_label"] = session.ui_status_label
 
         return {
             "ok": True,
             "decision": result.overall_decision,
             "advisory": True,
             "inspection": summary,
+            "output_inspections": output_inspections,
             "correction": correction_summary,
         }
 

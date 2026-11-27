@@ -62,6 +62,20 @@ PHOTO_NEGATIVE = (
     "text, words, letters, numbers, typography, captions, labels, signage, logo, watermark, "
     "blurry, distorted face, extra fingers, bad anatomy"
 )
+PHOTO_NEGATIVE_WITH_TEXT = "watermark, blurry, distorted face, extra fingers, bad anatomy"
+_TYPOGRAPHY_REQUEST_RE = re.compile(
+    r'(?:reading|says?|text|sign|signage|label|title|printed|lettering|words?|typography)\s*["\']|'
+    r'["\'][A-Z0-9][A-Za-z0-9 &!?:.-]{1,40}["\']|'
+    r'\b(?:neon sign|chalkboard|poster|banner|book cover|street sign|license plate|t-shirt text)\b',
+    re.IGNORECASE,
+)
+
+
+def photo_negative_for_prompt(prompt: str, *, typography_targets: list[str] | None = None) -> str:
+    """Suppress text-banning negative tokens whenever the user explicitly requested visible typography (RC-07)."""
+    if typography_targets or _TYPOGRAPHY_REQUEST_RE.search(str(prompt or "")):
+        return PHOTO_NEGATIVE_WITH_TEXT
+    return PHOTO_NEGATIVE
 
 # The scene step reuses the Wan 2.2 pipeline from avatar_v2.local_engine (already verified on
 # this machine at 480p / 81 frames). Wan video models and their install state live there.

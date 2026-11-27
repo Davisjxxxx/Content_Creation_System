@@ -35,6 +35,7 @@ from .inspection_contract import (
     ReferenceProvenanceRecord,
     UI_INSPECTION_LABELS,
     VisualInspectionResult,
+    compute_inspection_status,
 )
 from .model_registry import DEFAULT_REGISTRY, ModelRegistry
 from .resource_monitor import ResourceSnapshot, StorageCheck
@@ -521,13 +522,17 @@ def score_candidate(
     temporal_score = 1.0 if not vid else round(max(0.0, 1.0 - 0.4 * temporal_fails - (0.5 if vid.get("is_effectively_static") else 0.0)), 3)
 
     # Lexicographic priority tuple (higher is better) matching Section 7's exact 7 criteria!
+    # RC-09: Confirmed mandatory passes come FIRST, followed by total unresolved (failed + uncertain),
+    # so a timed-out/uncertain reinspection (0 passes, 0 fails, 1 uncertain) NEVER beats the original!
+    unresolved_count = mandatory_failed + len(uncertain_ids)
     rank_tuple = (
-        mandatory_passed - mandatory_failed,  # 1. Net mandatory requirement satisfaction
-        -mandatory_failed,                    # 1b. Fewer mandatory failures strictly preferred
+        mandatory_passed,                     # 1a. Confirmed mandatory passes strictly first
+        -unresolved_count,                    # 1b. Fewer total unresolved (failed + uncertain)
+        -mandatory_failed,                    # 1c. Fewer confirmed mandatory failures
         -len(locked_failed),                  # 3. Never break locked attributes
         -len(lost),                           # 2a. Penalize regressions on previously satisfied criteria
         -defect_count,                        # 2b. Fewer material defects
-        -len(uncertain_ids),                  # 1c. Fewer unresolved uncertainties
+        -len(uncertain_ids),                  # 1d. Fewer unresolved uncertainties
         round(ref_consistency, 2),            # 4. Reference consistency
         round(temporal_score, 2),             # 6. Temporal consistency
         round(visual_quality, 2),             # 5. Visual quality
@@ -537,8 +542,10 @@ def score_candidate(
         "mandatory_passed": mandatory_passed,
         "mandatory_failed": mandatory_failed,
         "mandatory_uncertain": len(uncertain_ids),
+        "unresolved_count": unresolved_count,
         "passed_ids": sorted(passed_ids),
         "failed_ids": sorted(failed_ids),
+        "uncertain_ids": sorted(uncertain_ids),
         "lost_previously_satisfied": lost,
         "locked_failed": locked_failed,
         "locked_preserved": locked_preserved,
@@ -558,8 +565,11 @@ def is_candidate_strict_improvement(
     """Compare a new candidate against the current best.
 
     Returns ``(is_better, is_regression, explanation)``.
-    Enforces Section 7: a candidate that fixes one requirement but breaks a previously satisfied
-    mandatory requirement or locked attribute is NEVER an unqualified improvement!
+    Enforces Section 7 & RC-09:
+    - A candidate that fixes one requirement but breaks a previously satisfied mandatory
+      requirement or locked attribute is NEVER an unqualified improvement.
+    - A candidate whose reinspection timed out or turned a failure into ``uncertain`` WITHOUT
+      a confirmed gain in passed mandatory criteria NEVER replaces the previous best.
     """
     lost = candidate_score.get("lost_previously_satisfied") or []
     locked_failed = candidate_score.get("locked_failed") or []
@@ -580,6 +590,17 @@ def is_candidate_strict_improvement(
             False,
             True,
             f"Rejected regression: introduced failure on {', '.join(lost)} (not an unqualified improvement).",
+        )
+    # RC-09: Never treat failure -> uncertain (e.g. VLM timeout/unavailable) as an improvement!
+    cand_passed = int(candidate_score.get("mandatory_passed") or 0)
+    best_passed = int(best_score.get("mandatory_passed") or 0)
+    cand_unc = int(candidate_score.get("mandatory_uncertain") or 0)
+    best_unc = int(best_score.get("mandatory_uncertain") or 0)
+    if cand_passed <= best_passed and cand_unc > best_unc:
+        return (
+            False,
+            False,
+            "Reinspection increased uncertainty without confirmed mandatory pass gain; retaining previous best.",
         )
     if tuple(candidate_score["rank_tuple"]) > tuple(best_score["rank_tuple"]):
         if lost:
@@ -839,7 +860,37 @@ class CorrectionCoordinator:
             if status_callback:
                 status_callback("Checking quality")
             t_ins = time.monotonic()
-            cand_inspection = inspect_fn(cand_path, record)
+            try:
+                cand_inspection = inspect_fn(cand_path, record)
+            except Exception as exc:
+                ins_ms = round((time.monotonic() - t_ins) * 1000.0, 1)
+                attempts.append(
+                    CorrectionAttemptRecord(
+                        attempt_number=attempt_num,
+                        original_output_id=original_output_id,
+                        original_output_path=original_output_path,
+                        candidate_output_id=cand_id,
+                        candidate_output_path=cand_path,
+                        failed_criterion_ids=step.failed_criterion_ids,
+                        supporting_evidence=step.supporting_evidence,
+                        selected_strategy=step.strategy,  # type: ignore[arg-type]
+                        is_localized_edit=step.is_localized_edit,
+                        original_prompt=record.original_prompt,
+                        revised_prompt=step.revised_prompt,
+                        reference_changes=step.reference_changes,
+                        model_id=step.model_id,
+                        workflow=step.workflow,
+                        generation_settings=step.generation_settings,
+                        resource_requirements=r_plan.public(),
+                        preserved_satisfied_criteria=step.preserved_satisfied_criteria,
+                        expected_improvement=step.expected_improvement,
+                        final_disposition="retained_previous_best",
+                        generation_latency_ms=gen_ms,
+                        inspection_latency_ms=ins_ms,
+                        notes=[f"Reinspection failed cleanly ({type(exc).__name__}: {exc}); candidate preserved and previous best retained."],
+                    )
+                )
+                continue
             ins_ms = round((time.monotonic() - t_ins) * 1000.0, 1)
 
             cand_score = score_candidate(
@@ -915,19 +966,30 @@ class CorrectionCoordinator:
             elif a.mandatory and a.status in {"uncertain", "unverifiable", "pending"}:
                 unresolved.append(f"Uncertain [{a.criterion_id}]: {a.confidence_limitations or a.original_requirement}")
 
-        human_req = bool(best_inspection.human_review_required or best_score["mandatory_failed"] > 0 or best_score["mandatory_uncertain"] > 0)
-        if best_score["mandatory_failed"] > 0 or best_inspection.detected_defects:
+        # RC-08: Route ALL final session statuses strictly through compute_inspection_status() so
+        # review_recommended or human_review_required=True can NEVER be upgraded to requirements_verified!
+        _best_dec, best_ui_st, best_ui_lbl, best_human_req = compute_inspection_status(
+            best_inspection.criterion_assessments,
+            detected_defects=best_inspection.detected_defects,
+        )
+        human_req = bool(
+            best_human_req
+            or best_inspection.human_review_required
+            or best_score["mandatory_failed"] > 0
+            or best_score["mandatory_uncertain"] > 0
+        )
+        if best_ui_st == "correction_recommended":
             ui_st: Any = "review_recommended"
             ui_lbl = UI_INSPECTION_LABELS["review_recommended"]
-        elif best_score["mandatory_uncertain"] > 0:
-            ui_st = "some_uncertain"
-            ui_lbl = "Some requirements remain uncertain"
-        elif best_path != original_output_path:
+        elif best_ui_st == "requirements_verified" and not human_req and best_path != original_output_path:
             ui_st = "correction_complete"
             ui_lbl = UI_INSPECTION_LABELS["correction_complete"]
+        elif best_ui_st == "requirements_verified" and human_req:
+            ui_st = "review_recommended"
+            ui_lbl = UI_INSPECTION_LABELS["review_recommended"]
         else:
-            ui_st = "requirements_verified"
-            ui_lbl = UI_INSPECTION_LABELS["requirements_verified"]
+            ui_st = best_ui_st
+            ui_lbl = best_ui_lbl
 
         return CorrectionSessionReport(
             media_kind=media_kind,

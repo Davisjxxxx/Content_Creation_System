@@ -66,9 +66,46 @@ _CHAR_CONT_RE = re.compile(r"\b(same person|same woman|same man|same character|s
 _KEYFRAME_RE = re.compile(r"\b(keyframe|end frame|start and end frame|intermediate view|turnaround sheet)\b", re.IGNORECASE)
 _TURN_RE = re.compile(r"\b(turns? around|turning from front to back|turns? to her left|turns? away|walks? away|360|orbit)\b", re.IGNORECASE)
 
+_SPELLED_COUNTS: dict[str, int] = {
+    "one": 1,
+    "single": 1,
+    "two": 2,
+    "pair": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "dozen": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+}
+
 _QUOTED_TEXT_RE = re.compile(r'(?:reading|says?|text|sign|label|title|printed)\s+["\']([^"\']{1,60})["\']|["\']([A-Z0-9][A-Za-z0-9 &!?:.-]{1,40})["\']')
 _COUNT_RE = re.compile(
-    r"\b(two|three|four|five|six|seven|eight|nine|ten|[2-9]|10)\s+([a-z]+(?:\s+[a-z]+){0,2})\b",
+    r"\b(?:exactly\s+)?(one|single|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|dozen|pair\s+of|[1-9]\d{0,2})\s+([a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,2})\b",
+    re.IGNORECASE,
+)
+_SPATIAL_REL_RE = re.compile(
+    r"\b((?:an?|the|\d+|one|two|three|four|five)\s+[a-z0-9][a-z0-9\s-]{1,32}?)\s+"
+    r"(to the left of|to the right of|in front of|behind|above|below|underneath|beside|next to|between)\s+"
+    r"((?:an?|the|\d+|one|two|three|four|five)\s+[a-z0-9][a-z0-9\s-]{1,32}?)(?=[,.;]|$|\band\b|\bwith\b|\bwhile\b)",
+    re.IGNORECASE,
+)
+_SPATIAL_SIDE_RE = re.compile(
+    r"\b((?:an?|the|\d+|one|two|three|four|five)\s+[a-z0-9][a-z0-9\s-]{1,32}?)\s+"
+    r"(on the left|on the right|in the foreground|in the background|in the center|centered|on the right third|on the left third)\b",
     re.IGNORECASE,
 )
 _SPATIAL_RE = re.compile(
@@ -344,13 +381,41 @@ def interpret_natural_language(
             _add_req("typography", f'Exact visible text: "{quoted}"')
 
     for m in _COUNT_RE.finditer(clean_prompt):
-        qty, obj = m.group(1), m.group(2).strip()
-        first_word = obj.split()[0].lower() if obj else ""
-        if first_word and first_word not in _NON_OBJECT_UNITS:
-            _add_req("object_quantities", f"Exact count: {qty} {obj}")
+        raw_qty, obj = m.group(1).strip().lower(), m.group(2).strip()
+        if raw_qty.startswith("pair"):
+            qty_num = 2
+        elif raw_qty.isdigit():
+            qty_num = int(raw_qty)
+        else:
+            qty_num = _SPELLED_COUNTS.get(raw_qty, 0)
+        # Trim trailing stop-words from greedy 3-word object span (e.g. "mugs on the" -> "mugs")
+        obj_tokens = obj.split()
+        while obj_tokens and obj_tokens[-1].lower() in {"on", "in", "at", "of", "to", "with", "and", "or", "the", "a", "an", "by", "from", "for"}:
+            obj_tokens.pop()
+        obj_clean = " ".join(obj_tokens)
+        first_word = obj_tokens[0].lower() if obj_tokens else ""
+        if qty_num > 0 and first_word and first_word not in _NON_OBJECT_UNITS and first_word not in {"of", "more", "less", "other", "another"}:
+            _add_req("object_quantities", f"Exact count: {qty_num} {obj_clean}")
 
-    for m in _SPATIAL_RE.finditer(clean_prompt):
-        _add_req("spatial_relationships", f"Spatial placement: {m.group(1)}")
+    spatial_added = False
+    for m in _SPATIAL_REL_RE.finditer(clean_prompt):
+        subj_a = " ".join(m.group(1).split())
+        rel = " ".join(m.group(2).split())
+        subj_b = " ".join(m.group(3).split())
+        _add_req("spatial_relationships", f"Spatial placement: {subj_a} {rel} {subj_b}")
+        spatial_added = True
+    for m in _SPATIAL_SIDE_RE.finditer(clean_prompt):
+        subj_a = " ".join(m.group(1).split())
+        side = " ".join(m.group(2).split())
+        _add_req("spatial_relationships", f"Spatial placement: {subj_a} {side}")
+        spatial_added = True
+    if not spatial_added:
+        for m in _SPATIAL_RE.finditer(clean_prompt):
+            # Capture local context around bare spatial preposition so operands are never lost!
+            start = max(0, m.start() - 32)
+            end = min(len(clean_prompt), m.end() + 32)
+            snippet = clean_prompt[start:end].strip(" ,.;")
+            _add_req("spatial_relationships", f"Spatial placement: {snippet}")
 
     exclusions = list(base_spec.excluded_attributes)
     for m in _EXCLUSION_RE.finditer(clean_prompt):
@@ -359,6 +424,10 @@ def interpret_natural_language(
             exclusions.append(term)
             _add_req("exclusion", f"No {term}")
     base_spec.excluded_attributes = exclusions
+
+    # RC-07: Preserve explicit user prompt requirements even when no narrow regex matched (never leave 0 semantic requirements!).
+    if clean_prompt and not reqs:
+        _add_req("complex_nl", f"Explicit prompt fidelity: {clean_prompt[:220]}")
 
     # Populate empty non-protected creative fields from explicit prompt phrases.
     optional_prefs: list[str] = []

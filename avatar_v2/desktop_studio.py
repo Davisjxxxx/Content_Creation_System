@@ -1619,10 +1619,11 @@ class StudioMixin:
         job = build_job(avatar, shot)
         width, height = ob.PHOTO_SHAPES[_choice(shape, ob.PHOTO_SHAPES, "portrait")]
         job.prompt = prompt
+        neg_prompt = ob.photo_negative_for_prompt(prompt)
         job.asset_map.update(
             {
                 "PROMPT": prompt,
-                "NEGATIVE_PROMPT": ob.PHOTO_NEGATIVE,
+                "NEGATIVE_PROMPT": neg_prompt,
                 "WIDTH": width,
                 "HEIGHT": height,
                 "SEED": secrets.randbelow(2_000_000_000) + 1,
@@ -1749,6 +1750,8 @@ class StudioMixin:
             "guided": guided_ui_payload("all"),
             "reference_roles": [r for r in ROLE_CATALOG if r["id"] != "primary_starter"],
             "character_profiles": self._character_profile_store().list_profiles(),
+            "local_vlm_inspection": bool(settings.get("local_vlm_inspection", False)),
+            "local_auto_correct": bool(settings.get("local_auto_correct", False)),
         }
 
     def forge_price(self, options: dict[str, Any]) -> dict[str, Any]:
@@ -1914,15 +1917,24 @@ class StudioMixin:
                         ver_record["compiled_prompt"] = prompt
                 except Exception:
                     ver_record = None
+                settings_now = self._settings()
                 opt_extra: dict[str, Any] = {
                     "guided_mode": bool(guided),
                     "reference_selection": ref_selection_meta,
                     "verification_record": ver_record,
+                    "visual_inspection_vlm": (
+                        bool(options["visual_inspection_vlm"])
+                        if options.get("visual_inspection_vlm") is not None
+                        else bool(settings_now.get("local_vlm_inspection", False))
+                    ),
+                    "auto_correct": (
+                        bool(options["auto_correct"])
+                        if options.get("auto_correct") is not None
+                        else bool(settings_now.get("local_auto_correct", False))
+                    ),
                 }
-                if options.get("auto_correct") is not None:
-                    opt_extra["auto_correct"] = bool(options.get("auto_correct"))
-                if options.get("visual_inspection_vlm") is not None:
-                    opt_extra["visual_inspection_vlm"] = bool(options.get("visual_inspection_vlm"))
+                if opt_extra["auto_correct"]:
+                    opt_extra["visual_inspection_vlm"] = True
                 if options.get("visual_inspection_model"):
                     opt_extra["visual_inspection_model"] = str(options.get("visual_inspection_model"))
                 items = [
@@ -1993,16 +2005,27 @@ class StudioMixin:
                             vid_ver = routed_vid.verification_record.public()
                     except Exception:
                         vid_ver = None
+                    settings_now = self._settings()
+                    eff_vlm = (
+                        bool(options["visual_inspection_vlm"])
+                        if options.get("visual_inspection_vlm") is not None
+                        else bool(settings_now.get("local_vlm_inspection", False))
+                    )
+                    eff_ac = (
+                        bool(options["auto_correct"])
+                        if options.get("auto_correct") is not None
+                        else bool(settings_now.get("local_auto_correct", False))
+                    )
+                    if eff_ac:
+                        eff_vlm = True
                     for it in items:
                         it.runtime["reference_selection"] = ref_selection_meta
                         if vid_ver is not None:
                             it.runtime["verification_record"] = vid_ver
-                        if options.get("visual_inspection_vlm") is not None:
-                            it.runtime["visual_inspection_vlm"] = bool(options.get("visual_inspection_vlm"))
+                        it.runtime["visual_inspection_vlm"] = eff_vlm
                         if options.get("visual_inspection_model"):
                             it.runtime["visual_inspection_model"] = str(options.get("visual_inspection_model"))
-                        if options.get("auto_correct") is not None:
-                            it.runtime["auto_correct"] = bool(options.get("auto_correct"))
+                        it.runtime["auto_correct"] = eff_ac
                     total_minutes = len(shots) * local_engine.VIDEO_MODELS[video_model]["estimated_minutes"]
                     two_stage = False
                 else:
@@ -2193,6 +2216,9 @@ class StudioMixin:
             receipt = item.get("cloud_receipt") or {}
             qa_data = item.get("candidate_qa") if isinstance(item.get("candidate_qa"), dict) else {}
             inspection = qa_data.get("inspection") if isinstance(qa_data.get("inspection"), dict) else None
+            output_inspections = (
+                qa_data.get("output_inspections") if isinstance(qa_data.get("output_inspections"), dict) else None
+            )
             correction = qa_data.get("correction") if isinstance(qa_data.get("correction"), dict) else None
             results.append(
                 {
@@ -2208,6 +2234,7 @@ class StudioMixin:
                     "local": local,
                     "source": source,
                     "inspection": inspection,
+                    "output_inspections": output_inspections,
                     "correction": correction,
                 }
             )

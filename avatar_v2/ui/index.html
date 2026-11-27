@@ -348,6 +348,10 @@ pre.log{max-height:220px;overflow:auto;background:#07070a;border:1px solid var(-
     <div><span class="label">VRAM mode</span><select id="forgeVram"></select><span class="tiny" id="forgeVramHint"></span></div>
   </div>
   <div id="forgeCountWrap" style="display:none"><span class="label">How many options?</span><div class="chips" data-chips="forgeCount" style="margin-top:6px"><button data-v="1">1</button><button data-v="2" class="on">2</button><button data-v="4">4</button></div></div>
+  <div class="row" id="forgeQaOpts" style="gap:14px;flex-wrap:wrap;margin:6px 0 10px">
+    <label class="tiny" style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="forgeVlmQa" onchange="forgeQaPrefChanged()"> Local VLM quality check (optional)</label>
+    <label class="tiny" style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="forgeAutoCorrect" onchange="forgeQaPrefChanged()"> Auto-correct on failure (bounded)</label>
+  </div>
   <div class="card" id="forgeShotCard">
     <span class="label">The scene, shot by shot <small style="text-transform:none">(about 5 seconds each)</small></span>
     <p class="tiny" id="forgeShotHint">Split from your prompt automatically. Edit any line if you want it different.</p>
@@ -778,14 +782,18 @@ async function stDelete(path,tile,detachOnly){let r;try{r=await window.pywebview
   if($('view-library').classList.contains('active'))libLoad();else stLoad();
   const cur=viewer.items[viewer.index];if(cur&&cur.path===path)viewerClose()}
 function mediaViewerItems(list){return list.filter(x=>x.kind==='image'||x.kind==='video').map(x=>{
-  const r=x.result||x,ins=r&&r.inspection?r.inspection:null,cor=r&&r.correction?r.correction:null;
+  const r=x.result||x;
+  const perOut=(r&&r.output_inspections&&r.output_inspections[x.path])?r.output_inspections[x.path]:null;
+  const ins=perOut||(r&&r.inspection?r.inspection:null),cor=r&&r.correction?r.correction:null;
   const baseMeta=stWhen(r?r.finished_at:x.finished_at);
-  const statusLbl=(cor&&cor.ui_status_label)||(ins&&ins.ui_status_label)||'';
+  const statusLbl=(perOut&&perOut.ui_status_label)||(cor&&cor.ui_status_label)||(ins&&ins.ui_status_label)||'';
+  const roleTag=perOut&&perOut.is_best?'best':(perOut&&perOut.candidate_role==='original'?'original':'');
+  const fullMeta=[baseMeta,statusLbl,roleTag].filter(Boolean).join(' · ');
   return {
   path:x.path,
   kind:x.kind,
   title:x.result?x.result.label:x.label,
-  meta:statusLbl?`${baseMeta} · ${statusLbl}`:baseMeta,
+  meta:fullMeta,
   inspection:ins,
   correction:cor,
   actions:x.kind==='image'?[
@@ -804,7 +812,9 @@ function renderResultTiles(root,list,limit){
   const viewable=mediaViewerItems(items);
   items.forEach(x=>{const r=x.result||x;const isImg=x.kind==='image',isVid=x.kind==='video';
     const src=r.source||x.source,origin=src==='old'?' · made with the old app':src==='gpu'?' · free (your GPU)':(r.credits!==null&&r.credits!==undefined?' · '+stCredits(r.credits):'');
-    const qaTag=r.inspection&&r.inspection.ui_status_label?` · ${r.inspection.ui_status_label}`:'';
+    const perOut=(r.output_inspections&&r.output_inspections[x.path])?r.output_inspections[x.path]:null;
+    const effIns=perOut||r.inspection;
+    const qaTag=effIns&&effIns.ui_status_label?` · ${effIns.ui_status_label}`:'';
     let tile;
     const remove=()=>stDelete(x.path,tile);
     const openInViewer=()=>viewerOpen(viewable,Math.max(0,viewable.findIndex(v=>v.path===x.path)));
@@ -1080,7 +1090,16 @@ async function charProfileDelete(){
   st.forge.profiles=r.profiles||[];if($('charProfileSel'))$('charProfileSel').value='';if($('charProfileName'))$('charProfileName').value='';
   subjRender();say('Removed Character Profile (original images untouched).','ok');
 }
-function forgeOptions(){const o={action:st.opts.forgeAction||'scene',prompt:$('forgePrompt').value,photo_model:$('forgePhotoModel').value||'4b',video_model:$('forgeVideoModel').value||'a14b',vram_mode:$('forgeVram').value||'balanced',image:st.forge.image};
+function forgeQaPrefChanged(){
+  const vlm=$('forgeVlmQa'),ac=$('forgeAutoCorrect');
+  if(ac&&ac.checked&&vlm&&!vlm.checked)vlm.checked=true;
+  const payload={local_vlm_inspection:!!(vlm&&vlm.checked),local_auto_correct:!!(ac&&ac.checked)};
+  if(window.pywebview&&window.pywebview.api&&window.pywebview.api.save_settings){
+    window.pywebview.api.save_settings(payload).catch(()=>{});
+  }
+}
+function forgeOptions(){const o={action:st.opts.forgeAction||'scene',prompt:$('forgePrompt').value,photo_model:$('forgePhotoModel').value||'4b',video_model:$('forgeVideoModel').value||'a14b',vram_mode:$('forgeVram').value||'balanced',image:st.forge.image,visual_inspection_vlm:!!($('forgeVlmQa')&&$('forgeVlmQa').checked),auto_correct:!!($('forgeAutoCorrect')&&$('forgeAutoCorrect').checked)};
+  if(o.auto_correct)o.visual_inspection_vlm=true;
   if(o.action==='photo')o.count=Number(st.opts.forgeCount);
   if(o.action==='scene'&&st.forge.edited)o.shots=st.forge.shots.map(t=>t.trim()).filter(Boolean);
   const g=forgeGuidedPayload();if(g)o.guided=g;
@@ -1241,6 +1260,8 @@ async function forgeLoad(){
   $('forgeVideoHint').textContent=vm&&!vm.installed?'Missing: run scripts/setup_offline_builder.sh (5B) or setup_local_engine.sh (14B)':'';
   stFillSelect('forgeVram',(r.vram_modes||[]).map(m=>({value:m.id,label:m.label})),'balanced');
   $('forgeVramHint').textContent=$('forgeVram').value==='cpu_offload'?'Text encoders move to the CPU: more VRAM for the model, a bit slower.':'Weights stream between RAM and VRAM; the photo encoder always runs on the CPU.';
+  if($('forgeVlmQa'))$('forgeVlmQa').checked=!!r.local_vlm_inspection;
+  if($('forgeAutoCorrect'))$('forgeAutoCorrect').checked=!!r.local_auto_correct;
   await stLoadImages();  // so "Choose from My stuff…" has the pictures to offer
   stPickImages('forgeImages',()=>st.forge.image,v=>st.forge.image=v,{workflow:'image_to_video',onChange:forgePriceSoon});
   forgeRenderGuided();

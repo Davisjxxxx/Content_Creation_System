@@ -37,8 +37,10 @@ from .inspection_contract import (
     ReferenceProvenanceRecord,
     VisualInspectionResult,
     compute_inspection_status,
+    compute_requirement_set_hash,
     get_verification_eligibility,
 )
+from .integrity import sha256_file
 from .ollama_client import (
     DEFAULT_OLLAMA_URL,
     LLMExecutionSchedule,
@@ -577,13 +579,13 @@ VLM_INSPECTION_SCHEMA: dict[str, Any] = {
 }
 
 
-_EXACT_COUNT_RE = re.compile(r"\bexact(?:ly)?\s+(\d+)\b", re.IGNORECASE)
+_EXACT_COUNT_RE = re.compile(r"\bexact(?:ly)?(?:\s+count)?[:\s]+(\d+)\b", re.IGNORECASE)
 _OBSERVED_COUNT_RE = re.compile(
     r"\b(?:there\s+are|counted|only|shows?|visible:?)\s+(?:exact(?:ly)?\s+)?(\d+)\b",
     re.IGNORECASE,
 )
 _SPATIAL_LR_RE = re.compile(
-    r"^(?:the\s+|a\s+|an\s+)?(?P<a>[a-z0-9 \-]{2,40}?)\s+(?:is\s+)?(?:positioned\s+|placed\s+|standing\s+|located\s+)?"
+    r"^(?:spatial\s+placement:\s*)?(?:the\s+|a\s+|an\s+)?(?P<a>[a-z0-9 \-]{2,40}?)\s+(?:is\s+)?(?:positioned\s+|placed\s+|standing\s+|located\s+)?"
     r"(?:to\s+the\s+)?(?:viewer'?s\s+)?(?P<dir>left|right)\s+of\s+(?:the\s+|a\s+|an\s+)?(?P<b>[a-z0-9 \-]{2,40})",
     re.IGNORECASE,
 )
@@ -647,7 +649,12 @@ def _deterministic_cross_check_vlm_criterion(
     failure_description: str,
     localized_objects: list[dict[str, Any]] | None = None,
 ) -> tuple[Literal["passed", "failed", "uncertain"], str, bool]:
-    """Catch sycophantic VLM self-contradictions via deterministic exact-text, count, state & bbox checks."""
+    """Catch sycophantic VLM self-contradictions via deterministic exact-text, count, state & bbox checks.
+
+    RC-08: Self-consistency within the SAME single VLM reply can downgrade a false pass to ``failed``,
+    but MUST NEVER grant ``independent_corroboration=True`` for a ``passed`` verdict. Independent
+    corroboration requires a separate non-VLM tool (e.g., deterministic PIL/ffprobe or local OCR).
+    """
     locs = localized_objects or []
     corroborated = False
 
@@ -660,9 +667,7 @@ def _deterministic_cross_check_vlm_criterion(
                 f"Deterministic text cross-check rejected false pass: required exact {missing_exact!r} "
                 f"not found in transcribed visible text ({observed_visible_text or [observed_evidence[:80]]!r})."
             )
-            return "failed", reason, True
-        if status == "passed" and not missing_exact and observed_visible_text:
-            corroborated = True
+            return "failed", reason, False
 
     # 2. Exact object count & object-state reconciliation (closed vs open, enumerated items).
     req_match = _EXACT_COUNT_RE.search(criterion.description)
@@ -678,7 +683,7 @@ def _deterministic_cross_check_vlm_criterion(
                 f"Deterministic count cross-check rejected false pass: required exactly {required_n}, "
                 f"but inspection observed {reported_n} ({observed_evidence[:140]})."
             )
-            return "failed", reason, True
+            return "failed", reason, False
         # Check open-vs-closed state contradiction in localized_objects!
         if status == "passed" and _STATE_CLOSED_RE.search(criterion.description) and locs:
             desc_low = criterion.description.lower()
@@ -694,9 +699,7 @@ def _deterministic_cross_check_vlm_criterion(
                         f"Deterministic object-state cross-check rejected false pass: requirement specified 'closed', "
                         f"but localized item '{open_items[0].get('label')}' reported state '{open_items[0].get('state')}'."
                     )
-                    return "failed", reason, True
-                if len(matching_items) == required_n:
-                    corroborated = True
+                    return "failed", reason, False
 
     # 3. Bounding-box / horizontal coordinate reconciliation for viewer-left / viewer-right spatial criteria!
     sp_match = _SPATIAL_LR_RE.search(criterion.description.strip())
@@ -713,9 +716,7 @@ def _deterministic_cross_check_vlm_criterion(
                         f"Localized coordinate cross-check rejected false pass: '{obj_a.get('label')}' at x={xa:.1f}% "
                         f"is NOT {direction} of '{obj_b.get('label')}' at x={xb:.1f}%."
                     )
-                    return "failed", reason, True
-                if geom_pass and status == "passed":
-                    corroborated = True
+                    return "failed", reason, False
 
     return status, failure_description, corroborated
 
@@ -1252,8 +1253,8 @@ class VisualInspector:
                             category=c.category,
                             mandatory=c.mandatory,
                             verification_eligibility=elig,
-                            inspection_method="region_localization" if (overridden or (corroborated and loc_objs)) else "local_vlm",
-                            independent_corroboration=bool(corroborated or overridden),
+                            inspection_method="region_localization" if overridden else "local_vlm",
+                            independent_corroboration=bool(corroborated),
                             assessor="region_localization" if overridden else "local_vlm",
                             observed_evidence=obs,
                             status=status,
@@ -1330,7 +1331,17 @@ class VisualInspector:
         decision, ui_status, ui_label, human_req = compute_inspection_status(
             final_assessments, detected_defects=detected_defects
         )
+        ref_fps = {
+            r.asset_id or r.role: (r.asset_fingerprint or (sha256_file(r.path) or ""))
+            for r in record.reference_requirements
+            if r.path
+        }
         return VisualInspectionResult(
+            candidate_id=p.stem,
+            output_path=str(p),
+            output_sha256=sha256_file(p) or "",
+            requirement_set_hash=compute_requirement_set_hash(record),
+            reference_fingerprints=ref_fps,
             inspector_model=inspector_model,
             execution_mode=execution_mode,
             overall_decision=decision,
