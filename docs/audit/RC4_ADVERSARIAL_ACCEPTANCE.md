@@ -32,7 +32,7 @@ HOME=/tmp/avatar_rc4_iso_home .venv/bin/pytest -q
 2. **`tests/test_rc4_p1_durability_verification_metadata.py`** (P1/P2 `F03`–`F13`):
    - `F03`: Synchronous `forge_go(..., end_image=...)` authorization, staging, SHA-256 pinning, and Phase-2 tamper/missing refusal.
    - `F04`: Modal/auxiliary object-state extraction (`"There are 3 mugs on the table and the wooden box must remain closed."`) in compound sentences.
-   - `F05`: `hybrid_corroborated` without `independent_corroboration` downgrades to `"warn"` / `"Some requirements uncertain"`; live SHA-256 revalidation on `history()` and `_studio_results()` invalidates replaced files to `"Not inspected"`.
+   - `F05`: `hybrid_corroborated` without `independent_corroboration` downgrades to `"warn"` / `"Review recommended"`; live SHA-256 revalidation on `history()` and `_studio_results()` invalidates replaced files to `"Not inspected"`.
    - `F06` / `F07` / `F08`: Persist-before-admit rollback on `add()`/`add_many()` `OSError`; post-submit timeout keeps `prompt_id` and transitions to `recovery_required`; ack persistence `OSError` raises & enters `recovery_required`; committed `done/complete` history dominates stale active checkpoints on restart; candidate persistence failure halts before reinspection; callable `_`-prefixed runtime hooks stripped from JSON serialization.
    - `F09`: `WanFirstLastFrameToVideo` and `WanFunControlToVideo` extract exact `480x832, 81` into `submitted_params` while keeping `requested_params` separate.
    - `F10`: Live HTTP 500 & timeout on `/api/ps` return `"unknown"` and block ComfyUI dispatch; real `GPUMemoryManager` release events match `_cleanup_verified_released()`.
