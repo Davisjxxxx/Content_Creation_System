@@ -348,6 +348,7 @@ def test_sdk_broker_enforces_validation_policy_cloud_lock_limits_concurrency_and
         authorized_references={"/workspace/refs/ref.png": str(ref_img)},
         snapshot_override=_healthy_snapshot(),
         storage_check_override=_ok_storage(),
+        available_models_override={"flux2_4b", "flux2_9b", "wan22_a14b", "wan22_5b"},
     )
     client = AvatarV2Client(token=broker.token, transport=broker.handle_request)
 
@@ -419,6 +420,7 @@ def test_broker_concurrency_limit_and_pause_resume_stop_preserve_completed_outpu
         max_concurrent=1,
         snapshot_override=_healthy_snapshot(),
         storage_check_override=_ok_storage(),
+        available_models_override={"flux2_4b", "flux2_9b", "wan22_a14b", "wan22_5b"},
     )
     client = AvatarV2Client(token=broker.token, transport=broker.handle_request)
     first = client.generate_image("First item", wait=False)
@@ -526,6 +528,7 @@ def test_live_bubblewrap_isolation_blocks_network_secrets_gpu_and_allows_broker_
         cancel_fn=sim.cancel,
         snapshot_override=_healthy_snapshot(),
         storage_check_override=_ok_storage(),
+        available_models_override={"flux2_4b", "flux2_9b", "wan22_a14b", "wan22_5b"},
     )
     try:
         # Without explicit review acknowledgement, scripts importing socket are held back.
@@ -586,6 +589,7 @@ def test_static_extracted_run_executes_zero_script_code(tmp_path: Path):
         status_fn=sim.status,
         snapshot_override=_healthy_snapshot(),
         storage_check_override=_ok_storage(),
+        available_models_override={"flux2_4b", "flux2_9b", "wan22_a14b", "wan22_5b"},
     )
     started = mgr.start_extracted_run(script_path=legacy, max_items=2, model_id="flux2_4b")
     assert started["ok"] is True

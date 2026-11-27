@@ -24,12 +24,16 @@ def ffprobe_video(path: str | Path) -> dict[str, Any]:
     if not video_stream:
         raise RuntimeError("no video stream found")
 
+    dur = float(data.get("format", {}).get("duration") or video_stream.get("duration") or 0)
     return {
         "path": str(video),
         "codec": video_stream.get("codec_name"),
         "width": video_stream.get("width"),
         "height": video_stream.get("height"),
+        "nb_frames": video_stream.get("nb_frames"),
         "avg_frame_rate": video_stream.get("avg_frame_rate"),
-        "duration_s": float(data.get("format", {}).get("duration", 0) or 0),
+        "r_frame_rate": video_stream.get("r_frame_rate"),
+        "duration": dur,
+        "duration_s": dur,
         "size_bytes": int(data.get("format", {}).get("size", 0) or 0),
     }

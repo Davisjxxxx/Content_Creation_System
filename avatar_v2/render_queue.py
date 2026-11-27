@@ -84,6 +84,108 @@ def write_durable(path: Path, text: str) -> None:
         raise
 
 
+def _is_still_image_item(item: "QueuedRender") -> bool:
+    wf = str(item.workflow or "").lower()
+    if wf in {"builtin:flux2_txt2img", "builtin:flux2_masked_edit"}:
+        return True
+    eng = str(item.runtime.get("engine") or "").lower()
+    if eng in {"flux2_txt2img", "flux2_masked_edit"}:
+        return True
+    act = str(item.runtime.get("studio_action") or "").lower()
+    if act in {"forge_photo", "presenter", "angles", "sharpen"}:
+        return True
+    return False
+
+
+def _extract_resolved_workflow_params(resolved: dict[str, Any]) -> dict[str, Any]:
+    """Extract exact sampler seed, dimensions, frames, steps, cfg, and model directly from the resolved ComfyUI graph (RC-13)."""
+    import hashlib as _hashlib
+
+    if not isinstance(resolved, dict) or not resolved:
+        return {}
+    out: dict[str, Any] = {}
+    seeds: list[int] = []
+    for _nid, node in resolved.items():
+        if not isinstance(node, dict):
+            continue
+        ctype = str(node.get("class_type") or "")
+        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+        if ctype == "RandomNoise" and "noise_seed" in inputs:
+            try:
+                seeds.append(int(inputs["noise_seed"]))
+            except (TypeError, ValueError):
+                pass
+        elif ctype == "KSamplerAdvanced":
+            if "noise_seed" in inputs and str(inputs.get("add_noise", "enable")).lower() != "disable":
+                try:
+                    seeds.append(int(inputs["noise_seed"]))
+                except (TypeError, ValueError):
+                    pass
+            elif "noise_seed" in inputs and not seeds:
+                try:
+                    seeds.append(int(inputs["noise_seed"]))
+                except (TypeError, ValueError):
+                    pass
+            if "steps" in inputs and "steps" not in out:
+                try:
+                    out["steps"] = int(inputs["steps"])
+                except (TypeError, ValueError):
+                    pass
+            if "cfg" in inputs and "cfg" not in out:
+                try:
+                    out["cfg"] = float(inputs["cfg"])
+                except (TypeError, ValueError):
+                    pass
+        elif ctype == "KSampler":
+            if "seed" in inputs:
+                try:
+                    seeds.append(int(inputs["seed"]))
+                except (TypeError, ValueError):
+                    pass
+            if "steps" in inputs and "steps" not in out:
+                try:
+                    out["steps"] = int(inputs["steps"])
+                except (TypeError, ValueError):
+                    pass
+            if "cfg" in inputs and "cfg" not in out:
+                try:
+                    out["cfg"] = float(inputs["cfg"])
+                except (TypeError, ValueError):
+                    pass
+        elif ctype in {"EmptyFlux2LatentImage", "EmptyLatentImage"}:
+            if "width" in inputs:
+                try:
+                    out["width"] = int(inputs["width"])
+                except (TypeError, ValueError):
+                    pass
+            if "height" in inputs:
+                try:
+                    out["height"] = int(inputs["height"])
+                except (TypeError, ValueError):
+                    pass
+            out.setdefault("frames", 1)
+        elif ctype == "WanImageToVideo":
+            for k_src, k_dst in (("width", "width"), ("height", "height"), ("length", "frames")):
+                if k_src in inputs:
+                    try:
+                        out[k_dst] = int(inputs[k_src])
+                    except (TypeError, ValueError):
+                        pass
+        elif ctype in {"UnetLoaderGGUF", "UNETLoader"} and "unet_name" in inputs and "model" not in out:
+            if isinstance(inputs["unet_name"], str) and inputs["unet_name"].strip():
+                out["model"] = inputs["unet_name"].strip()
+    if seeds:
+        out["seed"] = seeds[0]
+        out["resolved_seeds"] = list(dict.fromkeys(seeds))
+    try:
+        out["resolved_graph_sha256"] = _hashlib.sha256(
+            json.dumps(resolved, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
 def _snapshot_submitted_params(item: "QueuedRender", job: RenderJob) -> dict[str, Any]:
     """Capture the actual effective graph parameters submitted to the renderer (RC-13)."""
     amap = dict(job.asset_map or {})
@@ -99,14 +201,16 @@ def _snapshot_submitted_params(item: "QueuedRender", job: RenderJob) -> dict[str
                     continue
         return default
 
-    seed = _int_opt("SEED", "WAN_SEED", default=int(shot.seed))
+    is_still = _is_still_image_item(item)
+    seed = _int_opt("WAN_NOISE_SEED", "NOISE_SEED", "WAN_SEED", "SEED", default=int(shot.seed))
     width = _int_opt("WIDTH", "WAN_WIDTH", default=int(item.runtime.get("width") or shot.width))
     height = _int_opt("HEIGHT", "WAN_HEIGHT", default=int(item.runtime.get("height") or shot.height))
-    frames = _int_opt("FRAMES", "WAN_LENGTH", default=int(item.runtime.get("frames") or shot.frames))
+    frames = 1 if is_still else _int_opt("FRAMES", "WAN_LENGTH", default=int(item.runtime.get("frames") or shot.frames))
     steps = amap.get("STEPS") if amap.get("STEPS") is not None else item.runtime.get("steps")
     cfg = amap.get("CFG") if amap.get("CFG") is not None else item.runtime.get("cfg")
     model_file = (
         amap.get("FORGE_UNET")
+        or amap.get("WAN5B_MODEL")
         or amap.get("WAN_HIGH_MODEL")
         or amap.get("WAN_DIFFUSION_MODEL")
         or item.runtime.get("model")
@@ -158,9 +262,9 @@ def _probe_output_media(outputs: list[str]) -> list[dict[str, Any]]:
                 entry["width"] = int(info.get("width") or 0)
                 entry["height"] = int(info.get("height") or 0)
                 nb_frames = info.get("nb_frames")
-                if nb_frames and str(nb_frames).isdigit():
+                if nb_frames is not None and str(nb_frames).isdigit():
                     entry["frames"] = int(nb_frames)
-                dur = float(info.get("duration") or 0.0)
+                dur = float(info.get("duration_s") or info.get("duration") or 0.0)
                 entry["duration_s"] = round(dur, 3)
                 rate = str(info.get("avg_frame_rate") or info.get("r_frame_rate") or "")
                 num, _, den = rate.partition("/")
@@ -855,6 +959,53 @@ class RenderQueue:
              "credits_charged": receipt.get("credits_charged") if charge == "actual" else (0 if charge == "none" else None)},
         )
 
+    def _record_resolved_params(self, item: QueuedRender, resolved_workflow: dict[str, Any]) -> None:
+        """Merge exact resolved ComfyUI graph parameters (seed/dimensions/frames/model) onto the job receipt (RC-13)."""
+        extracted = _extract_resolved_workflow_params(resolved_workflow)
+        if not extracted:
+            return
+        with self._lock:
+            merged = {**dict(item.submitted_params or {}), **extracted}
+            if _is_still_image_item(item):
+                merged["frames"] = 1
+            item.submitted_params = merged
+            item.runtime["submitted_params"] = merged
+
+    def _ensure_ollama_vram_released_before_comfy(self, item: QueuedRender) -> None:
+        """Bidirectional VRAM handoff: refuse ComfyUI GPU dispatch if local Ollama still holds GPU weights (RC-14)."""
+        from .ollama_client import (
+            DEFAULT_OLLAMA_URL,
+            LocalOllamaClient,
+            _fetch_running_ollama_models_status,
+            verify_ollama_vram_released,
+        )
+
+        ollama_url = str(item.runtime.get("ollama_url") or DEFAULT_OLLAMA_URL)
+        ok, running, _err = _fetch_running_ollama_models_status(ollama_url, timeout_s=1.5)
+        if not ok:
+            return  # Ollama is offline/not running on this host
+        gpu_holders = [
+            str(m.get("name") or m.get("model") or "")
+            for m in running
+            if int(m.get("size_vram") or 0) > 0
+        ]
+        if not gpu_holders:
+            return
+        client = LocalOllamaClient(base_url=ollama_url, timeout_s=3.0)
+        for model_name in gpu_holders:
+            if model_name:
+                try:
+                    client.unload_model(model_name)
+                except Exception:
+                    pass
+        rel = verify_ollama_vram_released(ollama_url, timeout_s=4.0, poll_interval_s=0.2)
+        item.memory_events.append({"reason": "pre-comfy-ollama-handoff", **rel})
+        if not rel.get("released"):
+            raise RuntimeError(
+                f"Local Ollama still holds GPU VRAM ({gpu_holders}; status={rel.get('status')}); "
+                "refusing ComfyUI launch to prevent VRAM contention."
+            )
+
     def _record_local_submitted(self, item: QueuedRender, prompt_id: str) -> None:
         """Persist local ComfyUI prompt_id durably BEFORE waiting so crashes can reconcile safely."""
         with self._lock:
@@ -1094,6 +1245,9 @@ class RenderQueue:
                     + (" · keep image models" if keep_loaded else " · model switch" if switched_workflow else "")
                 )
 
+            # RC-14: Ensure local Ollama is not holding GPU VRAM before dispatching a ComfyUI render.
+            self._ensure_ollama_vram_released_before_comfy(item)
+
             cleanup_kwargs: dict[str, Any] = {
                 "reason": reason,
                 "force": force_preclean or switched_workflow,
@@ -1122,6 +1276,7 @@ class RenderQueue:
                     provider,
                     item.workflow,
                     job,
+                    on_resolved=lambda wf: self._record_resolved_params(item, wf),
                     on_submitted=lambda pid: self._record_local_submitted(item, pid),
                     cancel_event=cancel_event,
                 )

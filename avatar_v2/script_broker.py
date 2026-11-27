@@ -189,6 +189,7 @@ class GenerationBroker:
         storage_check_override: Any = None,
         budget_path: Path | None = None,
         comfyui_dir: Path | None = None,
+        available_models_override: Any = None,
     ) -> None:
         self.run_id = run_id
         self.token = token or secrets.token_urlsafe(32)
@@ -202,6 +203,9 @@ class GenerationBroker:
         self._storage_check_override = storage_check_override
         self._budget_path = Path(budget_path) if budget_path is not None else None
         self._comfyui_dir = Path(comfyui_dir) if comfyui_dir is not None else None
+        self._available_models_override: frozenset[str] | None = (
+            frozenset(str(m) for m in available_models_override) if available_models_override is not None else None
+        )
         self._conn_sem = threading.BoundedSemaphore(MAX_BROKER_CONNECTIONS)
 
         cap_ceiling = HARD_MAX_AUTHORIZED_ITEMS if extended_authorized else DEFAULT_MAX_ITEMS
@@ -534,8 +538,14 @@ class GenerationBroker:
     def _is_model_installed(self, model_spec: Any) -> tuple[bool, list[str]]:
         if model_spec.model_id not in EXECUTABLE_SCRIPT_MODELS:
             return False, [f"Model '{model_spec.model_id}' is deferred/not executable in Script mode."]
-        if self._comfyui_dir is None:
-            return True, []
+        if self._available_models_override is not None:
+            ok = model_spec.model_id in self._available_models_override
+            return ok, ([] if ok else [f"Model '{model_spec.model_id}' is not enabled in this runtime."])
+        # RC-15: Fail closed when ComfyUI directory is unconfigured or missing — NEVER claim all models installed!
+        if self._comfyui_dir is None or not self._comfyui_dir.is_dir():
+            return False, [
+                f"ComfyUI directory is not configured or missing; cannot verify installation of '{model_spec.model_id}'."
+            ]
         missing = [c.filename for c in model_spec.components if not c.exists_in(self._comfyui_dir)]
         return (not missing), missing
 

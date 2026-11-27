@@ -318,12 +318,13 @@ def select_correction_step(
     workflow = model_spec.workflow if model_spec else record.selected_workflow
     next_seed = int(base_seed) + attempt_number * 137
 
-    # --- Video correction path (bounded max-1 regeneration using _MEIPASS-aware Wan workflow; RC-12) ---
+    # --- Video correction path (bounded max-1 regeneration using model-matched _MEIPASS workflow; RC-12) ---
     # Note: Single-step PNG-only keyframe_correction is disabled because VideoInspector requires an MP4 output.
     if media_kind == "video":
         from . import local_engine
 
-        wan_workflow = str(local_engine.WORKFLOW) if local_engine.WORKFLOW.is_file() else workflow
+        wan_wf_path = local_engine.workflow_for_video_model(model_id)
+        wan_workflow = str(wan_wf_path)
         strategy = "video_regeneration"
         prompt = build_corrective_prompt(
             record, failed_assessments=failed, satisfied_assessments=satisfied, strategy=strategy, is_localized_edit=False

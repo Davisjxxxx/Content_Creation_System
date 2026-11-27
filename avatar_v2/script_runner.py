@@ -331,6 +331,7 @@ class ScriptRunManager:
         snapshot_override: Any = None,
         storage_check_override: Any = None,
         comfyui_dir: Path | None = None,
+        available_models_override: Any = None,
     ) -> None:
         self.runs_dir = Path(runs_dir)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -345,6 +346,7 @@ class ScriptRunManager:
         self._snapshot_override = snapshot_override
         self._storage_check_override = storage_check_override
         self._comfyui_dir = Path(comfyui_dir) if comfyui_dir is not None else None
+        self._available_models_override = available_models_override
 
         self._lock = threading.RLock()
         self._start_lock = threading.Lock()
@@ -558,6 +560,7 @@ class ScriptRunManager:
             storage_check_override=self._storage_check_override,
             budget_path=self.runs_dir / f"{run_id}.budget.json",
             comfyui_dir=self._comfyui_dir,
+            available_models_override=self._available_models_override,
         )
         sock_name = "broker.sock"
         broker.start_socket_server(broker_dir / sock_name)
@@ -613,7 +616,7 @@ class ScriptRunManager:
 
         watcher = threading.Thread(
             target=self._watch_process,
-            args=(proc, broker, record, temp_root, limits.wall_timeout_s, limits.max_processes),
+            args=(proc, broker, record, temp_root, limits.wall_timeout_s, limits.max_processes, limits.memory_mb),
             name=f"avatar-script-watch-{run_id[:8]}",
             daemon=True,
         )
@@ -665,6 +668,7 @@ class ScriptRunManager:
             storage_check_override=self._storage_check_override,
             budget_path=self.runs_dir / f"{run_id}.budget.json",
             comfyui_dir=self._comfyui_dir,
+            available_models_override=self._available_models_override,
         )
         specs = build_specs_from_extraction(
             extraction,
@@ -733,26 +737,67 @@ class ScriptRunManager:
                 self._persist_record_locked(record, broker.snapshot_status())
 
     @staticmethod
+    def _collect_descendant_tree_stats(root_pid: int, root_pgid: int) -> tuple[set[int], int]:
+        """Collect ALL live recursive descendants of ``root_pid`` (even across os.setsid()) + ``root_pgid``
+        and their aggregate VmRSS in KiB via Linux /proc (RC-17)."""
+        children_by_ppid: dict[int, list[int]] = {}
+        live_pids: set[int] = set()
+        pgid_pids: set[int] = set()
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return set(), 0
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            try:
+                stat_txt = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+                rparen = stat_txt.rfind(")")
+                if rparen < 0:
+                    continue
+                parts = stat_txt[rparen + 1 :].strip().split()
+                if len(parts) < 3 or parts[0] == "Z":
+                    continue
+                ppid = int(parts[1])
+                pgid = int(parts[2])
+                live_pids.add(pid)
+                children_by_ppid.setdefault(ppid, []).append(pid)
+                if pgid == root_pgid:
+                    pgid_pids.add(pid)
+            except (OSError, ValueError, IndexError):
+                continue
+
+        tree: set[int] = set(pgid_pids)
+        queue: list[int] = [root_pid, *pgid_pids]
+        while queue:
+            cur = queue.pop()
+            if cur in live_pids:
+                tree.add(cur)
+            for child in children_by_ppid.get(cur, ()):
+                if child not in tree:
+                    tree.add(child)
+                    queue.append(child)
+
+        total_rss_kb = 0
+        for pid in tree:
+            try:
+                status_txt = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+                for line in status_txt.splitlines():
+                    if line.startswith("VmRSS:"):
+                        toks = line.split()
+                        if len(toks) >= 2 and toks[1].isdigit():
+                            total_rss_kb += int(toks[1])
+                        break
+            except (OSError, ValueError):
+                continue
+        return tree, total_rss_kb
+
+    @staticmethod
     def _count_pgid_processes(pgid: int) -> int:
         """Count live processes belonging to process group ``pgid`` via Linux /proc (RC-17)."""
-        count = 0
-        try:
-            for entry in os.listdir("/proc"):
-                if not entry.isdigit():
-                    continue
-                try:
-                    stat_txt = Path(f"/proc/{entry}/stat").read_text(encoding="utf-8")
-                    rparen = stat_txt.rfind(")")
-                    if rparen < 0:
-                        continue
-                    parts = stat_txt[rparen + 1 :].strip().split()
-                    if len(parts) >= 3 and parts[0] != "Z" and int(parts[2]) == pgid:
-                        count += 1
-                except (OSError, ValueError, IndexError):
-                    continue
-        except OSError:
-            return 0
-        return count
+        pids, _rss = ScriptRunManager._collect_descendant_tree_stats(pgid, pgid)
+        return len(pids)
 
     @staticmethod
     def _start_bounded_pipe_reader(pipe: Any, *, max_chars: int = 8192) -> tuple[threading.Thread, list[str]]:
@@ -791,12 +836,15 @@ class ScriptRunManager:
         temp_root: Path,
         wall_timeout_s: float,
         max_processes: int = 24,
+        memory_limit_mb: int = 1024,
     ) -> None:
         t_out, buf_out = self._start_bounded_pipe_reader(proc.stdout, max_chars=8192)
         t_err, buf_err = self._start_bounded_pipe_reader(proc.stderr, max_chars=8192)
         deadline = time.monotonic() + max(1.0, float(wall_timeout_s))
         timed_out = False
         proc_limit_hit = False
+        mem_limit_hit = False
+        observed_rss_mb = 0.0
         try:
             pgid = os.getpgid(proc.pid)
         except OSError:
@@ -805,18 +853,26 @@ class ScriptRunManager:
             while proc.poll() is None:
                 if time.monotonic() > deadline:
                     timed_out = True
-                    self._terminate_process_group(proc)
+                    self._terminate_process_group(proc, pgid=pgid)
                     break
-                if max_processes > 0 and self._count_pgid_processes(pgid) > max_processes + 2:
+                pids, total_rss_kb = self._collect_descendant_tree_stats(proc.pid, pgid)
+                if max_processes > 0 and len(pids) > max_processes + 2:
                     proc_limit_hit = True
-                    self._terminate_process_group(proc)
+                    self._terminate_process_group(proc, pgid=pgid)
+                    break
+                rss_mb = total_rss_kb / 1024.0
+                if rss_mb > observed_rss_mb:
+                    observed_rss_mb = rss_mb
+                if memory_limit_mb > 0 and rss_mb > float(memory_limit_mb):
+                    mem_limit_hit = True
+                    self._terminate_process_group(proc, pgid=pgid)
                     break
                 time.sleep(0.05)
 
             try:
                 proc.wait(timeout=3.0)
             except subprocess.TimeoutExpired:
-                self._terminate_process_group(proc)
+                self._terminate_process_group(proc, pgid=pgid)
             t_out.join(timeout=2.0)
             t_err.join(timeout=2.0)
 
@@ -831,7 +887,14 @@ class ScriptRunManager:
                 broker.stop(cancel_pending=True)
             elif proc_limit_hit:
                 record.status = "error"
-                record.error = f"Script exceeded max process group limit ({max_processes}) and was terminated."
+                record.error = f"Script exceeded max process tree limit ({max_processes}) and was terminated."
+                broker.stop(cancel_pending=True)
+            elif mem_limit_hit:
+                record.status = "error"
+                record.error = (
+                    f"Script process tree exceeded aggregate memory limit ({memory_limit_mb} MB; "
+                    f"observed {observed_rss_mb:.1f} MB) and was terminated."
+                )
                 broker.stop(cancel_pending=True)
             elif broker.state == "stopped":
                 record.status = "stopped"
@@ -851,30 +914,40 @@ class ScriptRunManager:
             shutil.rmtree(temp_root, ignore_errors=True)
 
     @staticmethod
-    def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
-        if proc.poll() is not None:
-            return
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except OSError:
+    def _terminate_process_group(proc: subprocess.Popen[str], *, pgid: int | None = None) -> None:
+        eff_pgid = pgid if pgid is not None else proc.pid
+        if proc.poll() is None:
             try:
-                proc.terminate()
-            except OSError:
-                return
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                return
-            time.sleep(0.05)
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except OSError:
-            try:
-                proc.kill()
+                eff_pgid = os.getpgid(proc.pid)
             except OSError:
                 pass
+        pids, _ = ScriptRunManager._collect_descendant_tree_stats(proc.pid, eff_pgid)
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            for pid in sorted(pids, reverse=True):
+                if pid <= 1 or pid == os.getpid():
+                    continue
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    pass
+            try:
+                os.killpg(eff_pgid, sig)
+            except OSError:
+                try:
+                    if sig == signal.SIGTERM:
+                        proc.terminate()
+                    else:
+                        proc.kill()
+                except OSError:
+                    pass
+            if sig == signal.SIGTERM:
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline:
+                    rem, _ = ScriptRunManager._collect_descendant_tree_stats(proc.pid, eff_pgid)
+                    if proc.poll() is not None and not rem:
+                        return
+                    time.sleep(0.05)
+                pids, _ = ScriptRunManager._collect_descendant_tree_stats(proc.pid, eff_pgid)
 
     def pause(self) -> dict[str, Any]:
         with self._lock:

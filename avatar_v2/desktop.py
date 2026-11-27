@@ -960,8 +960,12 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         if step.strategy == "video_regeneration" or workflow_target.endswith(".json"):
             from . import local_engine
 
-            if not workflow_target or not Path(workflow_target).is_file():
-                workflow_target = str(local_engine.WORKFLOW)
+            # RC-12: Always resolve exact model-matched workflow + placeholders (5B vs 14B) rather
+            # than silently falling back to 14B WORKFLOW on Wan 5B jobs!
+            model_wf = local_engine.workflow_for_video_model(step.model_id)
+            if not workflow_target or not Path(workflow_target).is_file() or Path(workflow_target).name != model_wf.name:
+                workflow_target = str(model_wf)
+            asset_map.update(local_engine.placeholders_for_video_model(step.model_id))
             asset_map.update(
                 {
                     "PROMPT": step.revised_prompt,
@@ -1051,9 +1055,16 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         planner = getattr(self.queue, "resource_planner", None)
         comfy_warm = bool(getattr(self.queue, "_last_local_model_id", None))
 
+        def _cleanup_verified_released(ev: Any) -> bool:
+            if not isinstance(ev, dict):
+                return False
+            if ev.get("error"):
+                return False
+            return bool(ev.get("cleanup_performed") is True)
+
         if use_vlm and comfy_warm and item.provider_config.provider == "comfyui":
             try:
-                # RC-14: Wait via GPUMemoryManager for verified ComfyUI VRAM release before VLM!
+                # RC-14: Only clear comfy_warm when GPUMemoryManager actually verified ComfyUI VRAM release!
                 ev = self.queue.memory_manager.maybe_cleanup(
                     ComfyUIProvider(item.provider_config),
                     reason="pre-vlm-unload",
@@ -1061,11 +1072,12 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                     unload_models=True,
                 )
                 item.memory_events.append(ev)
-                self.queue._last_local_model_id = None
-                self.queue._last_local_workflow = None
-                comfy_warm = False
-            except Exception:
-                pass
+                if _cleanup_verified_released(ev):
+                    self.queue._last_local_model_id = None
+                    self.queue._last_local_workflow = None
+                    comfy_warm = False
+            except Exception as exc:
+                item.memory_events.append({"reason": "pre-vlm-unload-exception", "error": f"{type(exc).__name__}: {exc}"})
 
         if target.suffix.lower() in VIDEO_SUFFIXES or record.expected_output.media_kind == "video":
             inspector = VideoInspector(ollama_url=ollama_url, planner=planner)
@@ -1092,8 +1104,8 @@ class DesktopAPI(StudioMixin, PresenterMixin):
         summary = result.compact_ui_summary()
         import hashlib as _hashlib
 
-        req_set_hash = _hashlib.sha256(
-            json.dumps(record.prompt_requirements, sort_keys=True, default=str).encode("utf-8")
+        req_set_hash = str(getattr(result, "requirement_set_hash", "") or "") or _hashlib.sha256(
+            json.dumps(getattr(record, "mandatory_requirements", []) or [], sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()[:16]
         output_inspections: dict[str, dict[str, Any]] = {
             str(target): {
@@ -1134,7 +1146,8 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                     cancel_ev.set()
 
             def _re_inspect(cand_path: str, ver_rec: GenerationVerificationRecord):
-                # RC-14: Wait via GPUMemoryManager for verified ComfyUI unload before sequential GPU VLM reinspection.
+                # RC-14: Only allow sequential GPU VLM reinspection when ComfyUI unload actually succeeded!
+                reinspect_comfy_warm = True
                 if use_vlm:
                     try:
                         ev = self.queue.memory_manager.maybe_cleanup(
@@ -1144,17 +1157,31 @@ class DesktopAPI(StudioMixin, PresenterMixin):
                             unload_models=True,
                         )
                         item.memory_events.append(ev)
-                        self.queue._last_local_model_id = None
-                        self.queue._last_local_workflow = None
-                    except Exception:
-                        pass
+                        if _cleanup_verified_released(ev):
+                            self.queue._last_local_model_id = None
+                            self.queue._last_local_workflow = None
+                            reinspect_comfy_warm = False
+                    except Exception as exc:
+                        item.memory_events.append(
+                            {"reason": "pre-vlm-reinspect-unload-exception", "error": f"{type(exc).__name__}: {exc}"}
+                        )
                 p_cand = Path(cand_path)
                 if p_cand.suffix.lower() in VIDEO_SUFFIXES or ver_rec.expected_output.media_kind == "video":
                     return VideoInspector(ollama_url=ollama_url, planner=planner).inspect_video(
-                        p_cand, ver_rec, use_vlm=use_vlm, preferred_model=preferred_model, comfy_models_warm=False, allow_sequential_gpu=bool(use_vlm)
+                        p_cand,
+                        ver_rec,
+                        use_vlm=use_vlm,
+                        preferred_model=preferred_model,
+                        comfy_models_warm=reinspect_comfy_warm,
+                        allow_sequential_gpu=bool(use_vlm) and not reinspect_comfy_warm,
                     )
                 return VisualInspector(ollama_url=ollama_url, planner=planner).inspect_image(
-                    p_cand, ver_rec, use_vlm=use_vlm, preferred_model=preferred_model, comfy_models_warm=False, allow_sequential_gpu=bool(use_vlm)
+                    p_cand,
+                    ver_rec,
+                    use_vlm=use_vlm,
+                    preferred_model=preferred_model,
+                    comfy_models_warm=reinspect_comfy_warm,
+                    allow_sequential_gpu=bool(use_vlm) and not reinspect_comfy_warm,
                 )
 
             raw_gen_hook = item.runtime.get("_corrective_generate_hook")

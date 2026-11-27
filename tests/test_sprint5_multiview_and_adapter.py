@@ -112,6 +112,7 @@ def test_phase_b_broker_auth_version_traversal_and_request_flood_limits(tmp_path
         authorized_references={"/workspace/refs/allowed.png": str(ref)},
         snapshot_override=_healthy_snap(),
         storage_check_override=_ok_storage(),
+        available_models_override={"flux2_4b", "flux2_9b", "wan22_a14b", "wan22_5b"},
     )
 
     # 1. Wrong bearer token rejected
@@ -315,6 +316,7 @@ def test_structured_prompt_spec_and_sdk_support_role_aware_subject_references(tm
         authorized_references={"/workspace/refs/front.png": str(front), "/workspace/refs/back.png": str(back)},
         snapshot_override=_healthy_snap(),
         storage_check_override=_ok_storage(),
+        available_models_override={"flux2_4b", "flux2_9b", "wan22_a14b", "wan22_5b"},
     )
     client = AvatarV2Client(token=broker.token, transport=broker.handle_request)
     res = client.generate_image(
@@ -378,6 +380,7 @@ def test_a1111_adapter_maps_compatible_calls_and_rejects_unsupported_explicitly(
         authorized_references={"ref.png": str(ref)},
         snapshot_override=_healthy_snap(),
         storage_check_override=_ok_storage(),
+        available_models_override={"flux2_4b", "flux2_9b", "wan22_a14b", "wan22_5b"},
     )
     adapter = A1111CompatibilityAdapter(broker)
 

@@ -117,3 +117,30 @@ def model_placeholders() -> dict[str, str]:
 
 def model_placeholders_5b() -> dict[str, str]:
     return {key: name for key, (_subfolder, name) in MODELS_5B.items()}
+
+
+def _normalize_video_model_key(model_id: str) -> str:
+    raw = str(model_id or "").strip().lower()
+    if raw in {"5b", "wan22_5b", "wan22_i2v_5b_turbo", "wan22_ti2v_5b"}:
+        return "5b"
+    if raw in {"a14b", "14b", "wan22_a14b", "wan22_14b", "wan22_i2v_14b_gguf"}:
+        return "a14b"
+    raise ValueError(f"Unsupported local Wan video model '{model_id}'; expected 'wan22_a14b' or 'wan22_5b'.")
+
+
+def workflow_for_video_model(model_id: str) -> Path:
+    """Return the exact bundled workflow JSON matching ``model_id`` (RC-12)."""
+    key = _normalize_video_model_key(model_id)
+    return Path(VIDEO_MODELS[key]["workflow"])
+
+
+def placeholders_for_video_model(model_id: str) -> dict[str, str]:
+    """Return exact ComfyUI model placeholder bindings matching ``model_id`` (RC-12)."""
+    key = _normalize_video_model_key(model_id)
+    if key == "5b":
+        return {
+            **model_placeholders_5b(),
+            "WAN_TEXT_ENCODER": MODELS["WAN_TEXT_ENCODER"][1],
+            "WAN_VAE": MODELS_5B["WAN5B_VAE"][1],
+        }
+    return model_placeholders()

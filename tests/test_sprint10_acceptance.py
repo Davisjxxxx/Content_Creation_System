@@ -496,6 +496,7 @@ def test_journey_e_script_shared_budget_and_no_auto_execute(monkeypatch: pytest.
                 status_fn=lambda jid: {"status": "done", "outputs": []},
                 max_items=2,
                 storage_check_override=StorageCheck(True, "normal", 80.0, 10.0, 79.9, 15.0),
+                available_models_override={"flux2_4b", "flux2_9b", "wan22_a14b", "wan22_5b"},
             )
         )
         models_res = adapter.handle_sd_models()
@@ -578,6 +579,7 @@ def test_journey_e_live_bwrap_sandbox_isolation_and_fail_closed(tmp_path: Path) 
         submit_fn=lambda ctx: (submitted.append(ctx) or f"jid_{len(submitted)}"),
         status_fn=lambda jid: {"status": "done", "outputs": []},
         storage_check_override=StorageCheck(True, "normal", 80.0, 10.0, 79.9, 15.0),
+        available_models_override={"flux2_4b", "flux2_9b", "wan22_a14b", "wan22_5b"},
     )
     assert mgr.select_script(probe_script)["ok"] is True
 
